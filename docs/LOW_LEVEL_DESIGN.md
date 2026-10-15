@@ -36,6 +36,7 @@ classDiagram
         +initialize(runId: string, baseRef: string) Promise~WorkspaceContext~
         +writeFile(relPath: string, content: string) Promise~void~
         +readFile(relPath: string) Promise~string~
+        +assertPathWhitelisted(relPath: string) void
         +commitStep(stepNumber: number, fitnessScore: number) Promise~string~
         +rollbackStep() Promise~void~
         +promote(targetBranch: string) Promise~void~
@@ -48,10 +49,12 @@ classDiagram
         -worktreeDir: string
         -branchName: string
         -baseRef: string
+        -allowedGlobs: string[]
         -execGit(args: string[]) Promise~GitResult~
         +initialize(runId: string, baseRef: string) Promise~WorkspaceContext~
         +writeFile(relPath: string, content: string) Promise~void~
         +readFile(relPath: string) Promise~string~
+        +assertPathWhitelisted(relPath: string) void
         +commitStep(stepNumber: number, fitnessScore: number) Promise~string~
         +rollbackStep() Promise~void~
         +promote(targetBranch: string) Promise~void~
@@ -63,9 +66,11 @@ classDiagram
         -virtualFs: Map~string, string~
         -commitStack: Map~string, string~[]
         -workingDir: string
+        -allowedGlobs: string[]
         +initialize(runId: string, baseRef: string) Promise~WorkspaceContext~
         +writeFile(relPath: string, content: string) Promise~void~
         +readFile(relPath: string) Promise~string~
+        +assertPathWhitelisted(relPath: string) void
         +commitStep(stepNumber: number, fitnessScore: number) Promise~string~
         +rollbackStep() Promise~void~
         +promote(targetBranch: string) Promise~void~
@@ -75,15 +80,18 @@ classDiagram
 
     class GitSandboxCoordinator {
         -driver: WorkspaceDriver
-        -lockfilePath: string
+        -lockDirPath: string
+        -heartbeatTimer: any
         -activeContext: WorkspaceContext | null
         +acquire(runId: string, baseRef?: string) Promise~WorkspaceContext~
         +applyMutation(files: MutationFile[]) Promise~void~
         +acceptStep(stepNumber: number, score: number) Promise~StepReceipt~
         +rejectStep() Promise~void~
         +promoteAndCleanup(targetBranch: string) Promise~void~
-        -checkAndWriteLockfile(runId: string) Promise~void~
-        -releaseLockfile() Promise~void~
+        -acquireAtomicLock(runId: string) Promise~void~
+        -checkAndReclaimStaleLock() Promise~boolean~
+        -startHeartbeat(runId: string) void
+        -releaseAtomicLock() Promise~void~
     }
 
     WorkspaceDriver <|.. GitWorktreeDriver : implements
@@ -101,7 +109,15 @@ sequenceDiagram
     participant OS as Local FileSystem / Git
 
     Agent->>Coord: acquire(runId: "run-402")
-    Coord->>OS: Check & write .perfgym/sandbox.lock (PID, runId, timestamp)
+    Coord->>OS: Atomic mkdir .perfgym/.lock.d/ (O_EXCL semantics)
+    opt If lock exists
+        Coord->>OS: Check lock metadata (PID, heartbeat). Is PID alive?
+        alt PID dead or heartbeat > 30s
+            Coord->>OS: Break stale lock, run git worktree prune, reclaim
+        else PID active
+            Coord-->>Agent: Throw ERR_SANDBOX_LOCKED (busy)
+        end
+    end
     Coord->>Driver: initialize("run-402", "HEAD")
     Driver->>OS: git worktree add .perfgym/worktrees/run-402 HEAD
     Driver->>OS: git checkout -b perfgym/eval-run-402
@@ -111,13 +127,15 @@ sequenceDiagram
     Note over Agent, OS: Mutation Phase (Iteration 1)
     Agent->>Coord: applyMutation([{ path: "src/calc.ts", content: "..." }])
     Coord->>Driver: writeFile("src/calc.ts", content)
+    Driver->>Driver: assertPathWhitelisted("src/calc.ts")
     Driver->>OS: fs.writeFileSync(worktreeDir + "/src/calc.ts")
     
     Note over Agent, OS: Evaluation Phase (Regression detected)
     Agent->>Coord: rejectStep()
     Coord->>Driver: rollbackStep()
     Driver->>OS: git reset --hard HEAD
-    Driver->>OS: git clean -fd
+    Driver->>OS: git clean -ffd (removes untracked ignored poison files)
+    Driver->>OS: git submodule foreach --recursive git reset --hard
     Note over Driver, OS: Rollback completes in <30ms; worktree clean
     Coord-->>Agent: Rollback verified
 
@@ -199,31 +217,49 @@ classDiagram
 
     class TwoTierTypechecker {
         -fastScanner: FastSyntaxScanner
+        -integrityGuard: ConfigIntegrityGuard
         -tscRunner: TscProjectRunner
         +checkStep(files: string[], workingDir: string) Promise~TypecheckResult~
         +checkPromotion(workingDir: string) Promise~TypecheckResult~
+    }
+
+    class ConfigIntegrityGuard {
+        -baselineHashes: Map~string, string~
+        +snapshotBaseline(workingDir: string) void
+        +verifyIntegrity(workingDir: string) IntegrityResult
     }
 
     AstLinterEngine --> RuleDefinition : contains
     AstLinterEngine --> LintResult : returns
     LintResult --> RuleMatch : contains
     TwoTierTypechecker --> AstLinterEngine : coordinates with
+    TwoTierTypechecker --> ConfigIntegrityGuard : verifies configs
 ```
 
-### 3.2 Sequence Diagram: Two-Tier Typecheck & AST Verification
+### 3.2 Sequence Diagram: Two-Tier Typecheck & Anti-Cheating Verification
 ```mermaid
 sequenceDiagram
     autonumber
     participant Pipeline as EvaluationPipeline
     participant TypeGate as TwoTierTypechecker
+    participant Guard as ConfigIntegrityGuard
     participant Linter as AstLinterEngine
     participant Napi as @ast-grep/napi (Rust/C++ in-process)
 
     Pipeline->>TypeGate: checkStep(modifiedFiles, worktreeDir)
-    Note over TypeGate: Tier 1: Fast Syntax & Suppression Scan (<50ms)
-    TypeGate->>Napi: scanForPatterns("// @ts-ignore", "// @ts-nocheck", "as any")
-    alt Type Suppression Found & action == "disqualify"
-        TypeGate-->>Pipeline: TypecheckResult { passed: false, disqualified: true, reason: "Forbidden @ts-ignore" }
+    
+    Note over TypeGate, Guard: Integrity Gate: verify tsconfig.json & test files
+    TypeGate->>Guard: verifyIntegrity(worktreeDir)
+    alt Hash mismatch in tsconfig.json or tests
+        Guard-->>TypeGate: Tampering detected
+        TypeGate-->>Pipeline: TypecheckResult { passed: false, disqualified: true, reason: "Integrity violation: tsconfig/tests modified" }
+        Note over Pipeline: Immediately aborts pipeline; Score = -Infinity
+    end
+
+    Note over TypeGate: Tier 1: Fast Syntax, Dynamic Eval & Suppression Scan (<50ms)
+    TypeGate->>Napi: scanForPatterns("// @ts-ignore", "// @ts-nocheck", "as any", "eval($$$)", "Function($$$)")
+    alt Type Suppression or Dynamic Eval Found & action == "disqualify"
+        TypeGate-->>Pipeline: TypecheckResult { passed: false, disqualified: true, reason: "Forbidden @ts-ignore or dynamic eval" }
         Note over Pipeline: Immediately aborts pipeline; Score = -Infinity
     else Clean Syntax
         TypeGate-->>Pipeline: TypecheckResult { passed: true }
@@ -254,6 +290,8 @@ classDiagram
         +min: number
         +max: number
         +stddev: number
+        +mad: number
+        +iqr: number
         +sampleCount: number
         +unit: string
     }
@@ -262,6 +300,7 @@ classDiagram
         +accepted: boolean
         +score: number
         +deltaPercent: number
+        +isSignificant: boolean
         +invariantsPassed: boolean
         +invariantsRetriesUsed: number
         +tailGuardPassed: boolean
@@ -277,6 +316,7 @@ classDiagram
         -command: string
         -timeoutMs: number
         -maxRetries: number
+        -frozenHarnessDir: string
         +run(workingDir: string) Promise~InvariantResult~
     }
 
@@ -285,12 +325,15 @@ classDiagram
         -sampleCount: number
         -warmupCount: number
         -parser: MetricParser
+        -frozenHarnessDir: string
         +run(workingDir: string) Promise~BenchmarkDistribution~
+        -calculateMAD(samples: number[], median: number) number
     }
 
     class FitnessCalculator {
         -goal: "minimize" | "maximize"
-        -tailCeilingMultiplier: number
+        -minSignificanceDeltaPercent: number
+        -madCeilingMultiplier: number
         +computeDelta(baseline: number, current: number) number
         +checkTailGuard(baseline: BenchmarkDistribution, current: BenchmarkDistribution) TailGuardResult
         +calculateScore(deltaPercent: number, lintResult: LintResult) number
@@ -351,16 +394,20 @@ sequenceDiagram
 
     Note over Pipeline: Stage 4: Fitness & Tail Guard Calculation
     Pipeline->>Calc: checkTailGuard(baselineDist, currentDist)
-    alt Tail Spike Exceeds Threshold (p99 > baseline_p99 * 1.25)
-        Calc-->>Pipeline: TailGuardResult { passed: false, reason: "p99 degraded by +45%" }
+    alt Tail Spike Exceeds Robust Ceiling (Current_p99 > Baseline_p50 + 3 * Baseline_MAD)
+        Calc-->>Pipeline: TailGuardResult { passed: false, reason: "p99 degraded beyond 3*MAD ceiling" }
         Pipeline-->>Pipeline: accepted = false; Score = -Infinity
     else Tail Guard OK
         Calc-->>Pipeline: TailGuardResult { passed: true }
         Pipeline->>Calc: computeDelta(baselineDist.p50, currentDist.p50)
         Calc-->>Pipeline: deltaPercent = +28.0%
-        Pipeline->>Calc: calculateScore(deltaPercent: 28.0, totalPenalty: 10)
-        Calc-->>Pipeline: score = +18.0
-        Pipeline-->>Pipeline: accepted = (score > 0) -> true
+        alt deltaPercent < minSignificanceDelta (2.5%)
+            Pipeline-->>Pipeline: Score = 0; accepted = false (Rejected: Insignificant noise gain)
+        else Statistically Significant Win
+            Pipeline->>Calc: calculateScore(deltaPercent: 28.0, totalPenalty: 10)
+            Calc-->>Pipeline: score = +18.0
+            Pipeline-->>Pipeline: accepted = (score > 0) -> true
+        end
     end
 ```
 
@@ -492,6 +539,7 @@ When `--format json` or `{ "format": "json" }` is requested:
   "accepted": false,
   "score": -12.4,
   "deltaPercent": -2.4,
+  "isSignificant": false,
   "executionTimeMs": 340,
   "invariants": {
     "passed": true,
@@ -533,6 +581,8 @@ When `--format json` or `{ "format": "json" }` is requested:
       "min": 40.2,
       "max": 62.1,
       "stddev": 3.4,
+      "mad": 1.2,
+      "iqr": 2.1,
       "sampleCount": 5
     },
     "current": {
@@ -543,11 +593,14 @@ When `--format json` or `{ "format": "json" }` is requested:
       "min": 41.0,
       "max": 65.4,
       "stddev": 4.1,
+      "mad": 1.5,
+      "iqr": 2.6,
       "sampleCount": 5
     },
     "tailGuard": {
       "passed": true,
-      "maxAllowedP99": 72.5
+      "madCeiling": 45.7,
+      "rule": "Current_p99 <= Baseline_p50 + 3 * Baseline_MAD"
     }
   },
   "stepReceipt": null,

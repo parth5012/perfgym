@@ -123,3 +123,59 @@ This document records the architectural decisions, context, tradeoffs, and ratio
   - **Driver:** Hybrid model supporting direct LLM API calls (Vercel AI SDK / OpenAI / Anthropic / Gemini / Ollama) with an optional `--driver cli` flag to delegate to local agent CLIs (OpenCode, Claude Code).
   - **Format Toggle:** All CLI commands and MCP responses support `--format markdown` (rich human/agent readable text with AST line citations and negative memory) and `--format json` (machine-readable structured schema).
 * **Rationale:** Flexibility for both autonomous standalone operation and seamless MCP tool usage inside modern coding harness environments.
+
+---
+
+## ADR-013: Atomic Lockfile with Heartbeat, PID Liveness, and Stale Recovery
+* **Status:** Accepted (Hardened via Adversarial Review)
+* **Context:** A naive check-then-write lockfile suffers from TOCTOU races and permanent deadlocks if an agent process is killed or crashes.
+* **Decision:**
+  - Use atomic file creation (`O_EXCL` via `proper-lockfile` or atomic `mkdir .perfgym/.lock.d/`).
+  - Lock data contains `{ pid, runId, startTime, heartbeat }`.
+  - Heartbeat updated every 5 seconds.
+  - Stale detection: if lock timestamp > 30s old AND `process.kill(pid, 0)` confirms process is dead, the runner automatically reclaims the lock, logs a warning, prunes orphaned worktrees via `git worktree prune`, and recovers cleanly.
+* **Rationale:** Eliminates concurrency races between agents and prevents permanent runner deadlocks from orphaned lockfiles.
+
+---
+
+## ADR-014: Strict Path Whitelist & Blast Radius Enforcement
+* **Status:** Accepted (Hardened via Adversarial Review)
+* **Context:** An agent could modify `tsconfig.json`, tamper with invariant test files, inject global `declare module` shims, or traverse paths outside the project.
+* **Decision:**
+  - `WorkspaceDriver.writeFile()` strictly verifies that every write target matches the normalized relative glob in `target.files` defined in `.perfgym.yaml`.
+  - Path traversal sequences (`../`, absolute paths, symlink tricks) throw an instant `ERR_PATH_TRAVERSAL` error.
+  - `tsconfig.json`, `package.json`, `.perfgym.yaml`, and invariant test directories are cryptographically hashed at baseline; any detected mutation immediately disqualifies the step.
+* **Rationale:** Completely blocks agents from cheating the grader or escaping the designated mutation boundary.
+
+---
+
+## ADR-015: Frozen Grader Snapshot & Anti-Tampering Isolation
+* **Status:** Accepted (Hardened via Adversarial Review)
+* **Context:** Agents could mock benchmark endpoints or short-circuit test assertions inside the worktree to fake speedups.
+* **Decision:**
+  - Invariant tests and benchmark suites are copied to a read-only mirror directory (`.perfgym/.harness/`) at baseline initialization.
+  - Test and benchmark executions run against this frozen harness referencing the worktree's source code, preventing the agent from modifying the test assertions or benchmark timing logic.
+* **Rationale:** Separates the grader from the graded code, providing absolute integrity against mock-based cheating.
+
+---
+
+## ADR-016: Statistically Sound Metric Variance & Minimum Significance Delta
+* **Status:** Accepted (Hardened via Adversarial Review)
+* **Context:** $N=5$ samples are mathematically insufficient to compute a valid `p99`, and natural OS variance causes agents to game random noise wins or thrash on false rollbacks.
+* **Decision:**
+  - For small sample sizes ($N < 30$), replace naive `p99` with **Median Absolute Deviation (MAD)** and **Interquartile Range (IQR)**:
+    $$\text{Tail Ceiling} = \text{Baseline}_{\text{Median}} + 3 \times \text{MAD}$$
+  - **Minimum Significance Threshold ($\Delta_{\min} = 2.5\%$):** A mutation must improve performance by at least $2.5\%$ to be accepted, preventing noise accumulation drift.
+  - Outliers exceeding $3 \times \text{MAD}$ during warmups are flagged and trigger an automatic re-sample.
+* **Rationale:** Stops false rollbacks from OS thread jitter while preventing agents from accumulating noisy micro-deltas without algorithmic value.
+
+---
+
+## ADR-017: Deep Aggressive Rollback (`git clean -ffd` & Submodule Reset)
+* **Status:** Accepted (Hardened via Adversarial Review)
+* **Context:** `git clean -fd` ignores untracked ignored files and nested submodules, potentially leaking poisoned cache files across steps.
+* **Decision:**
+  - Rollback executes `git reset --hard HEAD && git clean -ffd` (double `-f` forces removal of untracked ignored files and directories).
+  - Explicit submodule reset: `git submodule foreach --recursive git reset --hard`.
+* **Rationale:** Guarantees 100% pristine worktree state across mutations in sub-30ms.
+
