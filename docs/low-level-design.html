@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PerfGym Low-Level Design (LLD) Specifications & Diagrams</title>
+<style>
+  :root {
+    --bg: #070b14;
+    --panel: #0d1527;
+    --panel-header: #131f38;
+    --border: #1e293b;
+    --border-accent: #334155;
+    --text: #f8fafc;
+    --text-muted: #94a3b8;
+    --cyan: #38bdf8;
+    --emerald: #34d399;
+    --amber: #fbbf24;
+    --indigo: #818cf8;
+    --rose: #fb7185;
+    --purple: #c084fc;
+    --code-bg: #030712;
+  }
+  .light-theme {
+    --bg: #f8fafc;
+    --panel: #ffffff;
+    --panel-header: #f1f5f9;
+    --border: #cbd5e1;
+    --border-accent: #94a3b8;
+    --text: #0f172a;
+    --text-muted: #64748b;
+    --cyan: #0284c7;
+    --emerald: #059669;
+    --amber: #d97706;
+    --indigo: #4f46e5;
+    --rose: #e11d48;
+    --purple: #9333ea;
+    --code-bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    transition: background 0.2s, color 0.2s;
+  }
+  .header {
+    width: 100%;
+    max-width: 1280px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .header-left h1 {
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    background: linear-gradient(90deg, #38bdf8, #818cf8, #34d399);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .header-left p {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  .header-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .btn {
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--border-accent);
+    background: var(--panel);
+    color: var(--text);
+    transition: all 0.2s ease;
+  }
+  .btn:hover {
+    border-color: var(--cyan);
+    color: var(--cyan);
+  }
+  .pill {
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 700;
+    background: rgba(56, 189, 248, 0.15);
+    color: var(--cyan);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  
+  /* Tabs */
+  .nav-tabs {
+    width: 100%;
+    max-width: 1280px;
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+  .tab-btn {
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tab-btn:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .tab-btn.active {
+    color: var(--cyan);
+    background: rgba(56, 189, 248, 0.1);
+    border-color: rgba(56, 189, 248, 0.3);
+  }
+
+  /* Main Container */
+  .main-container {
+    width: 100%;
+    max-width: 1280px;
+  }
+  .tab-content {
+    display: none;
+    flex-direction: column;
+    gap: 24px;
+    animation: fadeIn 0.2s ease-in-out;
+  }
+  .tab-content.active {
+    display: flex;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Card layouts */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 900px) {
+    .grid-2 { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  }
+  .panel-header {
+    background: var(--panel-header);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 18px;
+    font-size: 14px;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .panel-body {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* Code block */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-x: auto;
+    color: #e2e8f0;
+  }
+  .light-theme pre {
+    color: #1e293b;
+  }
+  .badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .badge-emerald { background: rgba(52, 211, 153, 0.15); color: var(--emerald); border: 1px solid var(--emerald); }
+  .badge-amber { background: rgba(251, 191, 36, 0.15); color: var(--amber); border: 1px solid var(--amber); }
+  .badge-rose { background: rgba(251, 113, 133, 0.15); color: var(--rose); border: 1px solid var(--rose); }
+  .badge-indigo { background: rgba(129, 140, 248, 0.15); color: var(--indigo); border: 1px solid var(--indigo); }
+  .badge-purple { background: rgba(192, 132, 252, 0.15); color: var(--purple); border: 1px solid var(--purple); }
+
+  /* SVG Diagram Canvas */
+  .svg-canvas {
+    width: 100%;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+  }
+
+  /* Step table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    background: var(--panel-header);
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  tr:last-child td { border-bottom: none; }
+</style>
+</head>
+<body>
+
+  <header class="header">
+    <div class="header-left">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <h1>PerfGym Low-Level Design (LLD)</h1>
+        <span class="pill">Architecture & Specs</span>
+      </div>
+      <p>Component Interfaces, Sequence Cascades, State Machines & Output Models</p>
+    </div>
+    <div class="header-actions">
+      <button class="btn" onclick="toggleTheme()">🌓 Toggle Theme</button>
+      <button class="btn" onclick="window.location.href='architecture-diagram.html'">📊 High-Level View</button>
+    </div>
+  </header>
+
+  <!-- Navigation Tabs -->
+  <nav class="nav-tabs">
+    <button class="tab-btn active" onclick="showTab('overview')">🏛️ 1. Seams & Deep Modules</button>
+    <button class="tab-btn" onclick="showTab('sandbox')">📦 2. Workspace Sandbox (Map 1)</button>
+    <button class="tab-btn" onclick="showTab('linter')">🔍 3. AST Linter & Anti-Cheating (Map 2)</button>
+    <button class="tab-btn" onclick="showTab('pipeline')">⚡ 4. Invariant & Fitness Engine (Map 3)</button>
+    <button class="tab-btn" onclick="showTab('cli-mcp')">🤖 5. CLI & Agent MCP Server (Map 4)</button>
+    <button class="tab-btn" onclick="showTab('schemas')">📋 6. Markdown / JSON Output Mode</button>
+  </nav>
+
+  <main class="main-container">
+
+    <!-- TAB 1: OVERVIEW & SEAMS -->
+    <section id="tab-overview" class="tab-content active">
+      <div class="panel">
+        <div class="panel-header">
+          <span>🏛️ Core Architecture Seam Registry (Dual Concrete Adapters)</span>
+          <span class="badge badge-emerald">Deep Module Compliance</span>
+        </div>
+        <div class="panel-body">
+          <p style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+            PerfGym strictly enforces <strong>Deep Module Design</strong>: high complexity is hidden behind minimal interfaces. Every major interface is anchored by at least two concrete adapters to prove a real architectural seam.
+          </p>
+
+          <svg class="svg-canvas" viewBox="0 0 1000 420" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="grad-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.2"/>
+                <stop offset="100%" stop-color="#818cf8" stop-opacity="0.1"/>
+              </linearGradient>
+              <linearGradient id="grad-emerald" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#34d399" stop-opacity="0.2"/>
+                <stop offset="100%" stop-color="#059669" stop-opacity="0.1"/>
+              </linearGradient>
+            </defs>
+
+            <!-- Caller Layer -->
+            <rect x="30" y="30" width="940" height="60" rx="8" fill="var(--panel-header)" stroke="var(--border)"/>
+            <text x="50" y="65" fill="var(--cyan)" font-size="14" font-weight="700">CALLERS: perfgym CLI  |  Model Context Protocol (MCP) Server  |  Autonomous Loop Runner</text>
+
+            <!-- Seam 1: WorkspaceDriver -->
+            <rect x="30" y="130" width="450" height="250" rx="8" fill="url(#grad-blue)" stroke="var(--cyan)" stroke-dasharray="4"/>
+            <text x="50" y="160" fill="var(--cyan)" font-size="14" font-weight="700">SEAM 1: WorkspaceDriver Interface</text>
+            <text x="50" y="180" fill="var(--text-muted)" font-size="11">Minimal Seam: init(), writeFile(), commitStep(), rollbackStep()</text>
+
+            <rect x="50" y="200" width="410" height="70" rx="6" fill="var(--panel)" stroke="var(--border)"/>
+            <text x="70" y="225" fill="#38bdf8" font-size="12" font-weight="700">Adapter 1: GitWorktreeDriver (Production)</text>
+            <text x="70" y="245" fill="var(--text-muted)" font-size="11">git worktree add HEAD + git reset --hard (<30ms rollback)</text>
+
+            <rect x="50" y="290" width="410" height="70" rx="6" fill="var(--panel)" stroke="var(--border)"/>
+            <text x="70" y="315" fill="#a78bfa" font-size="12" font-weight="700">Adapter 2: InMemorySandboxDriver (Unit Tests)</text>
+            <text x="70" y="335" fill="var(--text-muted)" font-size="11">In-memory Map&lt;string, string&gt; virtual FS for &lt;5ms Vitest suites</text>
+
+            <!-- Seam 2: Typecheck & Linter -->
+            <rect x="520" y="130" width="450" height="250" rx="8" fill="url(#grad-emerald)" stroke="var(--emerald)" stroke-dasharray="4"/>
+            <text x="540" y="160" fill="var(--emerald)" font-size="14" font-weight="700">SEAM 2: Two-Tier Typecheck & AST Gate</text>
+            <text x="540" y="180" fill="var(--text-muted)" font-size="11">Fast inner-loop gate vs Sound pre-promotion gate</text>
+
+            <rect x="540" y="200" width="410" height="70" rx="6" fill="var(--panel)" stroke="var(--border)"/>
+            <text x="560" y="225" fill="#34d399" font-size="12" font-weight="700">Tier 1: Biome/Oxlint & ast-grep (&lt;50ms Per Step)</text>
+            <text x="560" y="245" fill="var(--text-muted)" font-size="11">Checks syntax and immediately disqualifies @ts-ignore injections</text>
+
+            <rect x="540" y="290" width="410" height="70" rx="6" fill="var(--panel)" stroke="var(--border)"/>
+            <text x="560" y="315" fill="#fbbf24" font-size="12" font-weight="700">Tier 2: Full tsc --noEmit (Pre-Promotion Final Gate)</text>
+            <text x="560" y="335" fill="var(--text-muted)" font-size="11">Runs once before winning branch is merged to ensure 100% type safety</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: WORKSPACE SANDBOX (MAP 1) -->
+    <section id="tab-sandbox" class="tab-content">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header">
+            <span>📦 GitSandboxCoordinator & WorkspaceDriver</span>
+            <span class="badge badge-indigo">Class Model</span>
+          </div>
+          <div class="panel-body">
+            <pre><code>interface WorkspaceDriver {
+  initialize(runId: string, baseRef: string): Promise&lt;WorkspaceContext&gt;;
+  writeFile(relPath: string, content: string): Promise&lt;void&gt;;
+  readFile(relPath: string): Promise&lt;string&gt;;
+  commitStep(step: number, fitness: number): Promise&lt;string&gt;;
+  rollbackStep(): Promise&lt;void&gt;; // &lt;30ms git reset --hard
+  promote(targetBranch: string): Promise&lt;void&gt;;
+  teardown(): Promise&lt;void&gt;;
+  getWorkingDir(): string;
+}
+
+class GitSandboxCoordinator {
+  private driver: WorkspaceDriver;
+  private lockfilePath: string = ".perfgym/sandbox.lock";
+
+  async acquire(runId: string): Promise&lt;WorkspaceContext&gt; {
+    await this.acquireLockfile(runId);
+    return this.driver.initialize(runId, "HEAD");
+  }
+
+  async rejectStep(): Promise&lt;void&gt; {
+    // Discards uncommitted agent edits immediately
+    await this.driver.rollbackStep();
+  }
+
+  async acceptStep(step: number, score: number): Promise&lt;StepReceipt&gt; {
+    const sha = await this.driver.commitStep(step, score);
+    return { step, commitSha: sha, status: "COMMITTED" };
+  }
+}</code></pre>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>⚡ Sub-30ms Mutation Rollback vs Commit Flow</span>
+            <span class="badge badge-cyan">Execution Sequence</span>
+          </div>
+          <div class="panel-body">
+            <svg class="svg-canvas" viewBox="0 0 500 360" xmlns="http://www.w3.org/2000/svg">
+              <!-- Steps -->
+              <circle cx="40" cy="50" r="16" fill="var(--cyan)"/>
+              <text x="35" y="55" fill="#000" font-weight="700">1</text>
+              <text x="75" y="45" fill="var(--text)" font-weight="700" font-size="13">Agent applies mutation file</text>
+              <text x="75" y="65" fill="var(--text-muted)" font-size="11">Direct write into .perfgym/worktrees/run-xyz/</text>
+
+              <path d="M 40 70 L 40 120" stroke="var(--border)" stroke-width="2"/>
+
+              <circle cx="40" cy="140" r="16" fill="var(--amber)"/>
+              <text x="35" y="145" fill="#000" font-weight="700">2</text>
+              <text x="75" y="135" fill="var(--text)" font-weight="700" font-size="13">4-Stage Pipeline Evaluation</text>
+              <text x="75" y="155" fill="var(--text-muted)" font-size="11">Score calculated. Invariants or tail checked.</text>
+
+              <path d="M 40 160 L 40 210" stroke="var(--border)" stroke-width="2"/>
+
+              <!-- Decision Split -->
+              <rect x="20" y="210" width="460" height="60" rx="6" fill="rgba(251, 113, 133, 0.1)" stroke="var(--rose)"/>
+              <text x="35" y="235" fill="var(--rose)" font-weight="700" font-size="12">IF Score &lt;= 0 OR Invariant Fail: INSTANT ROLLBACK</text>
+              <text x="35" y="255" fill="var(--text-muted)" font-size="11">Executes: git reset --hard HEAD &amp;&amp; git clean -fd (&lt;30ms)</text>
+
+              <rect x="20" y="280" width="460" height="60" rx="6" fill="rgba(52, 211, 153, 0.1)" stroke="var(--emerald)"/>
+              <text x="35" y="305" fill="var(--emerald)" font-weight="700" font-size="12">IF Score &gt; 0: ATOMIC COMMIT</text>
+              <text x="35" y="325" fill="var(--text-muted)" font-size="11">Executes: git commit -am "perfgym(step): +28% fitness"</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: AST LINTER & ANTI-CHEATING (MAP 2) -->
+    <section id="tab-linter" class="tab-content">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header">
+            <span>🔍 AstLinterEngine with @ast-grep/napi</span>
+            <span class="badge badge-emerald">Direct Rust Binding</span>
+          </div>
+          <div class="panel-body">
+            <pre><code>interface RuleDefinition {
+  id: string;
+  message: string;
+  severity: "error" | "warning";
+  penalty: number;
+  action: "disqualify" | "penalize";
+  pattern: string;
+}
+
+class AstLinterEngine {
+  private rules: RuleDefinition[] = [];
+
+  // Scans in-process via Tree-Sitter napi binding in &lt;10ms
+  async scan(files: string[], worktreeDir: string): Promise&lt;LintResult&gt; {
+    let totalPenalty = 0;
+    const matches: RuleMatch[] = [];
+
+    for (const file of files) {
+      const ast = parseTreeSitter(readFile(file));
+      for (const rule of this.rules) {
+        const hits = ast.findAll(rule.pattern);
+        if (hits.length &gt; 0) {
+          if (rule.action === "disqualify") {
+            return { passed: false, disqualified: true, totalPenalty: Infinity };
+          }
+          totalPenalty += rule.penalty * hits.length;
+          matches.push(...formatHits(hits, rule, file));
+        }
+      }
+    }
+    return { passed: totalPenalty === 0, disqualified: false, totalPenalty, matches };
+  }
+}</code></pre>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>🛡️ Anti-Cheating & Rule Enforcement Matrix</span>
+            <span class="badge badge-amber">Policy Rules</span>
+          </div>
+          <div class="panel-body">
+            <table>
+              <thead>
+                <tr>
+                  <th>Pattern / Violation</th>
+                  <th>Action</th>
+                  <th>Consequence</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>// @ts-ignore</code> or <code>@ts-nocheck</code></td>
+                  <td><span class="badge badge-rose">Disqualify</span></td>
+                  <td>Score = -Infinity; Instant Revert</td>
+                </tr>
+                <tr>
+                  <td><code>as any</code> unsafe casting</td>
+                  <td><span class="badge badge-rose">Disqualify</span></td>
+                  <td>Score = -Infinity; Instant Revert</td>
+                </tr>
+                <tr>
+                  <td><code>no-await-in-loop</code> (serial awaits)</td>
+                  <td><span class="badge badge-amber">Penalize</span></td>
+                  <td>-50 Penalty Points subtracted</td>
+                </tr>
+                <tr>
+                  <td><code>no-unindexed-filter</code> in hot loops</td>
+                  <td><span class="badge badge-amber">Penalize</span></td>
+                  <td>-30 Penalty Points subtracted</td>
+                </tr>
+                <tr>
+                  <td><code>no-sync-methods</code> in handlers</td>
+                  <td><span class="badge badge-rose">Disqualify</span></td>
+                  <td>Blocks synchronous blocking I/O</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: INVARIANT & FITNESS PIPELINE (MAP 3) -->
+    <section id="tab-pipeline" class="tab-content">
+      <div class="panel">
+        <div class="panel-header">
+          <span>⚡ 4-Stage Evaluation Cascade with Tail Guard Ceiling</span>
+          <span class="badge badge-cyan">Evaluation Coordinator</span>
+        </div>
+        <div class="panel-body">
+          <svg class="svg-canvas" viewBox="0 0 1000 240" xmlns="http://www.w3.org/2000/svg">
+            <!-- Stage 1 -->
+            <rect x="20" y="30" width="220" height="170" rx="8" fill="var(--panel)" stroke="var(--rose)"/>
+            <text x="35" y="60" fill="var(--rose)" font-weight="700" font-size="13">Stage 1: Invariant Gate</text>
+            <text x="35" y="85" fill="var(--text-muted)" font-size="11">• Invariant Unit Tests</text>
+            <text x="35" y="105" fill="var(--text-muted)" font-size="11">• Retries: Configurable (0|1|2)</text>
+            <text x="35" y="125" fill="var(--text-muted)" font-size="11">• Timeout: 10s hard kill</text>
+            <rect x="35" y="145" width="190" height="30" rx="4" fill="rgba(251, 113, 133, 0.2)"/>
+            <text x="45" y="165" fill="var(--rose)" font-size="10" font-weight="700">FAIL ──► Score = -Infinity</text>
+
+            <!-- Arrow 1 to 2 -->
+            <path d="M 240 115 L 270 115" stroke="var(--cyan)" stroke-width="2" marker-end="url(#arrow)"/>
+
+            <!-- Stage 2 -->
+            <rect x="270" y="30" width="220" height="170" rx="8" fill="var(--panel)" stroke="var(--amber)"/>
+            <text x="285" y="60" fill="var(--amber)" font-weight="700" font-size="13">Stage 2: AST Anti-Cheating</text>
+            <text x="285" y="85" fill="var(--text-muted)" font-size="11">• @ts-ignore scan (&lt;50ms)</text>
+            <text x="285" y="105" fill="var(--text-muted)" font-size="11">• ast-grep patterns (&lt;10ms)</text>
+            <text x="285" y="125" fill="var(--text-muted)" font-size="11">• Accumulate Penalties P_j</text>
+            <rect x="285" y="145" width="190" height="30" rx="4" fill="rgba(251, 191, 36, 0.2)"/>
+            <text x="295" y="165" fill="var(--amber)" font-size="10" font-weight="700">BYPASS ──► Disqualify</text>
+
+            <!-- Arrow 2 to 3 -->
+            <path d="M 490 115 L 520 115" stroke="var(--cyan)" stroke-width="2"/>
+
+            <!-- Stage 3 -->
+            <rect x="520" y="30" width="220" height="170" rx="8" fill="var(--panel)" stroke="var(--cyan)"/>
+            <text x="535" y="60" fill="var(--cyan)" font-weight="700" font-size="13">Stage 3: Benchmark Profiling</text>
+            <text x="535" y="85" fill="var(--text-muted)" font-size="11">• Multi-sample (N=5 + 1 warmup)</text>
+            <text x="535" y="105" fill="var(--text-muted)" font-size="11">• Full Distribution: p50, p95, p99</text>
+            <text x="535" y="125" fill="var(--text-muted)" font-size="11">• Max spike capture</text>
+            <rect x="535" y="145" width="190" height="30" rx="4" fill="rgba(56, 189, 248, 0.2)"/>
+            <text x="545" y="165" fill="var(--cyan)" font-size="10" font-weight="700">TAIL SPIKE ──► Reject</text>
+
+            <!-- Arrow 3 to 4 -->
+            <path d="M 740 115 L 770 115" stroke="var(--cyan)" stroke-width="2"/>
+
+            <!-- Stage 4 -->
+            <rect x="770" y="30" width="210" height="170" rx="8" fill="var(--panel)" stroke="var(--emerald)"/>
+            <text x="785" y="60" fill="var(--emerald)" font-weight="700" font-size="13">Stage 4: Fitness & Gradient</text>
+            <text x="785" y="85" fill="var(--text-muted)" font-size="11">Score = ΔMetric% - Σ Penalties</text>
+            <text x="785" y="105" fill="var(--text-muted)" font-size="11">e.g. +28% speed - 10 penalty</text>
+            <text x="785" y="125" fill="var(--emerald)" font-weight="700" font-size="12">Net Score: +18.0</text>
+            <rect x="785" y="145" width="180" height="30" rx="4" fill="rgba(52, 211, 153, 0.2)"/>
+            <text x="795" y="165" fill="var(--emerald)" font-size="10" font-weight="700">WIN ──► Auto-Commit</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: CLI & AGENT MCP SERVER (MAP 4) -->
+    <section id="tab-cli-mcp" class="tab-content">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header">
+            <span>🤖 Model Context Protocol (MCP) Dual-Tier Tools</span>
+            <span class="badge badge-purple">Agent Protocol</span>
+          </div>
+          <div class="panel-body">
+            <pre><code>// Tier 1: Deep Default Tools (Zero Hallucination)
+tools.perfgym_baseline({ target: "node-api" })
+// -&gt; Locks baseline, measures distribution, returns target specs
+
+tools.perfgym_step({
+  target: "node-api",
+  files: [{ path: "src/api.ts", content: "..." }],
+  format: "markdown" | "json" // User / Agent can choose format!
+})
+// -&gt; Runs 4 stages, auto-commits or rolls back, returns gradient
+
+tools.perfgym_status({ target: "node-api" })
+// -&gt; Returns iteration history, best score, active worktree branch
+
+// Tier 2: Granular Advanced Tools
+tools.perfgym_test({ target: "node-api" })
+tools.perfgym_lint({ target: "node-api" })
+tools.perfgym_benchmark({ target: "node-api" })
+tools.perfgym_rollback({ target: "node-api" })</code></pre>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>🧠 Hybrid Autonomous Loop (perfgym run)</span>
+            <span class="badge badge-cyan">Hill-Climbing Engine</span>
+          </div>
+          <div class="panel-body">
+            <p style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+              <code>perfgym run --iterations 15 --model "anthropic/claude-3-7-sonnet"</code> drives autonomous optimization using a <strong>Negative Memory Session Cache</strong>:
+            </p>
+            <pre><code>class AutonomousHillClimbingRunner {
+  private negativeMemory: NegativeMemoryCache;
+
+  async runStep(stepNumber: number) {
+    // 1. Synthesize prompt with history of failed attempts
+    const prompt = this.synthesizer.buildPrompt({
+      target: this.target,
+      baseline: this.baseline,
+      negativeMemory: this.negativeMemory.getFailures()
+    });
+
+    // 2. Query LLM (via direct Vercel AI SDK or local agent CLI)
+    const mutation = await this.llmDriver.complete(prompt);
+
+    // 3. Evaluate in isolated worktree
+    const result = await this.pipeline.evaluate(mutation);
+
+    // 4. Update negative memory to prevent cyclic looping
+    if (!result.accepted) {
+      this.negativeMemory.recordFailure(mutation.summary, result.reason);
+    }
+  }
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 6: DUAL OUTPUT FORMAT (MARKDOWN / JSON) -->
+    <section id="tab-schemas" class="tab-content">
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-header">
+            <span>📝 Mode A: Markdown Output (--format markdown)</span>
+            <span class="badge badge-emerald">Default for Agents</span>
+          </div>
+          <div class="panel-body">
+            <pre><code>### ❌ [REVERTED] Mutation in `src/checkout/process.ts` (Score: -12.4)
+
+The mutation degraded performance and violated AST guidelines.
+Your changes were safely rolled back in **24ms**.
+
+#### 1. Invariants &amp; Types
+- **Unit Tests:** ✅ 100% Passed (85ms)
+- **Typecheck Gate:** ✅ Clean
+
+#### 2. Performance Distribution (Baseline vs Mutation)
+| Metric | Baseline | Current Mutation | Delta |
+|---|---|---|---|
+| **Median (p50)** | `42.1ms` | `43.1ms` | 🔻 **+2.4% slower** |
+| **p95** | `51.2ms` | `53.0ms` | 🔻 `+3.5%` |
+| **p99 (Tail)** | `58.0ms` | `61.2ms` | 🔻 `+5.5%` (Tail Guard passed) |
+| **Max Spike** | `62.1ms` | `65.4ms` | 🔻 `+5.3%` |
+
+#### 3. AST Pattern Violations (-10 Penalty Points)
+- **`src/checkout/process.ts:42`** — `no-await-in-loop` (penalty: -10)
+  ```ts
+  42: const item = await fetchItem(id);
+  ```
+
+#### 4. Negative Memory &amp; Recommendation
+- ⚠️ *Do not attempt serial awaits or loop lookups — this regressed latency in step 2.*
+- 👉 *Next Direction: Batch queries outside loop using in-memory hash map.*</code></pre>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span>📋 Mode B: JSON Output (--format json)</span>
+            <span class="badge badge-indigo">Machine-Readable Protocol</span>
+          </div>
+          <div class="panel-body">
+            <pre><code>{
+  "status": "REVERTED",
+  "accepted": false,
+  "score": -12.4,
+  "deltaPercent": -2.4,
+  "executionTimeMs": 340,
+  "invariants": {
+    "passed": true,
+    "retriesUsed": 0,
+    "durationMs": 85
+  },
+  "linter": {
+    "passed": false,
+    "disqualified": false,
+    "totalPenalty": 10,
+    "matches": [
+      {
+        "ruleId": "no-await-in-loop",
+        "file": "src/checkout/process.ts",
+        "line": 42,
+        "penalty": 10,
+        "action": "penalize"
+      }
+    ]
+  },
+  "metrics": {
+    "target": "latency_p50",
+    "unit": "ms",
+    "baseline": { "p50": 42.1, "p99": 58.0, "max": 62.1 },
+    "current": { "p50": 43.1, "p99": 61.2, "max": 65.4 },
+    "tailGuard": { "passed": true }
+  },
+  "negativeMemoryGuidance": "Previously failed attempt in step 2 tried serial awaits."
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    function showTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      
+      const target = document.getElementById('tab-' + tabId);
+      if (target) target.classList.add('active');
+      
+      event.currentTarget.classList.add('active');
+    }
+
+    function toggleTheme() {
+      document.body.classList.toggle('light-theme');
+    }
+  </script>
+</body>
+</html>
