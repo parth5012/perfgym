@@ -179,3 +179,27 @@ This document records the architectural decisions, context, tradeoffs, and ratio
   - Explicit submodule reset: `git submodule foreach --recursive git reset --hard`.
 * **Rationale:** Guarantees 100% pristine worktree state across mutations in sub-30ms.
 
+---
+
+## ADR-018: Effect 4.0 for Typed Error Channels & Exception Safety
+* **Status:** Accepted
+* **Context:** Traditional Promise-based error handling relies on throwing untyped exceptions (`catch (err: any)`), leading to silent bug leaks, unhandled rejections, missed edge cases, and runtime crashes during agent execution loops.
+* **Decision:**
+  - Standardize on **Effect 4.0** (`effect` ^4.0.0) across all core subsystem interfaces and pipelines.
+  - All domain errors are strictly modeled as tagged errors using `Data.TaggedError` (`PathTraversalError`, `SandboxLockBusyError`, `GitCommandError`, `InvariantFailureError`, `DisqualificationError`, `TailGuardRegressionError`, `InsignificantDeltaError`).
+  - Core pipelines return `Effect.Effect<Success, DomainError, Requirements>` rather than untyped Promises.
+  - Use `Effect.catchTag` for granular typed recovery, `Effect.retry` with explicit retry schedules, and `Effect.acquireRelease` for guaranteed worktree teardown and lock release even under process interruption.
+* **Rationale:** Compile-time enforced exception safety ensures that every possible failure mode across the sandbox, linter, and benchmark pipeline is accounted for and handled with zero untyped runtime exceptions.
+
+---
+
+## ADR-019: TanStack Store & Table for Reactive State and Tabular History
+* **Status:** Accepted
+* **Context:** The autonomous optimization loop needs a deterministic, reactive state store to track baseline metrics, step evaluations, and best scores across CLI, MCP tools, and Web adapters without coupling state to UI frameworks.
+* **Decision:**
+  - Adopt **TanStack Store** (`@tanstack/store`) for in-memory session state management (`SessionStore`).
+  - The store manages active status, baseline distributions, step history, and active lock states with reactive subscriptions (`store.subscribe(...)`).
+  - Adopt **TanStack Table** (`@tanstack/table-core`) to create deterministic tabular models of step history (`StepTableRow`), computing formatted deltas, decisions, and durations for terminal rendering and markdown/HTML reports.
+* **Rationale:** Headless, framework-agnostic, and type-safe state and table architecture that works seamlessly across Node.js CLI, background workers, MCP servers, and Web adapters.
+
+

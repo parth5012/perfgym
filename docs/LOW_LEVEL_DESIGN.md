@@ -23,6 +23,13 @@ PerfGym follows the **Deep Module Design** pattern:
   - `TypecheckDriver`: `BiomeSyntaxDriver` (per-step fast tier) & `TscProjectDriver` (pre-promotion full tier).
   - `LinterEngine`: `AstGrepNapiDriver` (in-process Rust binding) & `FallbackPatternDriver` (regex fallback).
   - `MetricCollector`: `SubprocessMetricDriver` (standard shell runner) & `InstructionCounterDriver` (Linux perf/V8 profiler).
+- **Effect 4.0 Typesafe Exception Handling (ADR-018):**
+  - Operations return typed effects `Effect.Effect<Success, DomainError, Requirements>` rather than untyped promises.
+  - Zero unhandled exceptions: `PathTraversalError`, `SandboxLockBusyError`, `GitCommandError`, `InvariantFailureError`, `DisqualificationError`, `TailGuardRegressionError`, `InsignificantDeltaError` are strictly modeled as `Data.TaggedError`.
+  - Scoped resource lifecycles (`Effect.acquireRelease`) guarantee worktree cleanup and lock teardown on process abortion or crash.
+- **TanStack Store & Table Reactive State (ADR-019):**
+  - `@tanstack/store` provides a framework-agnostic, reactive in-memory session store (`SessionStore`) tracking step progression, baseline distributions, and best scores.
+  - `@tanstack/table-core` models evaluation histories into structured table instances (`createStepHistoryTable`) for CLI tables and HTML reporting.
 
 ---
 

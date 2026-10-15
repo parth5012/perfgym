@@ -1,0 +1,110 @@
+import { Data } from "effect";
+
+/**
+ * ============================================================================
+ * Sandbox & Workspace Errors
+ * ============================================================================
+ */
+
+export class PathTraversalError extends Data.TaggedError("PathTraversalError")<{
+  readonly relPath: string;
+  readonly allowedGlobs: readonly string[];
+  readonly message: string;
+}> {}
+
+export class SandboxLockBusyError extends Data.TaggedError("SandboxLockBusyError")<{
+  readonly lockDir: string;
+  readonly holderPid: number;
+  readonly startTime: number;
+  readonly message: string;
+}> {}
+
+export class GitCommandError extends Data.TaggedError("GitCommandError")<{
+  readonly command: string;
+  readonly exitCode: number;
+  readonly stderr: string;
+  readonly message: string;
+}> {}
+
+export class WorktreeNotFoundError extends Data.TaggedError("WorktreeNotFoundError")<{
+  readonly worktreeDir: string;
+  readonly message: string;
+}> {}
+
+/**
+ * ============================================================================
+ * Anti-Cheating, Integrity & Linter Errors
+ * ============================================================================
+ */
+
+export class TamperingError extends Data.TaggedError("TamperingError")<{
+  readonly targetFile: string;
+  readonly baselineHash: string;
+  readonly currentHash: string;
+  readonly message: string;
+}> {}
+
+export class DisqualificationError extends Data.TaggedError("DisqualificationError")<{
+  readonly ruleId: string;
+  readonly file: string;
+  readonly line: number;
+  readonly message: string;
+}> {}
+
+export class TypecheckError extends Data.TaggedError("TypecheckError")<{
+  readonly tier: "fast-syntax" | "full-project";
+  readonly errors: readonly string[];
+  readonly message: string;
+}> {}
+
+/**
+ * ============================================================================
+ * Pipeline, Invariants & Benchmarking Errors
+ * ============================================================================
+ */
+
+export class InvariantFailureError extends Data.TaggedError("InvariantFailureError")<{
+  readonly command: string;
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly retriesUsed: number;
+  readonly message: string;
+}> {}
+
+export class BenchmarkExecutionError extends Data.TaggedError("BenchmarkExecutionError")<{
+  readonly command: string;
+  readonly error: string;
+  readonly rawOutput?: string;
+  readonly message: string;
+}> {}
+
+export class TailGuardRegressionError extends Data.TaggedError("TailGuardRegressionError")<{
+  readonly metric: string;
+  readonly currentP99: number;
+  readonly maxAllowedCeiling: number;
+  readonly baselineMad: number;
+  readonly message: string;
+}> {}
+
+export class InsignificantDeltaError extends Data.TaggedError("InsignificantDeltaError")<{
+  readonly deltaPercent: number;
+  readonly minSignificanceThreshold: number;
+  readonly message: string;
+}> {}
+
+/**
+ * Union of all PerfGym domain errors
+ */
+export type PerfGymDomainError =
+  | PathTraversalError
+  | SandboxLockBusyError
+  | GitCommandError
+  | WorktreeNotFoundError
+  | TamperingError
+  | DisqualificationError
+  | TypecheckError
+  | InvariantFailureError
+  | BenchmarkExecutionError
+  | TailGuardRegressionError
+  | InsignificantDeltaError;
