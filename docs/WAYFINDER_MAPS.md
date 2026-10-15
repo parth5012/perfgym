@@ -28,6 +28,7 @@ All subsystems adhere strictly to **Deep Module Design** principles:
 - **Seam**: Clean points of variation proved by at least two concrete adapters.
 - **The Deletion Test**: Deleting a deep module causes complexity to reappear across $N$ callers; deleting a shallow one merely removes a pass-through.
 - **Test Surface**: Callers and tests cross the exact same interface seam.
+- **Adversarial Hardening (ADR-013 to ADR-017)**: Atomic locks with heartbeat, blast-radius path whitelisting, frozen grader snapshots, MAD small-sample statistics, and deep aggressive rollbacks.
 
 ---
 
