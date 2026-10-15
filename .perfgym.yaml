@@ -1,0 +1,42 @@
+version: "1.0"
+target:
+  name: "checkout-endpoint-optimization"
+  language: "typescript"
+  files:
+    - "src/api/checkout/**/*.ts"
+
+# 1. Non-negotiable correctness gate (must stay 100% green)
+invariants:
+  command: "pnpm vitest run src/api/checkout"
+  timeout_ms: 10000
+
+# 2. Custom AST Linters (powered by ast-grep tree-sitter rules)
+rules:
+  - id: no-await-in-loops
+    message: "Avoid serial awaits inside loops; use Promise.all or chunking"
+    severity: "error"
+    penalty: 50
+    pattern: "for ($VAR of $ARR) { $$$BEFORE; await $FUNC($$$ARGS); $$$AFTER; }"
+
+  - id: no-unindexed-filter
+    message: "Found in-memory array filtering on database collections"
+    severity: "warning"
+    penalty: 20
+    pattern: "$COLL.find().filter($FN)"
+
+# 3. Deterministic Performance Targets
+metrics:
+  - name: "cpu_instructions"
+    command: "node --prof scripts/benchmark-checkout.js"
+    goal: "minimize"
+    weight: 0.7
+
+  - name: "allocations_bytes"
+    command: "node scripts/measure-heap.js"
+    goal: "minimize"
+    weight: 0.3
+
+# 4. Search Constraints
+agent_budget:
+  max_iterations: 15
+  rollback_on_failure: true

@@ -1,0 +1,36 @@
+{
+  "name": "perfgym",
+  "version": "0.1.0",
+  "description": "Autonomous Code Optimization & Linting Gym for AI Coding Agents",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "test": "vitest run",
+    "lint": "eslint . --ext .ts"
+  },
+  "keywords": [
+    "performance",
+    "optimization",
+    "ai-agent",
+    "hill-climbing",
+    "linter",
+    "ast-grep",
+    "opencode",
+    "benchmarking"
+  ],
+  "author": "Parth (github.com/parth5012)",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "yaml": "^2.6.0",
+    "zod": "^3.23.8"
+  }
+}

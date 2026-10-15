@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PerfGym System Architecture</title>
+<style>
+  :root {
+    --bg: #070b14;
+    --panel: #0d1527;
+    --border: #1e293b;
+    --text: #f8fafc;
+    --text-muted: #94a3b8;
+    --cyan: #38bdf8;
+    --emerald: #34d399;
+    --amber: #fbbf24;
+    --indigo: #818cf8;
+    --rose: #fb7185;
+    --purple: #c084fc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+  }
+  .header {
+    width: 100%;
+    max-width: 1240px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .header h1 {
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    background: linear-gradient(90deg, #38bdf8, #818cf8, #34d399);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .header p {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  .pill {
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 700;
+    background: rgba(56, 189, 248, 0.15);
+    color: var(--cyan);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .diagram-container {
+    width: 100%;
+    max-width: 1240px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.6);
+    overflow-x: auto;
+  }
+  svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-width: 1180px;
+  }
+  .notes {
+    width: 100%;
+    max-width: 1240px;
+    margin-top: 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 14px;
+  }
+  .note-box {
+    background: #0d1527;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+  .note-box strong {
+    color: #fff;
+    display: block;
+    margin-bottom: 4px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>PerfGym Architecture: Autonomous Code Optimization Harness</h1>
+    <p>Complete closed-loop system connecting AI coding agents to AST linters, deterministic profilers, and git-worktree sandboxes</p>
+  </div>
+  <div class="pill">Architecture Blueprint v1.0</div>
+</div>
+
+<div class="diagram-container">
+  <svg viewBox="0 0 1200 840" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1 L 9 5 L 0 9 z" fill="#38bdf8" />
+      </marker>
+      <marker id="arrow-emerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1 L 9 5 L 0 9 z" fill="#34d399" />
+      </marker>
+      <marker id="arrow-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1 L 9 5 L 0 9 z" fill="#fb7185" />
+      </marker>
+      <marker id="arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1 L 9 5 L 0 9 z" fill="#64748b" />
+      </marker>
+      <linearGradient id="core-grad" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#38bdf8" stop-opacity="0.12" />
+        <stop stop-color="#818cf8" stop-opacity="0.08" />
+        <stop stop-color="#34d399" stop-opacity="0.12" />
+      </linearGradient>
+    </defs>
+
+    <!-- SECTION 1: AGENT INTERACTION LAYER (Y: 20 -> 140) -->
+    <rect x="30" y="20" width="1140" height="120" rx="10" fill="#0b1329" stroke="#1d2d52" stroke-width="1.5" />
+    <text x="50" y="46" font-family="system-ui" font-size="12" font-weight="700" fill="#38bdf8" letter-spacing="1">AGENT INTERACTION LAYER</text>
+
+    <!-- Agent Clients -->
+    <g transform="translate(60, 60)">
+      <rect x="0" y="0" width="160" height="56" rx="6" fill="#131f42" stroke="#25386b" />
+      <text x="80" y="26" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">OpenCode Agent</text>
+      <text x="80" y="44" text-anchor="middle" font-family="monospace" font-size="10" fill="#94a3b8">Harness Subagent</text>
+    </g>
+
+    <g transform="translate(240, 60)">
+      <rect x="0" y="0" width="160" height="56" rx="6" fill="#131f42" stroke="#25386b" />
+      <text x="80" y="26" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">T3 Code / Claude</text>
+      <text x="80" y="44" text-anchor="middle" font-family="monospace" font-size="10" fill="#94a3b8">Autonomous Agent</text>
+    </g>
+
+    <g transform="translate(420, 60)">
+      <rect x="0" y="0" width="160" height="56" rx="6" fill="#131f42" stroke="#25386b" />
+      <text x="80" y="26" text-anchor="middle" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">Cursor / Codex / CLI</text>
+      <text x="80" y="44" text-anchor="middle" font-family="monospace" font-size="10" fill="#94a3b8">Developer Session</text>
+    </g>
+
+    <!-- Interfacing Ports -->
+    <g transform="translate(640, 56)">
+      <rect x="0" y="0" width="220" height="64" rx="8" fill="#0f1f3d" stroke="#38bdf8" stroke-width="1.2" />
+      <text x="110" y="26" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#38bdf8">Native MCP Server</text>
+      <text x="110" y="48" text-anchor="middle" font-family="monospace" font-size="10" fill="#cbd5e1">tools.perfgym_step / eval</text>
+    </g>
+
+    <g transform="translate(890, 56)">
+      <rect x="0" y="0" width="250" height="64" rx="8" fill="#0f1f3d" stroke="#818cf8" stroke-width="1.2" />
+      <text x="125" y="26" text-anchor="middle" font-family="system-ui" font-size="13" font-weight="700" fill="#818cf8">PerfGym CLI Engine</text>
+      <text x="125" y="48" text-anchor="middle" font-family="monospace" font-size="10" fill="#cbd5e1">perfgym baseline | step | run</text>
+    </g>
+
+    <!-- Connectors: Agent Clients to Interface -->
+    <path d="M 590 88 L 635 88" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arrow)" />
+
+    <!-- Downward Arrows into Core Engine -->
+    <path d="M 750 120 L 750 170" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arrow)" />
+    <path d="M 1015 120 L 1015 170" stroke="#818cf8" stroke-width="1.5" marker-end="url(#arrow)" />
+
+
+    <!-- SECTION 2: PERFGYM CORE ENGINE (Y: 180 -> 580) -->
+    <rect x="30" y="180" width="1140" height="420" rx="12" fill="url(#core-grad)" stroke="#1e293b" stroke-width="2" />
+    <text x="50" y="208" font-family="system-ui" font-size="13" font-weight="800" fill="#fff" letter-spacing="1">PERFGYM CORE ENGINE (HILL-CLIMBING RUNTIME)</text>
+
+    <!-- Left Box: Git Worktree Sandbox & Revert Guard -->
+    <g transform="translate(60, 230)">
+      <rect x="0" y="0" width="270" height="340" rx="10" fill="#0c1730" stroke="#25386b" stroke-width="1.5" />
+      <rect x="0" y="0" width="270" height="34" rx="10 10 0 0" fill="#13234d" />
+      <text x="15" y="22" font-family="system-ui" font-size="12" font-weight="700" fill="#38bdf8">WORKSPACE ISOLATION (SANDBOX)</text>
+
+      <g transform="translate(15, 50)">
+        <rect x="0" y="0" width="240" height="60" rx="6" fill="#080e1e" stroke="#1d2d52" />
+        <text x="12" y="22" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">Git Worktree Allocator</text>
+        <text x="12" y="42" font-family="monospace" font-size="10" fill="#94a3b8">.perfgym/worktree/eval-1</text>
+      </g>
+
+      <g transform="translate(15, 125)">
+        <rect x="0" y="0" width="240" height="60" rx="6" fill="#080e1e" stroke="#1d2d52" />
+        <text x="12" y="22" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">Snapshot &amp; Stash Manager</text>
+        <text x="12" y="42" font-family="monospace" font-size="10" fill="#94a3b8">Captures pre-mutation HEAD</text>
+      </g>
+
+      <g transform="translate(15, 200)">
+        <rect x="0" y="0" width="240" height="60" rx="6" fill="#080e1e" stroke="#fb7185" stroke-dasharray="4" />
+        <text x="12" y="22" font-family="system-ui" font-size="12" font-weight="700" fill="#fb7185">Instant Rollback Sentinel</text>
+        <text x="12" y="42" font-family="system-ui" font-size="10" fill="#cbd5e1">Reverts on invariant / perf drop</text>
+      </g>
+
+      <g transform="translate(15, 275)">
+        <rect x="0" y="0" width="240" height="48" rx="6" fill="#080e1e" stroke="#34d399" />
+        <text x="12" y="20" font-family="system-ui" font-size="11" font-weight="700" fill="#34d399">Commit Checkpoint</text>
+        <text x="12" y="36" font-family="system-ui" font-size="10" fill="#94a3b8">Promotes new baseline upon win</text>
+      </g>
+    </g>
+
+    <!-- Center Box: 4-Stage Evaluation Pipeline -->
+    <g transform="translate(360, 230)">
+      <rect x="0" y="0" width="500" height="340" rx="10" fill="#0c1730" stroke="#25386b" stroke-width="1.5" />
+      <rect x="0" y="0" width="500" height="34" rx="10 10 0 0" fill="#13234d" />
+      <text x="15" y="22" font-family="system-ui" font-size="12" font-weight="700" fill="#818cf8">CLOSED-LOOP EVALUATION PIPELINE</text>
+
+      <!-- Stage 1: Invariant Gate -->
+      <g transform="translate(20, 50)">
+        <rect x="0" y="0" width="460" height="54" rx="6" fill="#080e1e" stroke="#34d399" />
+        <circle cx="24" cy="27" r="10" fill="rgba(52,211,153,0.15)" stroke="#34d399" />
+        <text x="24" y="31" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="800" fill="#34d399">1</text>
+        <text x="46" y="23" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">Stage 1: Invariant Correctness Gate</text>
+        <text x="46" y="42" font-family="monospace" font-size="10" fill="#34d399">Unit tests (Vitest / Pytest) &bull; Must stay 100% green</text>
+      </g>
+
+      <!-- Stage 2: AST Linter -->
+      <g transform="translate(20, 115)">
+        <rect x="0" y="0" width="460" height="54" rx="6" fill="#080e1e" stroke="#818cf8" />
+        <circle cx="24" cy="27" r="10" fill="rgba(129,140,248,0.15)" stroke="#818cf8" />
+        <text x="24" y="31" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="800" fill="#818cf8">2</text>
+        <text x="46" y="23" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">Stage 2: Custom AST Anti-Pattern Linter</text>
+        <text x="46" y="42" font-family="monospace" font-size="10" fill="#818cf8">ast-grep (Tree-Sitter YAML rules: N+1, serial awaits, sync IO)</text>
+      </g>
+
+      <!-- Stage 3: Deterministic Profiling -->
+      <g transform="translate(20, 180)">
+        <rect x="0" y="0" width="460" height="54" rx="6" fill="#080e1e" stroke="#fbbf24" />
+        <circle cx="24" cy="27" r="10" fill="rgba(251,191,36,0.15)" stroke="#fbbf24" />
+        <text x="24" y="31" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="800" fill="#fbbf24">3</text>
+        <text x="46" y="23" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">Stage 3: Deterministic Profiler &amp; Metrics</text>
+        <text x="46" y="42" font-family="monospace" font-size="10" fill="#fbbf24">CPU cycle count / V8 heap allocations / DB query counter</text>
+      </g>
+
+      <!-- Stage 4: Fitness & Gradient Calculator -->
+      <g transform="translate(20, 245)">
+        <rect x="0" y="0" width="460" height="75" rx="6" fill="#080e1e" stroke="#38bdf8" />
+        <circle cx="24" cy="37" r="10" fill="rgba(56,189,248,0.15)" stroke="#38bdf8" />
+        <text x="24" y="41" text-anchor="middle" font-family="system-ui" font-size="10" font-weight="800" fill="#38bdf8">4</text>
+        <text x="46" y="26" font-family="system-ui" font-size="12" font-weight="700" fill="#fff">Stage 4: Fitness &amp; Hill-Climb Calculator</text>
+        <text x="46" y="46" font-family="monospace" font-size="10" fill="#38bdf8">Score = ΔPerfMetric &minus; Σ(LinterRulePenalties)</text>
+        <text x="46" y="64" font-family="system-ui" font-size="10" fill="#94a3b8">If score &gt; 0 &rarr; Keep &amp; Advance | If score &le; 0 &rarr; Trigger Rollback</text>
+      </g>
+    </g>
+
+    <!-- Right Box: LLM Feedback Synthesizer -->
+    <g transform="translate(890, 230)">
+      <rect x="0" y="0" width="250" height="340" rx="10" fill="#0c1730" stroke="#25386b" stroke-width="1.5" />
+      <rect x="0" y="0" width="250" height="34" rx="10 10 0 0" fill="#13234d" />
+      <text x="15" y="22" font-family="system-ui" font-size="12" font-weight="700" fill="#34d399">FEEDBACK SYNTHESIZER</text>
+
+      <g transform="translate(15, 50)">
+        <rect x="0" y="0" width="220" height="110" rx="6" fill="#080e1e" stroke="#1d2d52" />
+        <text x="12" y="20" font-family="system-ui" font-size="11" font-weight="700" fill="#fff">Gradient Feedback Engine</text>
+        <text x="12" y="38" font-family="system-ui" font-size="10" fill="#94a3b8">Translates raw flamegraphs</text>
+        <text x="12" y="54" font-family="system-ui" font-size="10" fill="#94a3b8">&amp; AST violations into actionable</text>
+        <text x="12" y="70" font-family="system-ui" font-size="10" fill="#38bdf8">natural language prompts</text>
+        <text x="12" y="90" font-family="monospace" font-size="9" fill="#cbd5e1">&bull; "+18% faster, 2 warnings left"</text>
+      </g>
+
+      <g transform="translate(15, 175)">
+        <rect x="0" y="0" width="220" height="145" rx="6" fill="#080e1e" stroke="#1d2d52" />
+        <text x="12" y="22" font-family="system-ui" font-size="11" font-weight="700" fill="#fff">Autonomous Rejection Guide</text>
+        <text x="12" y="44" font-family="system-ui" font-size="10" fill="#fb7185">"Reverted: Mutation in line 44</text>
+        <text x="12" y="60" font-family="system-ui" font-size="10" fill="#fb7185">caused connection pool stall.</text>
+        <text x="12" y="78" font-family="system-ui" font-size="10" fill="#cbd5e1">Recommendation: Batch SQL</text>
+        <text x="12" y="94" font-family="system-ui" font-size="10" fill="#cbd5e1">queries with IN(...) instead."</text>
+        <text x="12" y="122" font-family="monospace" font-size="9" fill="#34d399">&bull; Prevents hallucinations</text>
+      </g>
+    </g>
+
+    <!-- Connectors inside Core -->
+    <path d="M 330 380 L 355 380" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arrow)" />
+    <path d="M 860 380 L 885 380" stroke="#38bdf8" stroke-width="1.5" marker-end="url(#arrow)" />
+
+    <!-- Feedback loop back to agent -->
+    <path d="M 1015 225 L 1015 155 L 770 155" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arrow-emerald)" />
+    <text x="910" y="145" font-family="system-ui" font-size="10" font-weight="700" fill="#34d399">Reward / Correction Loop</text>
+
+
+    <!-- SECTION 3: PLUGGABLE ADAPTER LAYER (Y: 630 -> 800) -->
+    <rect x="30" y="630" width="1140" height="170" rx="10" fill="#0b1329" stroke="#1d2d52" stroke-width="1.5" />
+    <text x="50" y="656" font-family="system-ui" font-size="12" font-weight="700" fill="#fbbf24" letter-spacing="1">PLUGGABLE PLATFORM ADAPTER LAYER</text>
+
+    <!-- Web Adapter (v0.1 Target) -->
+    <g transform="translate(60, 675)">
+      <rect x="0" y="0" width="340" height="105" rx="8" fill="#10203a" stroke="#38bdf8" stroke-width="1.5" />
+      <rect x="10" y="10" width="70" height="18" rx="4" fill="rgba(56,189,248,0.15)" />
+      <text x="45" y="23" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="800" fill="#38bdf8">PHASE 1 (v0.1)</text>
+      <text x="90" y="24" font-family="system-ui" font-size="13" font-weight="700" fill="#fff">Web / Fullstack Adapter</text>
+
+      <text x="12" y="50" font-family="monospace" font-size="11" fill="#cbd5e1">&bull; Runtimes: Node.js, Bun, Vite, Python, Go</text>
+      <text x="12" y="68" font-family="monospace" font-size="11" fill="#cbd5e1">&bull; Profiler: V8 CPU ticks, Memory Heap, k6</text>
+      <text x="12" y="86" font-family="monospace" font-size="11" fill="#34d399">&bull; Cycle time: 2 &ndash; 5 seconds per iteration</text>
+    </g>
+
+    <!-- Mobile Adapter (Phase 2) -->
+    <g transform="translate(430, 675)">
+      <rect x="0" y="0" width="340" height="105" rx="8" fill="#0f192e" stroke="#25386b" />
+      <rect x="10" y="10" width="70" height="18" rx="4" fill="rgba(129,140,248,0.15)" />
+      <text x="45" y="23" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="800" fill="#818cf8">PHASE 2</text>
+      <text x="90" y="24" font-family="system-ui" font-size="13" font-weight="700" fill="#fff">Mobile Adapter (Android &amp; iOS)</text>
+
+      <text x="12" y="50" font-family="monospace" font-size="11" fill="#94a3b8">&bull; Android: Kotlin + Gradle + Robolectric</text>
+      <text x="12" y="68" font-family="monospace" font-size="11" fill="#94a3b8">&bull; Profiler: Compose Recomposition, DEX size</text>
+      <text x="12" y="86" font-family="monospace" font-size="11" fill="#818cf8">&bull; Cycle time: 10 &ndash; 30s (Headless JVM)</text>
+    </g>
+
+    <!-- Desktop Adapter (Phase 3) -->
+    <g transform="translate(800, 675)">
+      <rect x="0" y="0" width="340" height="105" rx="8" fill="#0f192e" stroke="#25386b" />
+      <rect x="10" y="10" width="70" height="18" rx="4" fill="rgba(251,191,36,0.15)" />
+      <text x="45" y="23" text-anchor="middle" font-family="system-ui" font-size="9" font-weight="800" fill="#fbbf24">PHASE 3</text>
+      <text x="90" y="24" font-family="system-ui" font-size="13" font-weight="700" fill="#fff">Desktop Adapter (Rust &amp; Electron)</text>
+
+      <text x="12" y="50" font-family="monospace" font-size="11" fill="#94a3b8">&bull; Desktop: Rust/Tauri, Electron, C++</text>
+      <text x="12" y="68" font-family="monospace" font-size="11" fill="#94a3b8">&bull; Profiler: Cargo bench, CDP IPC lag, FPS</text>
+      <text x="12" y="86" font-family="monospace" font-size="11" fill="#fbbf24">&bull; Cycle time: 5 &ndash; 15s per iteration</text>
+    </g>
+
+    <!-- Core to Adapter Connector -->
+    <path d="M 610 600 L 610 630" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrow)" />
+
+  </svg>
+</div>
+
+<div class="notes">
+  <div class="note-box">
+    <strong>1. Git-Worktree Sandboxing</strong>
+    All mutations execute in dedicated worktrees (`.perfgym/worktree/*`). The main working directory and current commit remain untouched until an optimization is proven faster with 100% green tests.
+  </div>
+  <div class="note-box">
+    <strong>2. ast-grep Structural Rules</strong>
+    Language-agnostic AST linters prevent agents from introducing known anti-patterns (e.g. serial awaits inside loops, blocking main-thread dispatches, unindexed collection scans).
+  </div>
+  <div class="note-box">
+    <strong>3. Closed-Loop Hill Climbing</strong>
+    The fitness function gives the agent an explicit mathematical gradient ($\Delta\text{Metric} - \text{Penalties}$) rather than noisy pass/fail strings, eliminating optimization hallucinations.
+  </div>
+</div>
+
+</body>
+</html>
