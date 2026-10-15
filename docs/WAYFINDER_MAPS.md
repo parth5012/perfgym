@@ -1,8 +1,27 @@
-# 🗺️ PerfGym Wayfinder Implementation Maps
+# 🗺️ PerfGym Wayfinder Implementation Maps (Two-Phase HITL + AFK)
 
-This document records the four architectural subsystems of **PerfGym**, organized as **Wayfinder Maps** with autonomous **AFK (Away-From-Keyboard) implementation tickets** on GitHub (`parth5012/perfgym`).
+This document records the four architectural subsystems of **PerfGym**, organized as **Wayfinder Maps** with a strict **Two-Phase Workflow** on GitHub (`parth5012/perfgym`):
 
-All subsystems are structured according to **Deep Module Design** principles:
+```
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 1 — HITL (Human Present)                              │
+│ - Grilling sessions: resolve load-bearing architectural     │
+│   policies and thresholds interactively.                    │
+│ - Interactive prototypes: review visual UX, CLI format,     │
+│   rule false-positives, and live worktree revert behavior.  │
+│ - Agent assists; human decides and approves.                │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ All HITL tickets resolved
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ PHASE 2 — AFK (Autonomous Agents)                           │
+│ - Autonomous coder & research agents execute sequentially.  │
+│ - One ticket per agent dispatch, TDD mandatory.             │
+│ - Human is free to leave; Phase 2 runs unattended.          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+All subsystems adhere strictly to **Deep Module Design** principles:
 - **Module**: Behavior hidden behind a small interface.
 - **Interface**: Everything a caller must know (types, invariants, ordering, errors, performance).
 - **Depth**: High leverage for callers, high locality for maintainers.
@@ -20,8 +39,12 @@ All subsystems are structured according to **Deep Module Design** principles:
   1. `GitWorktreeDriver` (production native worktree isolation)
   2. `InMemorySandboxDriver` (in-memory virtual file map for <10ms unit tests)
 
-### Child AFK Tickets
-1. [#2 - [TASK:AFK] Design WorkspaceDriver Interface & Seam](https://github.com/parth5012/perfgym/issues/2)
+### Phase 1: HITL (Human-In-The-Loop)
+* [#21 - [GRILL:HITL] Workspace Safety Policies & Worktree Disk Budget](https://github.com/parth5012/perfgym/issues/21) *(Ready)*
+* [#22 - [PROTOTYPE:HITL] Live Worktree Mutation & Rollback Verification](https://github.com/parth5012/perfgym/issues/22) *(blocked by #4, #5)*
+
+### Phase 2: AFK (Autonomous)
+1. [#2 - [TASK:AFK] Design WorkspaceDriver Interface & Seam](https://github.com/parth5012/perfgym/issues/2) *(Ready)*
 2. [#3 - [TASK:AFK] Implement InMemorySandboxDriver with Vitest Suite](https://github.com/parth5012/perfgym/issues/3) *(blocked by #2)*
 3. [#4 - [TASK:AFK] Implement GitWorktreeDriver for Production Isolation](https://github.com/parth5012/perfgym/issues/4) *(blocked by #2)*
 4. [#5 - [TASK:AFK] Build GitSandbox Coordinator Module with Lockfile & Auto-cleanup](https://github.com/parth5012/perfgym/issues/5) *(blocked by #3, #4)*
@@ -35,10 +58,14 @@ All subsystems are structured according to **Deep Module Design** principles:
 * **Interface:** `scan(files: string[]): Promise<LintResult>`
 * **Execution Engine:** In-process `@ast-grep/napi` Tree-Sitter Node bindings (sub-10ms matching).
 
-### Child AFK Tickets
-1. [#7 - [TASK:AFK] Integrate @ast-grep/napi Binding in @perfgym/linter](https://github.com/parth5012/perfgym/issues/7)
-2. [#8 - [TASK:AFK] Implement Declarative YAML Rule Parser & Penalty Calculator](https://github.com/parth5012/perfgym/issues/8)
-3. [#9 - [TASK:AFK] Implement Fast Typecheck Gate (tsc --noEmit)](https://github.com/parth5012/perfgym/issues/9)
+### Phase 1: HITL (Human-In-The-Loop)
+* [#23 - [GRILL:HITL] Anti-Cheating Thresholds & Rule Penalty Weight Matrix](https://github.com/parth5012/perfgym/issues/23) *(Ready)*
+* [#24 - [PROTOTYPE:HITL] Anti-Pattern Rule Catalog & False Positive Calibration](https://github.com/parth5012/perfgym/issues/24) *(blocked by #10)*
+
+### Phase 2: AFK (Autonomous)
+1. [#7 - [TASK:AFK] Integrate @ast-grep/napi Binding in @perfgym/linter](https://github.com/parth5012/perfgym/issues/7) *(Ready)*
+2. [#8 - [TASK:AFK] Implement Declarative YAML Rule Parser & Penalty Calculator](https://github.com/parth5012/perfgym/issues/8) *(Ready)*
+3. [#9 - [TASK:AFK] Implement Fast Typecheck Gate (tsc --noEmit)](https://github.com/parth5012/perfgym/issues/9) *(Ready)*
 4. [#10 - [TASK:AFK] Implement AstLinterEngine Deep Module with Vitest Suite](https://github.com/parth5012/perfgym/issues/10) *(blocked by #7, #8, #9)*
 
 ---
@@ -50,10 +77,14 @@ All subsystems are structured according to **Deep Module Design** principles:
 * **Mathematical Objective:**
   $$\text{Score} = \begin{cases} -\infty & \text{if Invariants Fail} \\ \sum_{i} w_i \cdot \Delta_i - \sum_{j} P_j & \text{if Invariants Pass} \end{cases}$$
 
-### Child AFK Tickets
-1. [#12 - [TASK:AFK] Implement Strict Invariant Correctness Gate](https://github.com/parth5012/perfgym/issues/12)
-2. [#13 - [TASK:AFK] Implement Deterministic Benchmark Parser & Metrics Seam](https://github.com/parth5012/perfgym/issues/13)
-3. [#14 - [TASK:AFK] Implement Continuous Mathematical Fitness Calculator](https://github.com/parth5012/perfgym/issues/14)
+### Phase 1: HITL (Human-In-The-Loop)
+* [#25 - [GRILL:HITL] Invariant Test Timeout & Flakiness Policy](https://github.com/parth5012/perfgym/issues/25) *(Ready)*
+* [#26 - [PROTOTYPE:HITL] Simulated Agent Hill-Climbing Run & Fitness Gradient Review](https://github.com/parth5012/perfgym/issues/26) *(blocked by #15)*
+
+### Phase 2: AFK (Autonomous)
+1. [#12 - [TASK:AFK] Implement Strict Invariant Correctness Gate](https://github.com/parth5012/perfgym/issues/12) *(Ready)*
+2. [#13 - [TASK:AFK] Implement Deterministic Benchmark Parser & Metrics Seam](https://github.com/parth5012/perfgym/issues/13) *(Ready)*
+3. [#14 - [TASK:AFK] Implement Continuous Mathematical Fitness Calculator](https://github.com/parth5012/perfgym/issues/14) *(Ready)*
 4. [#15 - [TASK:AFK] Implement EvaluationPipeline Deep Module with TDD Suite](https://github.com/parth5012/perfgym/issues/15) *(blocked by #10, #12, #13, #14)*
 
 ---
@@ -62,11 +93,12 @@ All subsystems are structured according to **Deep Module Design** principles:
 * **Parent Issue:** [#16](https://github.com/parth5012/perfgym/issues/16)
 * **Subsystem:** `@perfgym/cli` & `packages/mcp-server`
 * **Deep Modules:** `CliRunner`, `PerfGymMcpServer`
-* **Modes:**
-  - **External Agent Driven:** Coding agents (OpenCode, T3 Code, Claude Code) call MCP tools / CLI.
-  - **Built-in Autonomous Loop:** `perfgym run --model ...` executes direct hill-climbing cycles.
 
-### Child AFK Tickets
+### Phase 1: HITL (Human-In-The-Loop)
+* [#27 - [PROTOTYPE:HITL] Terminal UX & Agent MCP Feedback Format Review](https://github.com/parth5012/perfgym/issues/27) *(blocked by #17, #19)*
+* [#28 - [TASK:HITL] End-to-End Handshake with Live OpenCode / Claude Code Agent](https://github.com/parth5012/perfgym/issues/28) *(blocked by #18, #20)*
+
+### Phase 2: AFK (Autonomous)
 1. [#17 - [TASK:AFK] Implement CLI Commands: perfgym init, baseline, step](https://github.com/parth5012/perfgym/issues/17) *(blocked by #5, #15)*
 2. [#18 - [TASK:AFK] Implement Model Context Protocol (MCP) Server for Agents](https://github.com/parth5012/perfgym/issues/18) *(blocked by #17)*
 3. [#19 - [TASK:AFK] Implement Natural-Language Gradient Feedback Synthesizer](https://github.com/parth5012/perfgym/issues/19) *(blocked by #15)*
@@ -74,15 +106,10 @@ All subsystems are structured according to **Deep Module Design** principles:
 
 ---
 
-## ⚡ Frontier Execution Order for Autonomous Agents
+## ⚡ Frontier Execution Protocol
 
-To execute this map with `wayfinder-runner`, the unblocked frontier starts immediately with:
-1. **[#2](https://github.com/parth5012/perfgym/issues/2)** (`WorkspaceDriver` interface)
-2. **[#7](https://github.com/parth5012/perfgym/issues/7)** (`@ast-grep/napi` integration)
-3. **[#8](https://github.com/parth5012/perfgym/issues/8)** (Rule YAML parser)
-4. **[#9](https://github.com/parth5012/perfgym/issues/9)** (Fast typecheck gate)
-5. **[#12](https://github.com/parth5012/perfgym/issues/12)** (Invariant gate)
-6. **[#13](https://github.com/parth5012/perfgym/issues/13)** (Benchmark parser)
-7. **[#14](https://github.com/parth5012/perfgym/issues/14)** (Fitness calculator)
-
-Running `/wayfinder-runner 1` (or 2, 3, 4) will execute each ticket sequentially with automated review gates.
+When invoking `/wayfinder-runner <MAP_NUMBER>`:
+1. **Phase 1 (HITL)** tickets execute first while the human is present.
+   - Run grilling sessions (#21, #23, #25) to freeze policies.
+   - Run prototype tickets (#22, #24, #26, #27) as soon as their underlying modules build.
+2. **Phase 2 (AFK)** tickets execute autonomously in topological order once their blockers clear.
