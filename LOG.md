@@ -92,3 +92,20 @@
 * HTTP smoke tests: legit write allowed; `package.json` write → `PathOutsideTargetError`; `../../escape.txt` → `PathTraversalError`; raw shell escape caught by `/api/verify`; rollback → verify clean.
 * UI script validated by parser (`new Function` compile); server confirmed live on `http://localhost:5177`.
 * Skill-pipeline notes: `ocr-review` skipped — no desktop browser connected, so no screenshot/visual output to inspect; `code-review`/`repo-quality-orchestrator` skipped as PR-level bots (CodeRabbit) re-run on push; diff self-reviewed before commit.
+
+## Iteration 5: OS-Level Sandbox Options Survey + PR #29 Landing
+* **Date**: Fri Oct 16 2026
+* **Status**: `Review` (merging PR #29)
+* **Subsystem**: Documentation (`docs/SANDBOX_OPTIONS.md`)
+
+### What Was Built
+1. **`docs/SANDBOX_OPTIONS.md`**: research record of sandbox isolation options *apart from Docker* — MXC (Windows native process container), Node `--permission` model, WSL2 + Landlock/bubblewrap, Windows Sandbox (.wsb), nsjail, gVisor, cloud microVMs (E2B/Vercel/Daytona/Modal), and Node wrappers (`@cdxgen/safer-exec`, `kern`, `@anthropic-ai/sandbox-runtime`).
+2. Documents the current **gap**: PerfGym's file-mutation sandbox (ADR-003/013/014) does not isolate *command execution* — grader and autonomous-loop commands run with full user privileges.
+3. Machine probe results: Windows 11 Pro 10.0.26300.9711 (meets MXC build threshold, availability probe pending), WSL2 present, GitHub Actions Linux runners.
+4. Recommendation: proposed **ADR-020 — `CommandExecutor` seam** mirroring `WorkspaceDriver`, with tiered backends (Node `--permission` baseline → MXC on Windows / bwrap on Linux CI → optional cloud microVM), config key `sandbox.commandBackend`.
+
+### Verification Results
+* Option matrix cross-checked against environment probe (Win build number, WSL2 distro list, Node/CI facts recorded in §3).
+* ADR numbering verified — ADR-018/019 already exist, so the new seam proposal is numbered **ADR-020**.
+* PR #29 merged into `main` via rebase merge (`--delete-branch`) per the `merge-pr` skill after this commit; demo server unaffected.
+* Skill-pipeline notes: `ocr-review` skipped (no UI/screenshot change — markdown only); `code-review`/CodeRabbit re-run on push as PR-level bot; diff self-reviewed before commit.
