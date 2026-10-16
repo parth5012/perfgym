@@ -42,3 +42,31 @@
 ### Verification Results
 * `vitest run`: 6 test files, 28 tests passed (100% green).
 * `tsc --noEmit`: 0 errors.
+
+---
+
+## Iteration 3: Multi-Agent Adversarial Review Hardening
+* **Date**: Fri Oct 16 2026
+* **Status**: `Done`
+* **Subsystem**: Workspace Sandbox, Blast Radius Gating, and Lock Safety
+
+### Hardening Applied
+1. **Worktree Blast Radius Enforcement (`verifyBlastRadius`)**:
+   - Added `verifyBlastRadius()` to `WorkspaceDriver`, `GitWorktreeDriver`, and `GitSandboxCoordinator`.
+   - Inspects `git status --porcelain -uall` across the whole worktree to detect direct shell writes, untracked files, or deletions outside `allowedGlobs`.
+   - Automatically gates `commitStep()` and `acceptStep()` to reject any out-of-bounds mutation.
+2. **Symlink and Junction Traversal Defense**:
+   - Checks existing directory segments via `fs.lstatSync` to detect symlinks or NTFS junction points.
+   - Verifies physical `fs.realpathSync` to guarantee targets stay strictly inside the physical working directory.
+3. **Safe Lock Ownership Verification**:
+   - `syncRelease()` now checks `meta.pid === process.pid && meta.runId === this.currentRunId` to prevent deleting locks owned by other processes when metadata is unreadable.
+4. **Rollback Resilience & Submodule Cleanup**:
+   - Added bounded retry loop for Windows `EBUSY` file lock release during `rollbackStep()`.
+   - Cleans submodules recursively on rollback.
+5. **Glob Pattern Matching**:
+   - Fixed regex escaping and added platform-aware case-insensitivity on Windows.
+
+### Verification Results
+* `vitest run`: 7 test files, 33 tests passed (100% green).
+* `tsc --noEmit`: 0 errors.
+* 5 new adversarial verification tests in `tests/adversarial-hardening.test.ts`.

@@ -24,10 +24,14 @@ function matchesGlob(pattern: string, targetPath: string): boolean {
   const normPattern = pattern.replace(/\\/g, "/");
   const normPath = targetPath.replace(/\\/g, "/");
 
-  if (normPattern === normPath) return true;
+  const isWin = process.platform === "win32";
+  if (isWin ? normPattern.toLowerCase() === normPath.toLowerCase() : normPattern === normPath) {
+    return true;
+  }
 
   const regexStr = normPattern
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\?/g, "[^/]")
     .replace(/\/\*\*\//g, "___SLASH_GLOBSTAR_SLASH___")
     .replace(/\/\*\*$/g, "___SLASH_GLOBSTAR_END___")
     .replace(/^\*\*\//g, "___GLOBSTAR_SLASH_START___")
@@ -38,7 +42,7 @@ function matchesGlob(pattern: string, targetPath: string): boolean {
     .replace(/___SLASH_GLOBSTAR_END___/g, "(?:/.*)?")
     .replace(/___GLOBSTAR_SLASH_START___/g, "(?:.*/)?");
 
-  return new RegExp(`^${regexStr}$`).test(normPath);
+  return new RegExp(`^${regexStr}$`, isWin ? "i" : "").test(normPath);
 }
 
 export class InMemorySandboxDriver implements WorkspaceDriver {
@@ -184,7 +188,33 @@ export class InMemorySandboxDriver implements WorkspaceDriver {
     return pseudoHash;
   }
 
+  public async verifyBlastRadius(): Promise<void> {
+    if (this.tornDown) {
+      throw new Error("Cannot verify blast radius on torn down InMemorySandboxDriver");
+    }
+
+    // Check all files that differ from last committed state
+    const allKeys = new Set([...this.files.keys(), ...this.lastCommittedFiles.keys()]);
+    for (const key of allKeys) {
+      const current = this.files.get(key);
+      const committed = this.lastCommittedFiles.get(key);
+
+      if (current !== committed) {
+        const isWhitelisted = this.allowedGlobs.some((glob) => matchesGlob(glob, key));
+        if (!isWhitelisted) {
+          throw new PathOutsideTargetError({
+            code: ERR_PATH_OUTSIDE_TARGET,
+            relPath: key,
+            allowedGlobs: this.allowedGlobs,
+            message: `Blast radius violation: Direct mutation detected outside allowed whitelist: '${key}'.`,
+          });
+        }
+      }
+    }
+  }
+
   public async commitStep(stepNumber: number, fitnessScore: number): Promise<string> {
+    await this.verifyBlastRadius();
     return this.checkpoint(stepNumber, fitnessScore);
   }
 
