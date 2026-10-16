@@ -44,6 +44,7 @@ function matchesGlob(pattern: string, targetPath: string): boolean {
 export class InMemorySandboxDriver implements WorkspaceDriver {
   private context: WorkspaceContext | null = null;
   private allowedGlobs: string[];
+  private initialFiles: Map<string, string> = new Map();
   private files: Map<string, string> = new Map();
   private lastCommittedFiles: Map<string, string> = new Map();
   private commits: InMemoryCommit[] = [];
@@ -54,12 +55,15 @@ export class InMemorySandboxDriver implements WorkspaceDriver {
     this.allowedGlobs = options.allowedGlobs ?? ["src/**/*"];
     if (options.initialFiles) {
       if (options.initialFiles instanceof Map) {
-        this.files = new Map(options.initialFiles);
+        for (const [k, v] of options.initialFiles.entries()) {
+          this.initialFiles.set(k.replace(/\\/g, "/"), v);
+        }
       } else {
         for (const [k, v] of Object.entries(options.initialFiles)) {
-          this.files.set(k.replace(/\\/g, "/"), v);
+          this.initialFiles.set(k.replace(/\\/g, "/"), v);
         }
       }
+      this.files = new Map(this.initialFiles);
       this.lastCommittedFiles = new Map(this.files);
     }
   }
@@ -71,7 +75,10 @@ export class InMemorySandboxDriver implements WorkspaceDriver {
       branchName: `perfgym/eval-${runId}`,
       baseRef,
     };
+    this.files = new Map(this.initialFiles);
     this.lastCommittedFiles = new Map(this.files);
+    this.commits = [];
+    this.promotedBranch = null;
     this.tornDown = false;
     return this.context;
   }
@@ -127,7 +134,8 @@ export class InMemorySandboxDriver implements WorkspaceDriver {
       normalized.startsWith("/") ||
       /^[a-zA-Z]:[\\/]/.test(relPath) ||
       normalized.split("/").some((segment) => segment === "..") ||
-      normalized.includes("..")
+      normalized.includes("../") ||
+      normalized.startsWith("../")
     ) {
       throw new PathTraversalError({
         code: ERR_PATH_TRAVERSAL,
