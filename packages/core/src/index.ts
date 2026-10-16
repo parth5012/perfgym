@@ -14,6 +14,7 @@ import {
 export * from "./errors.js";
 export * from "./store/index.js";
 export * from "./store/table.js";
+export * from "./sandbox/driver.js";
 
 export interface MetricResult {
   name: string;
