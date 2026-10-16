@@ -17,6 +17,7 @@ export * from "./store/table.js";
 export * from "./sandbox/driver.js";
 export * from "./sandbox/in-memory-driver.js";
 export * from "./sandbox/git-worktree-driver.js";
+export * from "./sandbox/coordinator.js";
 
 export interface MetricResult {
   name: string;
