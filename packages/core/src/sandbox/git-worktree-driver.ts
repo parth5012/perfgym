@@ -1,0 +1,323 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { execFileSync } from "node:child_process";
+import type { WorkspaceDriver, WorkspaceContext } from "./driver.js";
+import {
+  PathOutsideTargetError,
+  PathTraversalError,
+  FileNotFoundError,
+  GitCommandError,
+  ERR_PATH_OUTSIDE_TARGET,
+  ERR_PATH_TRAVERSAL,
+  ERR_FILE_NOT_FOUND,
+} from "../errors.js";
+
+export interface GitWorktreeDriverOptions {
+  repoRoot?: string;
+  worktreesDir?: string;
+  allowedGlobs?: string[];
+}
+
+function matchesGlob(pattern: string, targetPath: string): boolean {
+  const normPattern = pattern.replace(/\\/g, "/");
+  const normPath = targetPath.replace(/\\/g, "/");
+
+  if (normPattern === normPath) return true;
+
+  const regexStr = normPattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\/\*\*\//g, "___SLASH_GLOBSTAR_SLASH___")
+    .replace(/\/\*\*$/g, "___SLASH_GLOBSTAR_END___")
+    .replace(/^\*\*\//g, "___GLOBSTAR_SLASH_START___")
+    .replace(/\*\*/g, "___GLOBSTAR___")
+    .replace(/\*/g, "[^/]*")
+    .replace(/___GLOBSTAR___/g, ".*")
+    .replace(/___SLASH_GLOBSTAR_SLASH___/g, "/(?:.*/)?")
+    .replace(/___SLASH_GLOBSTAR_END___/g, "(?:/.*)?")
+    .replace(/___GLOBSTAR_SLASH_START___/g, "(?:.*/)?");
+
+  return new RegExp(`^${regexStr}$`).test(normPath);
+}
+
+export class GitWorktreeDriver implements WorkspaceDriver {
+  private repoRoot: string;
+  private worktreesDir: string;
+  private allowedGlobs: string[];
+  private context: WorkspaceContext | null = null;
+  private tornDown = false;
+
+  constructor(options: GitWorktreeDriverOptions = {}) {
+    this.repoRoot = path.resolve(options.repoRoot ?? process.cwd());
+    this.worktreesDir = path.resolve(
+      options.worktreesDir ?? path.join(this.repoRoot, ".perfgym", "worktrees")
+    );
+    this.allowedGlobs = options.allowedGlobs ?? ["src/**/*"];
+  }
+
+  private execGit(args: string[], cwd: string): string {
+    try {
+      return execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    } catch (err: unknown) {
+      const e = err as { status?: number; stderr?: string | Buffer; message?: string };
+      const stderrStr =
+        typeof e.stderr === "string" ? e.stderr : e.stderr?.toString("utf8") ?? "";
+      throw new GitCommandError({
+        command: `git ${args.join(" ")}`,
+        exitCode: e.status ?? 1,
+        stderr: stderrStr,
+        message: `Git command failed: 'git ${args.join(" ")}' (exit code ${e.status ?? 1}): ${stderrStr || e.message}`,
+      });
+    }
+  }
+
+  public async initialize(runId: string, baseRef: string): Promise<WorkspaceContext> {
+    if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
+      throw new Error(
+        `Invalid runId '${runId}': must contain only alphanumeric characters, hyphens, or underscores.`
+      );
+    }
+
+    const worktreePath = path.resolve(this.worktreesDir, runId);
+    const relToRoot = path.relative(this.worktreesDir, worktreePath);
+    if (relToRoot.startsWith("..") || path.isAbsolute(relToRoot)) {
+      throw new PathTraversalError({
+        code: ERR_PATH_TRAVERSAL,
+        relPath: runId,
+        allowedGlobs: [],
+        message: `Security violation: runId '${runId}' resolves outside worktree root directory.`,
+      });
+    }
+
+    const branchName = `perfgym/eval-${runId}`;
+
+    fs.mkdirSync(this.worktreesDir, { recursive: true });
+
+    // Clean up any stale worktree at this path
+    if (fs.existsSync(worktreePath)) {
+      try {
+        this.execGit(["worktree", "remove", "--force", worktreePath], this.repoRoot);
+      } catch {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+      }
+      try {
+        this.execGit(["worktree", "prune"], this.repoRoot);
+      } catch {
+        // Ignore prune error
+      }
+    }
+
+    // Allocate worktree directly off baseRef without touching developer's working directory
+    this.execGit(
+      ["worktree", "add", "-B", branchName, worktreePath, baseRef],
+      this.repoRoot
+    );
+
+    this.context = {
+      runId,
+      workingDir: worktreePath,
+      branchName,
+      baseRef,
+    };
+    this.tornDown = false;
+
+    return this.context;
+  }
+
+  public assertPathWhitelisted(relPath: string): void {
+    const normalized = relPath.replace(/\\/g, "/");
+
+    // 1. Path traversal & absolute path check (POSIX + Windows drive letters)
+    if (
+      normalized.startsWith("/") ||
+      /^[a-zA-Z]:/.test(relPath) ||
+      normalized.split("/").some((segment) => segment === "..") ||
+      normalized.includes("../") ||
+      normalized.startsWith("../")
+    ) {
+      throw new PathTraversalError({
+        code: ERR_PATH_TRAVERSAL,
+        relPath,
+        allowedGlobs: this.allowedGlobs,
+        message: `Security violation: Path traversal sequence detected in '${relPath}'.`,
+      });
+    }
+
+    // 2. Allowed target globs check
+    const isWhitelisted = this.allowedGlobs.some((glob) => matchesGlob(glob, normalized));
+
+    if (!isWhitelisted) {
+      throw new PathOutsideTargetError({
+        code: ERR_PATH_OUTSIDE_TARGET,
+        relPath,
+        allowedGlobs: this.allowedGlobs,
+        message: `File path '${relPath}' is outside the authorized mutation boundary.`,
+      });
+    }
+  }
+
+  private resolveSafePath(relPath: string): string {
+    if (this.tornDown || !this.context) {
+      throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
+    }
+
+    const normalized = relPath.replace(/\\/g, "/");
+    if (
+      normalized.startsWith("/") ||
+      /^[a-zA-Z]:/.test(relPath) ||
+      normalized.split("/").some((segment) => segment === "..") ||
+      normalized.includes("..")
+    ) {
+      throw new PathTraversalError({
+        code: ERR_PATH_TRAVERSAL,
+        relPath,
+        allowedGlobs: this.allowedGlobs,
+        message: `Security violation: Path traversal sequence detected in '${relPath}'.`,
+      });
+    }
+
+    const fullPath = path.resolve(this.context.workingDir, relPath);
+    const rel = path.relative(this.context.workingDir, fullPath);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      throw new PathTraversalError({
+        code: ERR_PATH_TRAVERSAL,
+        relPath,
+        allowedGlobs: this.allowedGlobs,
+        message: `Security violation: Resolved path '${fullPath}' escapes working directory.`,
+      });
+    }
+
+    return fullPath;
+  }
+
+  public async writeFile(relPath: string, content: string): Promise<void> {
+    this.assertPathWhitelisted(relPath);
+    const fullPath = this.resolveSafePath(relPath);
+
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, content, "utf8");
+  }
+
+  public async readFile(relPath: string): Promise<string> {
+    const fullPath = this.resolveSafePath(relPath);
+
+    if (!fs.existsSync(fullPath)) {
+      throw new FileNotFoundError({
+        code: ERR_FILE_NOT_FOUND,
+        relPath,
+        message: `File '${relPath}' does not exist in worktree '${this.context!.workingDir}'.`,
+      });
+    }
+
+    return fs.readFileSync(fullPath, "utf8");
+  }
+
+  public async fileExists(relPath: string): Promise<boolean> {
+    if (!this.context) return false;
+    try {
+      const fullPath = this.resolveSafePath(relPath);
+      return fs.existsSync(fullPath);
+    } catch {
+      return false;
+    }
+  }
+
+  public snapshot(): string {
+    if (this.tornDown || !this.context) {
+      throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
+    }
+    return this.execGit(["rev-parse", "HEAD"], this.context.workingDir);
+  }
+
+  public async rollbackStep(): Promise<void> {
+    if (this.tornDown || !this.context) {
+      throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
+    }
+    // Deep rollback: hard reset to HEAD and clean all untracked files
+    this.execGit(["reset", "--hard", "HEAD"], this.context.workingDir);
+    this.execGit(["clean", "-ffd"], this.context.workingDir);
+  }
+
+  public async commitStep(stepNumber: number, fitnessScore: number): Promise<string> {
+    if (this.tornDown || !this.context) {
+      throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
+    }
+    this.execGit(["add", "-A"], this.context.workingDir);
+    this.execGit(
+      [
+        "-c",
+        "user.name=PerfGym Sentinel",
+        "-c",
+        "user.email=sentinel@perfgym.dev",
+        "commit",
+        "--allow-empty",
+        "-m",
+        `perfgym(step): mutation #${stepNumber} (fitness: ${fitnessScore})`,
+      ],
+      this.context.workingDir
+    );
+    const hash = this.execGit(["rev-parse", "HEAD"], this.context.workingDir);
+    return hash;
+  }
+
+  public async promote(targetBranch: string): Promise<void> {
+    if (this.tornDown || !this.context) {
+      throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
+    }
+
+    // Update targetBranch reference to point to current worktree branch HEAD
+    const latestCommit = this.execGit(["rev-parse", "HEAD"], this.context.workingDir);
+    this.execGit(
+      ["update-ref", `refs/heads/${targetBranch}`, latestCommit],
+      this.repoRoot
+    );
+
+    // If targetBranch is currently checked out in repoRoot, update working tree
+    try {
+      const currentBranch = this.execGit(["branch", "--show-current"], this.repoRoot);
+      if (currentBranch === targetBranch) {
+        this.execGit(["reset", "--hard", latestCommit], this.repoRoot);
+      }
+    } catch {
+      // Ignore if repoRoot is detached or unable to inspect current branch
+    }
+  }
+
+  public async teardown(): Promise<void> {
+    if (!this.context || this.tornDown) return;
+
+    const worktreePath = this.context.workingDir;
+    try {
+      this.execGit(["worktree", "remove", "--force", worktreePath], this.repoRoot);
+    } catch {
+      if (fs.existsSync(worktreePath)) {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+      }
+    }
+
+    try {
+      this.execGit(["worktree", "prune"], this.repoRoot);
+    } catch {
+      // Ignore prune failure
+    }
+
+    this.tornDown = true;
+  }
+
+  public getWorkingDir(): string {
+    if (!this.context) {
+      throw new Error("GitWorktreeDriver has not been initialized.");
+    }
+    return this.context.workingDir;
+  }
+
+  public getContext(): WorkspaceContext {
+    if (!this.context) {
+      throw new Error("GitWorktreeDriver has not been initialized.");
+    }
+    return this.context;
+  }
+}
