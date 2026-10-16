@@ -268,21 +268,48 @@ export class GitWorktreeDriver implements WorkspaceDriver {
       throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
     }
 
-    // Update targetBranch reference to point to current worktree branch HEAD
     const latestCommit = this.execGit(["rev-parse", "HEAD"], this.context.workingDir);
-    this.execGit(
-      ["update-ref", `refs/heads/${targetBranch}`, latestCommit],
-      this.repoRoot
-    );
 
-    // If targetBranch is currently checked out in repoRoot, update working tree
+    let oldTip: string | null = null;
     try {
-      const currentBranch = this.execGit(["branch", "--show-current"], this.repoRoot);
-      if (currentBranch === targetBranch) {
-        this.execGit(["reset", "--hard", latestCommit], this.repoRoot);
-      }
+      oldTip = this.execGit(["rev-parse", "--verify", `refs/heads/${targetBranch}`], this.repoRoot);
     } catch {
-      // Ignore if repoRoot is detached or unable to inspect current branch
+      // Target branch does not exist yet
+    }
+
+    if (oldTip) {
+      try {
+        this.execGit(["merge-base", "--is-ancestor", oldTip, latestCommit], this.repoRoot);
+      } catch {
+        throw new Error(
+          `Cannot promote to '${targetBranch}': worktree branch is not a fast-forward from current '${targetBranch}' tip.`
+        );
+      }
+    }
+
+    // Check if targetBranch is currently checked out in repoRoot
+    let currentBranch: string | null = null;
+    try {
+      currentBranch = this.execGit(["branch", "--show-current"], this.repoRoot);
+    } catch {
+      // Detached HEAD or unavailable
+    }
+
+    if (currentBranch === targetBranch) {
+      // Refuse to touch active working directory if it has dirty tracked files
+      const dirty = this.execGit(["status", "--porcelain", "--untracked-files=no"], this.repoRoot);
+      if (dirty) {
+        throw new Error(
+          `Cannot promote to checked-out branch '${targetBranch}': working tree has uncommitted tracked changes.`
+        );
+      }
+      this.execGit(["merge", "--ff-only", latestCommit], this.repoRoot);
+    } else {
+      if (oldTip) {
+        this.execGit(["update-ref", `refs/heads/${targetBranch}`, latestCommit, oldTip], this.repoRoot);
+      } else {
+        this.execGit(["update-ref", `refs/heads/${targetBranch}`, latestCommit], this.repoRoot);
+      }
     }
   }
 

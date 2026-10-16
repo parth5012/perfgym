@@ -123,4 +123,29 @@ describe("InMemorySandboxDriver", () => {
     await driver.teardown();
     expect(driver.isTornDown()).toBe(true);
   });
+
+  it("handles filenames containing double dots without false traversal detection", async () => {
+    await driver.writeFile("src/foo..bar.ts", "export const val = 42;");
+    expect(await driver.readFile("src/foo..bar.ts")).toBe("export const val = 42;");
+  });
+
+  it("normalizes Map initialFiles keys with backslashes", async () => {
+    const mapDriver = new InMemorySandboxDriver({
+      allowedGlobs: ["src/**/*"],
+      initialFiles: new Map([["src\\custom.ts", "content"]]),
+    });
+    await mapDriver.initialize("run-map", "main");
+    expect(await mapDriver.readFile("src/custom.ts")).toBe("content");
+  });
+
+  it("resets file state when re-initialized", async () => {
+    await driver.writeFile("src/math.ts", "mutated");
+    expect(await driver.readFile("src/math.ts")).toBe("mutated");
+
+    // Re-initialize driver for a new run
+    await driver.initialize("run-102", "main");
+    expect(await driver.readFile("src/math.ts")).toBe(
+      "export const add = (a: number, b: number) => a + b;"
+    );
+  });
 });

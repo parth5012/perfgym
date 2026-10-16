@@ -40,7 +40,7 @@ This document records the architectural decisions, context, tradeoffs, and ratio
 * **Decision:**
   - Worktrees are allocated in `.perfgym/worktrees/run-<id>/` by default, configurable in `.perfgym.yaml` (including support for OS temp directories).
   - **Dirty Base Working Tree Policy:** Worktrees branch directly off `HEAD` (`git worktree add <dir> HEAD`). Unstaged/uncommitted files in the main working tree are ignored and untouched, ensuring zero risk of data loss, stash conflicts, or dirty state pollution.
-  - **Worktree Disk Budget & Quota:** Maximum disk cap of 2GB enforced for `.perfgym/worktrees`. When the quota is exceeded, the runner automatically performs an LRU (least-recently-used) prune of oldest inactive worktrees (`git worktree remove --force <dir>` + `git worktree prune`).
+  - **Worktree Disk Budget & Quota:** Maximum disk cap of 2GB affirmed for `.perfgym/worktrees`. Full background disk calculation and LRU eviction are assigned to the CLI Runner & GC cohort (Map 4, #16), while atomic worktree pruning on stale recovery is implemented in Map 1.
 * **Rationale:** Developers frequently run agents while experimenting on dirty branches. Never auto-stash or touch the user's active editor files. Enforcing a 2GB LRU cap avoids unbounded disk consumption across extended agent runs.
 
 ---

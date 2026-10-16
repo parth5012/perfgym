@@ -186,14 +186,22 @@ export class GitSandboxCoordinator {
           const isStale = now - meta.heartbeat > this.staleThresholdMs;
 
           if (!isAlive && isStale) {
-            // Stale lock recovery: break lock, prune orphaned worktrees, and re-acquire
+            // Stale lock recovery via atomic tombstone rename:
+            // Moving the stale directory atomically guarantees only one process can claim ownership
+            // of the recovery and prevents clobbering a newly initialized lock from a racing process.
+            const tombstone = `${this.lockDir}.tombstone.${process.pid}.${Date.now()}`;
             try {
-              fs.rmSync(this.lockDir, { recursive: true, force: true });
+              fs.renameSync(this.lockDir, tombstone);
               this.pruneOrphanedWorktrees();
+              try {
+                fs.rmSync(tombstone, { recursive: true, force: true });
+              } catch {
+                // Ignore tombstone cleanup error
+              }
               fs.mkdirSync(this.lockDir);
               acquired = true;
             } catch {
-              // Another process may have raced to claim
+              // Another process won the atomic rename race or directory already moved
             }
           } else {
             throw new SandboxLockBusyError({
@@ -210,10 +218,20 @@ export class GitSandboxCoordinator {
           try {
             const stat = fs.statSync(this.lockDir);
             if (now - stat.mtimeMs > this.staleThresholdMs) {
-              fs.rmSync(this.lockDir, { recursive: true, force: true });
-              this.pruneOrphanedWorktrees();
-              fs.mkdirSync(this.lockDir);
-              acquired = true;
+              const tombstone = `${this.lockDir}.tombstone.${process.pid}.${Date.now()}`;
+              try {
+                fs.renameSync(this.lockDir, tombstone);
+                this.pruneOrphanedWorktrees();
+                try {
+                  fs.rmSync(tombstone, { recursive: true, force: true });
+                } catch {
+                  // Ignore tombstone cleanup error
+                }
+                fs.mkdirSync(this.lockDir);
+                acquired = true;
+              } catch {
+                // Another process won race
+              }
             } else {
               throw new SandboxLockBusyError({
                 lockDir: this.lockDir,
@@ -297,9 +315,12 @@ export class GitSandboxCoordinator {
     }
     try {
       await this.driver.promote(targetBranch);
-      await this.driver.teardown();
     } finally {
-      await this.release();
+      try {
+        await this.driver.teardown();
+      } finally {
+        await this.release();
+      }
     }
   }
 
