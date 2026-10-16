@@ -29,3 +29,11 @@
 ### 7. Git Status Porcelain Output Trimming
 * **Problem**: Standard `output.trim()` strips leading whitespace from the first line of `git status --porcelain`, turning `" M file.ts"` into `"M file.ts"`. Fixed slice indexing (`line.slice(3)`) then corrupts filenames.
 * **Solution**: Use regex parsing `/^[A-Z?0-9 ]{1,2}\s+(.*)$/` on un-trimmed split lines to reliably extract modified file paths.
+
+### 8. Vitest Collects Fixture Files from Scratch Dirs
+* **Problem**: Throwaway demo repos under `.tmp/` containing `tests/example.spec.ts` fixtures were picked up by vitest's default include glob (`**/*.{test,spec}.ts`), causing unrelated runs to fail with "No test suite found in file .tmp/...".
+* **Solution**: Layered defense — (1) name demo fixtures so they never match test globs (`*.check.ts`), (2) add `**/.tmp/**` to `test.exclude` in `vite.config.ts`, (3) delete throwaway repos in test `afterEach` teardown.
+
+### 9. Block Comment `*/` Embedded in Docstrings
+* **Problem**: Writing `defaults to ["src/**/*"]` inside a `/** ... */` doc comment terminates the comment at `**/*` → esbuild parse error "Unexpected `*`".
+* **Solution**: Never put literal glob text containing `*/` inside block comments; rephrase (e.g. "the src globstar pattern") or use a line comment.
