@@ -6,9 +6,29 @@ import { Data } from "effect";
  * ============================================================================
  */
 
+export const ERR_PATH_TRAVERSAL = "ERR_PATH_TRAVERSAL";
+
 export class PathTraversalError extends Data.TaggedError("PathTraversalError")<{
+  readonly code: typeof ERR_PATH_TRAVERSAL;
   readonly relPath: string;
   readonly allowedGlobs: readonly string[];
+  readonly message: string;
+}> {}
+
+export const ERR_PATH_OUTSIDE_TARGET = "ERR_PATH_OUTSIDE_TARGET";
+
+export class PathOutsideTargetError extends Data.TaggedError("PathOutsideTargetError")<{
+  readonly code: typeof ERR_PATH_OUTSIDE_TARGET;
+  readonly relPath: string;
+  readonly allowedGlobs: readonly string[];
+  readonly message: string;
+}> {}
+
+export const ERR_FILE_NOT_FOUND = "ERR_FILE_NOT_FOUND";
+
+export class FileNotFoundError extends Data.TaggedError("FileNotFoundError")<{
+  readonly code: typeof ERR_FILE_NOT_FOUND;
+  readonly relPath: string;
   readonly message: string;
 }> {}
 
@@ -98,6 +118,8 @@ export class InsignificantDeltaError extends Data.TaggedError("InsignificantDelt
  */
 export type PerfGymDomainError =
   | PathTraversalError
+  | PathOutsideTargetError
+  | FileNotFoundError
   | SandboxLockBusyError
   | GitCommandError
   | WorktreeNotFoundError

@@ -35,12 +35,13 @@ This document records the architectural decisions, context, tradeoffs, and ratio
 ---
 
 ## ADR-004: Worktree Location & Base Working Tree Dirty State
-* **Status:** Accepted
-* **Context:** Handling where worktrees are allocated and what to do if the developer's main working tree has uncommitted edits.
+* **Status:** Accepted (Affirmed in #21 Grilling Session)
+* **Context:** Handling where worktrees are allocated, disk budget caps, and what to do if the developer's main working tree has uncommitted edits.
 * **Decision:**
   - Worktrees are allocated in `.perfgym/worktrees/run-<id>/` by default, configurable in `.perfgym.yaml` (including support for OS temp directories).
-  - Worktrees branch directly off `HEAD` (`git worktree add <dir> HEAD`). The developer's main working tree is untouched, with zero risk of data loss or dirty state pollution.
-* **Rationale:** Developers frequently run agents while experimenting on dirty branches. Never auto-stash or touch the user's active editor files.
+  - **Dirty Base Working Tree Policy:** Worktrees branch directly off `HEAD` (`git worktree add <dir> HEAD`). Unstaged/uncommitted files in the main working tree are ignored and untouched, ensuring zero risk of data loss, stash conflicts, or dirty state pollution.
+  - **Worktree Disk Budget & Quota:** Maximum disk cap of 2GB enforced for `.perfgym/worktrees`. When the quota is exceeded, the runner automatically performs an LRU (least-recently-used) prune of oldest inactive worktrees (`git worktree remove --force <dir>` + `git worktree prune`).
+* **Rationale:** Developers frequently run agents while experimenting on dirty branches. Never auto-stash or touch the user's active editor files. Enforcing a 2GB LRU cap avoids unbounded disk consumption across extended agent runs.
 
 ---
 
@@ -127,13 +128,13 @@ This document records the architectural decisions, context, tradeoffs, and ratio
 ---
 
 ## ADR-013: Atomic Lockfile with Heartbeat, PID Liveness, and Stale Recovery
-* **Status:** Accepted (Hardened via Adversarial Review)
+* **Status:** Accepted (Affirmed in #21 Grilling Session)
 * **Context:** A naive check-then-write lockfile suffers from TOCTOU races and permanent deadlocks if an agent process is killed or crashes.
 * **Decision:**
   - Use atomic file creation (`O_EXCL` via `proper-lockfile` or atomic `mkdir .perfgym/.lock.d/`).
   - Lock data contains `{ pid, runId, startTime, heartbeat }`.
   - Heartbeat updated every 5 seconds.
-  - Stale detection: if lock timestamp > 30s old AND `process.kill(pid, 0)` confirms process is dead, the runner automatically reclaims the lock, logs a warning, prunes orphaned worktrees via `git worktree prune`, and recovers cleanly.
+  - **Crash Recovery Policy (Auto-reclaim dead PID):** If lock timestamp/heartbeat > 30s old AND `process.kill(pid, 0)` confirms process is dead, the runner automatically reclaims the lock, logs a warning, prunes orphaned worktrees via `git worktree prune`, and recovers cleanly.
 * **Rationale:** Eliminates concurrency races between agents and prevents permanent runner deadlocks from orphaned lockfiles.
 
 ---
