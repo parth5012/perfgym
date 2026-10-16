@@ -48,6 +48,8 @@ describe("WorkspaceDriver Contract & Seam", () => {
         }
       }
 
+      async verifyBlastRadius(): Promise<void> {}
+
       async commitStep(stepNumber: number, fitnessScore: number): Promise<string> {
         return `commit-hash-${stepNumber}-${fitnessScore}`;
       }

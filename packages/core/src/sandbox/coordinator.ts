@@ -38,6 +38,7 @@ export class GitSandboxCoordinator {
   private heartbeatIntervalMs: number;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private context: WorkspaceContext | null = null;
+  private currentRunId: string | null = null;
   private locked = false;
   private repoRoot: string;
   private boundExitHandler: (() => void) | null = null;
@@ -259,6 +260,7 @@ export class GitSandboxCoordinator {
     }
 
     const startTime = Date.now();
+    this.currentRunId = runId;
     this.writeMetadata({
       pid: process.pid,
       runId,
@@ -289,10 +291,18 @@ export class GitSandboxCoordinator {
     }
   }
 
+  public async verifyBlastRadius(): Promise<void> {
+    if (!this.locked || !this.context) {
+      throw new Error("Cannot verify blast radius without holding the sandbox lock.");
+    }
+    await this.driver.verifyBlastRadius();
+  }
+
   public async acceptStep(stepNumber: number, score: number): Promise<StepReceipt> {
     if (!this.locked || !this.context) {
       throw new Error("Cannot accept step without holding the sandbox lock.");
     }
+    await this.driver.verifyBlastRadius();
     const commitHash = await this.driver.commitStep(stepNumber, score);
     return {
       stepNumber,
@@ -334,8 +344,8 @@ export class GitSandboxCoordinator {
 
     if (this.locked) {
       const meta = this.readMetadata();
-      // Only delete if this process still holds the lock
-      if (!meta || meta.pid === process.pid) {
+      // Only delete if this process still genuinely holds the lock (matching pid and runId)
+      if (meta && meta.pid === process.pid && meta.runId === this.currentRunId) {
         try {
           fs.rmSync(this.lockDir, { recursive: true, force: true });
         } catch {
@@ -344,6 +354,7 @@ export class GitSandboxCoordinator {
       }
       this.locked = false;
       this.context = null;
+      this.currentRunId = null;
     }
   }
 

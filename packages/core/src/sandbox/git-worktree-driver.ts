@@ -22,10 +22,14 @@ function matchesGlob(pattern: string, targetPath: string): boolean {
   const normPattern = pattern.replace(/\\/g, "/");
   const normPath = targetPath.replace(/\\/g, "/");
 
-  if (normPattern === normPath) return true;
+  const isWin = process.platform === "win32";
+  if (isWin ? normPattern.toLowerCase() === normPath.toLowerCase() : normPattern === normPath) {
+    return true;
+  }
 
   const regexStr = normPattern
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\?/g, "[^/]")
     .replace(/\/\*\*\//g, "___SLASH_GLOBSTAR_SLASH___")
     .replace(/\/\*\*$/g, "___SLASH_GLOBSTAR_END___")
     .replace(/^\*\*\//g, "___GLOBSTAR_SLASH_START___")
@@ -36,7 +40,7 @@ function matchesGlob(pattern: string, targetPath: string): boolean {
     .replace(/___SLASH_GLOBSTAR_END___/g, "(?:/.*)?")
     .replace(/___GLOBSTAR_SLASH_START___/g, "(?:.*/)?");
 
-  return new RegExp(`^${regexStr}$`).test(normPath);
+  return new RegExp(`^${regexStr}$`, isWin ? "i" : "").test(normPath);
 }
 
 export class GitWorktreeDriver implements WorkspaceDriver {
@@ -179,8 +183,9 @@ export class GitWorktreeDriver implements WorkspaceDriver {
       });
     }
 
-    const fullPath = path.resolve(this.context.workingDir, relPath);
-    const rel = path.relative(this.context.workingDir, fullPath);
+    const workingDir = this.context.workingDir;
+    const fullPath = path.resolve(workingDir, relPath);
+    const rel = path.relative(workingDir, fullPath);
     if (rel.startsWith("..") || path.isAbsolute(rel)) {
       throw new PathTraversalError({
         code: ERR_PATH_TRAVERSAL,
@@ -188,6 +193,48 @@ export class GitWorktreeDriver implements WorkspaceDriver {
         allowedGlobs: this.allowedGlobs,
         message: `Security violation: Resolved path '${fullPath}' escapes working directory.`,
       });
+    }
+
+    // Symlink and junction breakout defense:
+    // Check every existing path component from workingDir to resolved target
+    const segments = rel.split(/[\\/]/);
+    let curr = workingDir;
+    for (const segment of segments) {
+      curr = path.join(curr, segment);
+      if (fs.existsSync(curr)) {
+        try {
+          const lstat = fs.lstatSync(curr);
+          if (lstat.isSymbolicLink()) {
+            throw new PathTraversalError({
+              code: ERR_PATH_TRAVERSAL,
+              relPath,
+              allowedGlobs: this.allowedGlobs,
+              message: `Security violation: Symlink or junction point detected in path '${relPath}'.`,
+            });
+          }
+        } catch (lstatErr) {
+          if (lstatErr instanceof PathTraversalError) throw lstatErr;
+        }
+      }
+    }
+
+    // Verify realpath does not escape physical working directory
+    try {
+      const realWorkingDir = fs.realpathSync(workingDir);
+      if (fs.existsSync(fullPath)) {
+        const realFullPath = fs.realpathSync(fullPath);
+        const realRel = path.relative(realWorkingDir, realFullPath);
+        if (realRel.startsWith("..") || path.isAbsolute(realRel)) {
+          throw new PathOutsideTargetError({
+            code: ERR_PATH_OUTSIDE_TARGET,
+            relPath,
+            allowedGlobs: this.allowedGlobs,
+            message: `Security violation: Real filesystem path '${realFullPath}' escapes sandbox.`,
+          });
+        }
+      }
+    } catch (realErr) {
+      if (realErr instanceof PathTraversalError || realErr instanceof PathOutsideTargetError) throw realErr;
     }
 
     return fullPath;
@@ -232,19 +279,72 @@ export class GitWorktreeDriver implements WorkspaceDriver {
     return this.execGit(["rev-parse", "HEAD"], this.context.workingDir);
   }
 
+  public async verifyBlastRadius(): Promise<void> {
+    if (this.tornDown || !this.context) {
+      throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
+    }
+
+    // Inspect working directory status to detect any file modified, added, renamed, or untracked
+    const statusOutput = this.execGit(
+      ["status", "--porcelain", "-uall"],
+      this.context.workingDir
+    );
+
+    const lines = statusOutput.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    for (const line of lines) {
+      const match = line.match(/^[A-Z?0-9 ]{1,2}\s+(.*)$/);
+      if (!match) continue;
+      const rawEntry = match[1].trim().replace(/^"|"$/g, "");
+      const filePath = rawEntry.includes(" -> ") ? rawEntry.split(" -> ")[1].trim() : rawEntry;
+      const norm = filePath.replace(/\\/g, "/");
+
+      const isWhitelisted = this.allowedGlobs.some((glob) => matchesGlob(glob, norm));
+      if (!isWhitelisted) {
+        throw new PathOutsideTargetError({
+          code: ERR_PATH_OUTSIDE_TARGET,
+          relPath: filePath,
+          allowedGlobs: this.allowedGlobs,
+          message: `Blast radius violation: Direct file mutation detected outside allowed whitelist: '${filePath}'.`,
+        });
+      }
+    }
+  }
+
   public async rollbackStep(): Promise<void> {
     if (this.tornDown || !this.context) {
       throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
     }
-    // Deep rollback: hard reset to HEAD and clean all untracked files
-    this.execGit(["reset", "--hard", "HEAD"], this.context.workingDir);
-    this.execGit(["clean", "-ffd"], this.context.workingDir);
+    // Deep rollback: hard reset to HEAD and clean all untracked files with bounded retry for Windows EBUSY
+    let attempts = 0;
+    while (attempts < 3) {
+      try {
+        this.execGit(["reset", "--hard", "HEAD"], this.context.workingDir);
+        this.execGit(["clean", "-ffd"], this.context.workingDir);
+        break;
+      } catch (err) {
+        attempts++;
+        if (attempts >= 3) throw err;
+        // Bounded sleep (50ms) to give Windows OS file table / background processes time to release handles
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      }
+    }
+
+    try {
+      this.execGit(["submodule", "foreach", "--recursive", "git", "reset", "--hard"], this.context.workingDir);
+      this.execGit(["submodule", "foreach", "--recursive", "git", "clean", "-ffd"], this.context.workingDir);
+    } catch {
+      // Ignore if repository has no submodules
+    }
   }
 
   public async commitStep(stepNumber: number, fitnessScore: number): Promise<string> {
     if (this.tornDown || !this.context) {
       throw new Error("GitWorktreeDriver is not initialized or has been torn down.");
     }
+
+    // Verify blast radius before committing: reject if agent touched any file outside allowedGlobs
+    await this.verifyBlastRadius();
+
     this.execGit(["add", "-A"], this.context.workingDir);
     this.execGit(
       [

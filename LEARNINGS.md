@@ -17,3 +17,15 @@
 ### 4. Git Worktree Subprocess Execution & Shell Injection
 * **Problem**: Invoking `execSync("git " + cmd)` exposes the system to shell injection if branches, commit messages, or runIds contain shell metacharacters.
 * **Solution**: Exclusively use `execFileSync("git", [args...])` with parameter arrays, completely bypassing shell evaluation.
+
+### 5. Trust Boundary Inversion & Shell Mutation Evasion
+* **Problem**: Whitelisting only `WorkspaceDriver.writeFile()` is ineffective when the evaluated AI agent has shell or direct filesystem access, as it can directly write to unwhitelisted files (`tests/`, `package.json`, etc.).
+* **Solution**: Implement `verifyBlastRadius()` that scans the entire worktree via `git status --porcelain -uall`. Run this check before accepting or committing any step mutation.
+
+### 6. Symlink and NTFS Junction Path Resolution
+* **Problem**: `path.resolve` and `path.relative` only resolve lexical path strings. A symlink or junction point placed inside an allowed directory (`src/link -> ../../`) escapes lexical sandbox bounds.
+* **Solution**: Inspect path segments with `fs.lstatSync` to detect symlinks and junctions, and verify `fs.realpathSync` against the physical working directory.
+
+### 7. Git Status Porcelain Output Trimming
+* **Problem**: Standard `output.trim()` strips leading whitespace from the first line of `git status --porcelain`, turning `" M file.ts"` into `"M file.ts"`. Fixed slice indexing (`line.slice(3)`) then corrupts filenames.
+* **Solution**: Use regex parsing `/^[A-Z?0-9 ]{1,2}\s+(.*)$/` on un-trimmed split lines to reliably extract modified file paths.

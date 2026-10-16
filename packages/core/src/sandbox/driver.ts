@@ -39,6 +39,13 @@ export interface WorkspaceDriver {
   assertPathWhitelisted(relPath: string): void;
 
   /**
+   * Scans the working directory state to verify that no files outside the whitelisted
+   * boundaries have been modified, created, or deleted (e.g. by direct agent shell commands).
+   * Throws PathOutsideTargetError if any non-whitelisted path was mutated.
+   */
+  verifyBlastRadius(): Promise<void>;
+
+  /**
    * Atomically commits an accepted step mutation (commit-per-win).
    * Returns the commit hash or revision string.
    */
