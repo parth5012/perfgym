@@ -1,7 +1,19 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import { resolve } from "path";
 
 export default defineConfig({
+  test: {
+    // Scratch space (.tmp/) holds demo sandbox repos and agent artifacts —
+    // never let its fixture files be collected as real tests.
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/cypress/**",
+      "**/.tmp/**",
+      "**/.{idea,git,cache,output,temp}/**",
+      "**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build,eslint,prettier}.config.*",
+    ],
+  },
   build: {
     target: "node20",
     ssr: true,

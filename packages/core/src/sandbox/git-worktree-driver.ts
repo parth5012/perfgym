@@ -18,7 +18,7 @@ export interface GitWorktreeDriverOptions {
   allowedGlobs?: string[];
 }
 
-function matchesGlob(pattern: string, targetPath: string): boolean {
+export function matchesGlob(pattern: string, targetPath: string): boolean {
   const normPattern = pattern.replace(/\\/g, "/");
   const normPath = targetPath.replace(/\\/g, "/");
 
