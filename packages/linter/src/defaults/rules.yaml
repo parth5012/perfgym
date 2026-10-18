@@ -1,0 +1,76 @@
+# PerfGym AST Anti-Pattern Rule Catalog — Default Penalty Weight Matrix
+# Approved during Wayfinder Map #6, ticket #23 grilling session.
+# See ADR-006 (Anti-Cheating Rule Actions & Configurable Thresholds).
+
+version: "1.0"
+preset: "perfgym:typescript-perf"
+
+rules:
+  # --- Anti-cheating / type suppression (instant disqualification) ---
+  - id: no-ts-ignore
+    message: "TypeScript suppression comment detected (@ts-ignore); compiler sabotage is not allowed"
+    severity: "error"
+    penalty: 0
+    action: "disqualify"
+    pattern: "// @ts-ignore"
+
+  - id: no-ts-nocheck
+    message: "TypeScript suppression comment detected (@ts-nocheck); compiler sabotage is not allowed"
+    severity: "error"
+    penalty: 0
+    action: "disqualify"
+    pattern: "// @ts-nocheck"
+
+  - id: no-any-cast
+    message: "Explicit `any` cast detected; type weakening is not allowed"
+    severity: "error"
+    penalty: 0
+    action: "disqualify"
+    pattern: "$_ as any"
+
+  - id: no-dynamic-eval
+    message: "Dynamic eval and code generation forbidden"
+    severity: "error"
+    penalty: 0
+    action: "disqualify"
+    pattern: "eval($$$)"
+
+  - id: no-function-constructor
+    message: "Function constructor (code generation) forbidden"
+    severity: "error"
+    penalty: 0
+    action: "disqualify"
+    pattern: "new Function($$$)"
+
+  # --- Performance anti-patterns (scalar penalties) ---
+  - id: no-await-in-loops
+    message: "Avoid serial awaits inside loops; use Promise.all or chunking"
+    severity: "error"
+    penalty: 50
+    action: "penalize"
+    pattern: "for (const $VAR of $ARR) { await $FUNC($$$ARGS); }"
+
+  - id: no-await-in-loops-let
+    message: "Avoid serial awaits inside loops; use Promise.all or chunking"
+    severity: "error"
+    penalty: 50
+    action: "penalize"
+    pattern: "for (let $VAR of $ARR) { await $FUNC($$$ARGS); }"
+
+  - id: no-unindexed-filter
+    message: "Found in-memory array filtering on database collections"
+    severity: "warning"
+    penalty: 30
+    action: "penalize"
+    pattern: "$COLL.find().filter($FN)"
+
+  - id: no-sync-methods
+    message: "Synchronous I/O in event loop (e.g. readFileSync) blocks the event loop"
+    severity: "error"
+    penalty: 80
+    action: "penalize"
+    pattern: "$MOD.readFileSync($$$)"
+
+thresholds:
+  disqualification_score: -Infinity
+  min_significance_delta_percent: 2.5

@@ -11,25 +11,13 @@ export interface AstRule {
   severity: "error" | "warning";
   penalty: number;
   pattern: string;
+  action?: "disqualify" | "penalize";
+  language?: string;
 }
 
-export class AstLinterEngine {
-  private rules: AstRule[] = [];
+export { AstLinterEngine } from "./engine.js";
+export type { ScanResult } from "./engine.js";
 
-  constructor(rules: AstRule[] = []) {
-    this.rules = rules;
-  }
-
-  public addRule(rule: AstRule): void {
-    this.rules.push(rule);
-  }
-
-  /**
-   * Scans target files for anti-patterns using structural pattern matching.
-   * In full implementation, bridges directly to the ast-grep / tree-sitter binary.
-   */
-  public async scanFiles(files: string[]): Promise<LintViolation[]> {
-    // Stub implementation for scaffold — will execute ast-grep scan via CLI / bindings
-    return [];
-  }
-}
+export * from "./typecheck.js";
+export * from "./rules.js";
+export * from "./matcher.js";
