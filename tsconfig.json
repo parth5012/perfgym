@@ -16,7 +16,8 @@
       "@perfgym/core": ["packages/core/src/index.ts"],
       "@perfgym/cli": ["packages/cli/src/index.ts"],
       "@perfgym/linter": ["packages/linter/src/index.ts"],
-      "@perfgym/adapter-web": ["packages/adapters/web/src/index.ts"]
+      "@perfgym/adapter-web": ["packages/adapters/web/src/index.ts"],
+      "@perfgym/mcp-server": ["packages/mcp-server/src/index.ts"]
     }
   },
   "include": ["packages/**/*.ts", "tests/**/*.ts", "vite.config.ts"]

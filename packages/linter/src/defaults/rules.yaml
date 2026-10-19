@@ -26,6 +26,7 @@ rules:
     severity: "error"
     penalty: 0
     action: "disqualify"
+    language: "typescript"
     pattern: "$_ as any"
 
   - id: no-dynamic-eval

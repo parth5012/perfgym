@@ -1,0 +1,9 @@
+{
+  "name": "example-node-checkout",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/checkout.test.js",
+    "bench": "node tests/bench.js"
+  }
+}

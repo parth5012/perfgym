@@ -6,6 +6,8 @@
 
 import { Command } from "commander";
 import chalk from "chalk";
+import { runInit, runBaseline, runStep } from "./engine.js";
+import { runOptimizationLoop } from "./commands/run.js";
 
 const program = new Command();
 
@@ -17,27 +19,125 @@ program
 program
   .command("init")
   .description("Initialize a .perfgym.yaml configuration file in current repository")
-  .action(() => {
+  .option("-f, --force", "Overwrite existing configuration if present", false)
+  .action((options: { force?: boolean }) => {
     console.log(chalk.cyan("✨ Initializing PerfGym configuration (.perfgym.yaml)..."));
-    console.log(chalk.green("✔ Created .perfgym.yaml template."));
+    const res = runInit({ force: options.force });
+    if (res.success) {
+      console.log(chalk.green(`✔ ${res.message}`));
+    } else {
+      console.log(chalk.yellow(`⚠ ${res.message}`));
+      process.exitCode = 1;
+    }
   });
 
 program
   .command("baseline")
   .description("Record baseline metrics and invariants for target files")
-  .action(async () => {
+  .option("-s, --samples <number>", "Number of benchmark samples to collect", "5")
+  .action(async (options: { samples: string }) => {
     console.log(chalk.blue("📊 Measuring baseline performance & invariant tests..."));
-    console.log(chalk.green("✔ Invariant tests: PASSED"));
-    console.log(chalk.green("✔ Baseline established. Sandbox worktree ready."));
+    try {
+      const samples = parseInt(options.samples, 10) || 5;
+      const res = await runBaseline({ samples });
+      if (!res.success) {
+        console.error(chalk.red(`✖ Failed to establish baseline: ${res.error}`));
+        process.exit(1);
+      }
+      console.log(chalk.green("✔ Invariant tests: PASSED"));
+      for (const [name, val] of Object.entries(res.state.baselineMetrics)) {
+        console.log(chalk.cyan(`  - Metric '${name}': baseline = ${val}`));
+      }
+      console.log(chalk.green("✔ Baseline established. State saved to .perfgym/state.json"));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`✖ Baseline error: ${msg}`));
+      process.exit(1);
+    }
   });
 
 program
   .command("step")
   .description("Evaluate an agent mutation: verify invariants, run AST linters, compute fitness delta")
-  .action(async () => {
+  .option("-f, --files <files...>", "Specific modified files to evaluate")
+  .option("-s, --samples <number>", "Number of benchmark samples to collect", "5")
+  .option("--min-delta <number>", "Minimum significance delta percentage threshold", "2.5")
+  .action(async (options: { files?: string[]; samples: string; minDelta: string }) => {
     console.log(chalk.magenta("🔄 Running PerfGym evaluation cycle..."));
-    console.log(chalk.green("✔ Invariants passed."));
-    console.log(chalk.cyan("⚡ Fitness score: +14.2% improvement. Change accepted."));
+    try {
+      const samples = parseInt(options.samples, 10) || 5;
+      const minDelta = parseFloat(options.minDelta) || 2.5;
+
+      const res = await runStep({
+        files: options.files,
+        samples,
+        minSignificanceDelta: minDelta,
+      });
+
+      const { evaluation } = res;
+
+      if (!evaluation.invariants.passed) {
+        console.log(chalk.red("✖ Invariant tests: FAILED"));
+        if (evaluation.invariants.output) {
+          console.log(chalk.red(`  ${evaluation.invariants.output.trim()}`));
+        }
+      } else {
+        console.log(chalk.green("✔ Invariants passed."));
+      }
+
+      if (evaluation.violations.length > 0) {
+        console.log(chalk.yellow(`⚠ AST Violations (${evaluation.violations.length}):`));
+        for (const v of evaluation.violations) {
+          const prefix = v.action === "disqualify" ? chalk.red("[DISQUALIFIED]") : chalk.yellow(`[-${v.penalty}]`);
+          console.log(`  ${prefix} ${v.ruleId}: ${v.message} (${v.file}:${v.line})`);
+        }
+      }
+
+      if (evaluation.accepted) {
+        const deltaStr = evaluation.deltaPercent >= 0 ? `+${evaluation.deltaPercent.toFixed(1)}%` : `${evaluation.deltaPercent.toFixed(1)}%`;
+        console.log(chalk.green(`✔ Change accepted! Score: +${evaluation.fitnessScore.toFixed(2)} (Delta: ${deltaStr})`));
+      } else {
+        const scoreStr = evaluation.fitnessScore === -Infinity ? "-Infinity" : evaluation.fitnessScore.toFixed(2);
+        console.log(chalk.red(`✖ Change rejected! Score: ${scoreStr}`));
+        if (evaluation.revertReason) {
+          console.log(chalk.red(`  Rollback reason: ${evaluation.revertReason}`));
+        }
+        process.exitCode = 1;
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`✖ Step evaluation error: ${msg}`));
+      process.exitCode = 1;
+    }
   });
 
-program.parse(process.argv);
+program
+  .command("run")
+  .description("Execute autonomous hill-climbing optimization loop in an isolated sandbox worktree")
+  .option("-i, --iterations <number>", "Maximum number of optimization iterations", "15")
+  .option("-t, --target-branch <branch>", "Target branch to promote winning commits to", "main")
+  .option("-m, --model <provider/model>", "LLM provider and model for mutation generation")
+  .option("-s, --samples <number>", "Number of benchmark samples per evaluation", "5")
+  .action(async (options: { iterations: string; targetBranch: string; model?: string; samples: string }) => {
+    try {
+      const iterations = parseInt(options.iterations, 10) || 15;
+      const samples = parseInt(options.samples, 10) || 5;
+
+      await runOptimizationLoop({
+        maxIterations: iterations,
+        targetBranch: options.targetBranch,
+        model: options.model,
+        samples,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`✖ Autonomous optimization loop failed: ${msg}`));
+      process.exitCode = 1;
+    }
+  });
+
+export { program };
+
+if (process.argv[1] && (/\b(index\.[tj]s|perfgym(\.js)?)$/).test(process.argv[1])) {
+  program.parse(process.argv);
+}

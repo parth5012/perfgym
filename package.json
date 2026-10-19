@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Autonomous Code Optimization & Linting Gym for AI Coding Agents",
   "type": "module",
+  "bin": {
+    "perfgym": "./bin/perfgym.js",
+    "perfgym-mcp": "./bin/perfgym-mcp.js"
+  },
   "scripts": {
     "build": "vite build",
     "dev": "vite",
