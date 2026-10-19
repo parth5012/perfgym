@@ -204,3 +204,15 @@ This document records the architectural decisions, context, tradeoffs, and ratio
 * **Rationale:** Headless, framework-agnostic, and type-safe state and table architecture that works seamlessly across Node.js CLI, background workers, MCP servers, and Web adapters.
 
 
+
+---
+
+## ADR-020: Invariant Test Timeout & Flakiness Policy
+* **Status:** Accepted (Grilling #25)
+* **Context:** Defining the invariant failure handling strategy for the 4-stage evaluation pipeline: whether flaky failures trigger retries, what the hard timeout ceiling is, which test scopes can run per-step, and how the invariant command is executed and interpreted.
+* **Decision:**
+  - **Zero-tolerance flakiness policy:** Any invariant failure (test failure, crash, or timeout) is a real failure on the first occurrence. **No retries.** Score = -inf, instant rollback. A "sporadic hiccup" from invariant code is itself a red flag — flaky invariants should be fixed, not masked by retries. This keeps accept/rollback deterministic and un-gameable (retry bands would let cheaters get bonus attempts).
+  - **Timeout ceilings:** Default 10s per invariant command, 30s hard max. Breach = Score = -inf + immediate rollback — an agent-introduced infinite loop is a correctness bug by definition. Kill mechanism: child process spawned with detached process-group, SIGKILL the whole group on breach so no orphaned workers linger. Ceiling configurable in `.perfgym.yaml` (but hard max = 30s keeps the hill-climb loop responsive).
+  - **Test scopes:** Only fast in-memory unit tests (Vitest default) run per-step. E2E suites (e.g. Playwright) can be declared as a **pre-flight certification pass** that runs once before the optimization loop starts (and optionally before final acceptance), never per-step — avoids injecting network/browser noise against the zero-tolerance policy.
+  - **Command execution contract:** Invariants config declares a command (e.g. `vitest run --reporter=json invariants`) + runner kind. Raw exit-code protocol: exit 0 = pass, nonzero = fail, timeout-kill = fail. stdout/stderr captured raw text; no elaborate JSON contract required. This adds a runner seam adaptable for Android/Desktop platforms later and matches zero-tolerance semantics exactly.
+* **Rationale:** Zero-tolerance + hard exit-code protocol + strict detachment/group-kill keeps the invariant gate deterministic, sub-10s, and impossible to game via retries, while the certification-pass distinction preserves deep regression fidelity without poisoning per-step throughput.
