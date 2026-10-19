@@ -7,6 +7,7 @@
     "build": "vite build",
     "dev": "vite",
     "test": "vitest run",
+    "demo:pipeline": "tsx scripts/demo-pipeline-gradient.ts",
     "demo:sandbox": "node demo/server.mjs",
     "lint": "eslint . --ext .ts"
   },
