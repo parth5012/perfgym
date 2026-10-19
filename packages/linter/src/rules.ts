@@ -14,7 +14,7 @@ export const RuleSchema = z.object({
   id: z.string().min(1),
   message: z.string(),
   severity: z.enum(["error", "warning"]),
-  penalty: z.number().min(0),
+  penalty: z.number().min(0).finite(),
   action: z.enum(["disqualify", "penalize"]).optional(),
   pattern: z.string().min(1),
   language: z.string().optional(),
@@ -123,8 +123,8 @@ export function loadDefaultRules(): AstRule[] {
     const filePath = fileURLToPath(url);
     const content = readFileSync(filePath, "utf8");
     return parseRules(content);
-  } catch {
-    return FALLBACK_DEFAULT_RULES.map((r) => ({ ...r }));
+  } catch (err) {
+    throw new Error(`Failed to load default rules from rules.yaml: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

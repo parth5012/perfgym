@@ -268,7 +268,16 @@ export class TypecheckGate {
             : "";
         }
       } else {
-        current = { ...baseline };
+        // No root: re-hash from disk when a baseline key resolves to an
+        // existing file; otherwise preserve the baseline entry.
+        current = {};
+        for (const key of Object.keys(baseline)) {
+          if (existsSync(key) && statSync(key).isFile()) {
+            current[key] = hashFile(key);
+          } else {
+            current[key] = baseline[key];
+          }
+        }
       }
     } else {
       current = toHashRecord(currentHashes, root ?? undefined);
@@ -286,9 +295,16 @@ export class TypecheckGate {
     for (const [key, baseHash] of Object.entries(baseline)) {
       const cur = current[key];
       if (cur === undefined) {
-        // Missing from the provided subset: only flag if we can verify on disk
-        // that the file is gone; otherwise assume unchanged.
-        if (root && !existsSync(path.join(root, key))) {
+        if (root) {
+          if (existsSync(path.join(root, key))) {
+            const diskHash = hashFile(path.join(root, key));
+            if (diskHash !== baseHash) tampered.add(key);
+          } else {
+            tampered.add(key);
+          }
+        } else if (existsSync(key) && statSync(key).isFile()) {
+          if (hashFile(key) !== baseHash) tampered.add(key);
+        } else {
           tampered.add(key);
         }
       } else if (cur === "" && baseHash !== "") {
@@ -378,21 +394,15 @@ export class TypecheckGate {
       const lines = item.content.split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (/(\/\/|\/\*)\s*@ts-ignore\b/.test(line)) {
+        if (/@ts-ignore\b/.test(line) || /@ts-nocheck\b/.test(line) || /@ts-expect-error\b/.test(line)) {
+          const directive = /@ts-expect-error\b/.test(line)
+            ? "no-ts-expect-error"
+            : /@ts-nocheck\b/.test(line)
+            ? "no-ts-nocheck"
+            : "no-ts-ignore";
           violations.push({
-            ruleId: "no-ts-ignore",
-            message: "Forbidden TypeScript suppression comment // @ts-ignore",
-            file: item.path,
-            line: i + 1,
-            severity: "error",
-            penalty: 0,
-            action: "disqualify",
-          });
-        }
-        if (/(\/\/|\/\*)\s*@ts-nocheck\b/.test(line)) {
-          violations.push({
-            ruleId: "no-ts-nocheck",
-            message: "Forbidden TypeScript suppression comment // @ts-nocheck",
+            ruleId: directive,
+            message: `Forbidden TypeScript suppression comment ${directive.replace("no-", "@")}`,
             file: item.path,
             line: i + 1,
             severity: "error",
