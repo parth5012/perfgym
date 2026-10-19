@@ -18,6 +18,8 @@ export * from "./sandbox/driver.js";
 export * from "./sandbox/in-memory-driver.js";
 export * from "./sandbox/git-worktree-driver.js";
 export * from "./sandbox/coordinator.js";
+export * from "./pipeline/invariants.js";
+export * from "./pipeline/benchmark.js";
 
 export interface MetricResult {
   name: string;
@@ -99,6 +101,8 @@ export interface PerfGymConfig {
     command: string;
     goal: "minimize" | "maximize";
     weight: number;
+    /** Measured unit of the metric command's output (defaults to "count"). */
+    unit?: "instructions" | "bytes" | "ms" | "count";
   }>;
 }
 

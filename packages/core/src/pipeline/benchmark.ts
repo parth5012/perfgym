@@ -1,0 +1,730 @@
+import { spawn } from "node:child_process";
+import { readdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
+import { Effect } from "effect";
+import { BenchmarkExecutionError } from "../errors.js";
+import type { BenchmarkDistribution, MetricResult } from "../index.js";
+
+/**
+ * ============================================================================
+ * Deterministic Benchmark Seam (pipeline stage 2)
+ * ============================================================================
+ *
+ * Executes each configured metric command N times (default 5, clamped to
+ * 1..20) after 1 discarded warmup run, and reduces the captured samples to a
+ * full `BenchmarkDistribution`. Commands run strictly sequentially (one
+ * process at a time) so samples are recorded in capture order.
+ *
+ * Determinism policy (map ticket #13):
+ * - Small-sample statistics must lean on robust estimators (MAD, IQR) rather
+ *   than naive percentiles; the distribution still exposes p50/p90/p95/p99
+ *   via deterministic linear interpolation for compatibility.
+ * - Parse seam: if stdout (or any single line of it) parses as JSON carrying
+ *   a standard metric key (`value`, `cycles`, `ops_per_sec`, `result`), that
+ *   number is used; otherwise the LAST numeric token in stdout is used.
+ *   Anything else is a hard failure — silent zeros would corrupt the
+ *   hill-climbing search.
+ * - Improvement semantics: `minimize` ⇒ lower is better and
+ *   deltaPercent = (baseline - current) / baseline * 100;
+ *   `maximize` ⇒ higher is better and
+ *   deltaPercent = (current - baseline) / baseline * 100.
+ *   A zero baseline guards the division: deltaPercent is 0 and `improved`
+ *   falls back to a direct value comparison (documented below).
+ * - Optional frozen-harness tamper protection: when `harnessDir` is provided
+ *   the directory must exist, be non-empty, and every file in it must be
+ *   read-only (no write bits) — an agent must not be able to rewrite the
+ *   timing harness it is graded by. Enforcement is opt-in here; pipeline
+ *   integration finalizes whether/what to enforce.
+ *
+ * The spawn/capture machinery mirrors `pipeline/invariants.ts` exactly:
+ * detached process group, process-group SIGKILL on timeout, timeout fallback
+ * settle, 2MB captured-stream caps, and the exit-code protocol.
+ */
+
+export const DEFAULT_HARNESS_DIR = ".perfgym/.harness";
+export const DEFAULT_BENCHMARK_SAMPLES = 5;
+export const MAX_BENCHMARK_SAMPLES = 20;
+export const DEFAULT_BENCHMARK_TIMEOUT_MS = 30_000;
+export const MAX_BENCHMARK_TIMEOUT_MS = 60_000;
+const MAX_CAPTURE_BYTES = 2 * 1024 * 1024; // 2MB capture cap per stream
+
+const TIMEOUT_EXIT_CODE = 124; // GNU timeout convention: killed after the deadline.
+const FORCE_SETTLE_TIMEOUT_MS = 500;
+const TRUNCATION_MARKER = "\n[truncated]";
+
+/** Ordered metric keys recognized in a JSON benchmark object (first match wins). */
+export const BENCHMARK_JSON_KEYS = ["value", "cycles", "ops_per_sec", "result"] as const;
+
+/**
+ * Resolve the effective sample count: default 5, clamped into [1, 20].
+ * NaN/undefined use the default; Infinity clamps to the max.
+ */
+export function resolveSampleCount(configured: number | undefined): number {
+  if (configured === undefined || Number.isNaN(configured)) {
+    return DEFAULT_BENCHMARK_SAMPLES;
+  }
+  return Math.min(MAX_BENCHMARK_SAMPLES, Math.max(1, configured));
+}
+
+/**
+ * Resolve the effective per-run timeout: `.perfgym.yaml` `metrics[].timeout_ms`
+ * may lower the 30s default and may raise it, but never above the 60s hard cap.
+ * Non-positive or NaN values default to DEFAULT_BENCHMARK_TIMEOUT_MS.
+ */
+export function resolveBenchmarkTimeoutMs(configured: number | undefined): number {
+  if (configured === undefined || Number.isNaN(configured) || configured <= 0) {
+    return DEFAULT_BENCHMARK_TIMEOUT_MS;
+  }
+  if (!Number.isFinite(configured) || configured > MAX_BENCHMARK_TIMEOUT_MS) {
+    return MAX_BENCHMARK_TIMEOUT_MS;
+  }
+  return configured;
+}
+
+// ============================================================================
+// Pure distribution mathematics
+// ============================================================================
+
+/**
+ * Deterministic percentile via linear interpolation (numpy "linear" method):
+ * position = (n-1) * p/100, then interpolate between the two neighbors.
+ * Expects a pre-sorted (ascending) sample array.
+ */
+export function percentileOf(sortedSamples: readonly number[], percentile: number): number {
+  const n = sortedSamples.length;
+  if (n === 0) {
+    throw new RangeError("percentileOf() requires a non-empty sample array");
+  }
+  const clamped = Math.min(100, Math.max(0, percentile));
+  const position = ((n - 1) * clamped) / 100;
+  const lower = Math.floor(position);
+  const upper = Math.min(n - 1, lower + 1);
+  const fraction = position - lower;
+  return sortedSamples[lower] + fraction * (sortedSamples[upper] - sortedSamples[lower]);
+}
+
+/** Population standard deviation (root-mean-square deviation from the mean). */
+export function computeStddev(samples: readonly number[]): number {
+  const n = samples.length;
+  if (n === 0) {
+    throw new RangeError("computeStddev() requires a non-empty sample array");
+  }
+  const mean = samples.reduce((acc, x) => acc + x, 0) / n;
+  const variance = samples.reduce((acc, x) => acc + (x - mean) ** 2, 0) / n;
+  return Math.sqrt(variance);
+}
+
+/** MAD = median(|x_i − median(X)|) — the robust spread estimator. */
+export function computeMad(samples: readonly number[]): number {
+  const n = samples.length;
+  if (n === 0) {
+    throw new RangeError("computeMad() requires a non-empty sample array");
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  const median = percentileOf(sorted, 50);
+  const deviations = sorted.map((x) => Math.abs(x - median));
+  deviations.sort((a, b) => a - b);
+  return percentileOf(deviations, 50);
+}
+
+/** IQR = p75 − p25 (quartiles use the same interpolation as the percentiles). */
+export function computeIqr(samples: readonly number[]): number {
+  const n = samples.length;
+  if (n === 0) {
+    throw new RangeError("computeIqr() requires a non-empty sample array");
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  return percentileOf(sorted, 75) - percentileOf(sorted, 25);
+}
+
+/** Reduce raw samples (any order) into the shared BenchmarkDistribution. */
+export function computeBenchmarkDistribution(
+  samples: readonly number[],
+  unit: string = "count"
+): BenchmarkDistribution {
+  const n = samples.length;
+  if (n === 0) {
+    throw new RangeError("computeBenchmarkDistribution() requires at least one sample");
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+    samples: [...samples],
+    p50: percentileOf(sorted, 50),
+    p90: percentileOf(sorted, 90),
+    p95: percentileOf(sorted, 95),
+    p99: percentileOf(sorted, 99),
+    min: sorted[0],
+    max: sorted[n - 1],
+    stddev: computeStddev(samples),
+    mad: computeMad(samples),
+    iqr: computeIqr(samples),
+    sampleCount: n,
+    unit,
+  };
+}
+
+// ============================================================================
+// Improvement semantics (pure; reused by step/eval stages)
+// ============================================================================
+
+export type MetricUnit = MetricResult["unit"];
+export type MetricGoal = "minimize" | "maximize";
+
+/**
+ * Pure improvement calculus so every consumer agrees on what "better" means.
+ *
+ * - minimize: improved = current < baseline; deltaPercent = (baseline - current) / baseline * 100
+ * - maximize: improved = current > baseline; deltaPercent = (current - baseline) / baseline * 100
+ * - baseline === 0: division is undefined, so deltaPercent is pinned to 0 and
+ *   `improved` degrades to a direct comparison (minimize: current < 0;
+ *   maximize: current > 0). A zero baseline metric is a configuration smell —
+ *   surface the lack of relative signal instead of inventing a fake percentage.
+ */
+export function computeMetricResult(
+  name: string,
+  baselineValue: number,
+  currentValue: number,
+  unit: MetricUnit,
+  goal: MetricGoal
+): MetricResult {
+  if (baselineValue === 0) {
+    return {
+      name,
+      value: currentValue,
+      unit,
+      improved: goal === "minimize" ? currentValue < 0 : currentValue > 0,
+      deltaPercent: 0,
+    };
+  }
+  const denominator = Math.abs(baselineValue);
+  const deltaPercent =
+    goal === "minimize"
+      ? ((baselineValue - currentValue) / denominator) * 100
+      : ((currentValue - baselineValue) / denominator) * 100;
+  return {
+    name,
+    value: currentValue,
+    unit,
+    improved: goal === "minimize" ? currentValue < baselineValue : currentValue > baselineValue,
+    deltaPercent,
+  };
+}
+
+// ============================================================================
+// Deterministic output parsing
+// ============================================================================
+
+export interface ParsedBenchmarkValue {
+  readonly value: number;
+  readonly source: "json" | "stdout";
+}
+
+/** Pull the first recognized metric number out of a parsed JSON candidate. */
+function readJsonMetricNumber(candidate: unknown): number | undefined {
+  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+    return undefined;
+  }
+  const record = candidate as Record<string, unknown>;
+  for (const key of BENCHMARK_JSON_KEYS) {
+    const raw = record[key];
+    let numeric: number | undefined;
+    if (typeof raw === "number") {
+      if (Number.isFinite(raw)) {
+        numeric = raw;
+      }
+    } else if (typeof raw === "string") {
+      const trimmed = raw.trim();
+      if (trimmed !== "") {
+        const parsed = Number(trimmed);
+        if (Number.isFinite(parsed)) {
+          numeric = parsed;
+        }
+      }
+    }
+    if (numeric !== undefined) return numeric;
+  }
+  return undefined;
+}
+
+const ANSI_REGEX = /\x1B\[[0-9;]*[a-zA-Z]/g;
+const THOUSANDS_SEPARATOR_REGEX = new RegExp("(?<=\\d),(?=\\d)", "g");
+const NUMBER_TOKEN_RE = /[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?/g;
+
+/** Scan text for the first balanced top-level JSON object. */
+function extractFirstBalancedJsonObject(text: string): string | null {
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      if (inString) escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          const candidate = text.slice(start, i + 1);
+          try {
+            const parsed = JSON.parse(candidate);
+            if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+              return candidate;
+            }
+          } catch {
+            // Not valid JSON; reset and keep scanning
+          }
+          start = -1;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse a benchmark command's stdout into a single metric number:
+ * 1. Strip ANSI escape sequences and thousands separators between digits.
+ * 2. Attempt JSON.parse on the whole stdout first (covers standard/pretty JSON).
+ * 3. If that fails, scan for the first balanced top-level JSON object from the text
+ *    or any line starting with JSON, checking for recognized metric keys.
+ * 4. Fall back to the LAST numeric token in stdout, rejecting non-finite values.
+ * 5. Otherwise null — the caller must fail loudly rather than guess.
+ */
+export function parseBenchmarkValue(stdout: string): ParsedBenchmarkValue | null {
+  // Strip ANSI escape sequences and thousands separators
+  const cleaned = stdout.replace(ANSI_REGEX, "").replace(THOUSANDS_SEPARATOR_REGEX, "");
+  const trimmed = cleaned.trim();
+  if (trimmed !== "") {
+    // 1. Whole-stdout JSON (covers single-line and pretty-printed multi-line schemas).
+    try {
+      const whole = readJsonMetricNumber(JSON.parse(trimmed));
+      if (whole !== undefined) return { value: whole, source: "json" };
+    } catch {
+      // Not whole-stdout JSON; try extracting balanced JSON object.
+    }
+
+    // 2. Extract first balanced top-level JSON object from text.
+    const balanced = extractFirstBalancedJsonObject(trimmed);
+    if (balanced !== null) {
+      try {
+        const fromBalanced = readJsonMetricNumber(JSON.parse(balanced));
+        if (fromBalanced !== undefined) return { value: fromBalanced, source: "json" };
+      } catch {
+        // Fall through
+      }
+    }
+
+    // 3. Fallback per-line JSON check (e.g. single-line embedded in non-JSON lines).
+    for (const line of trimmed.split("\n")) {
+      const text = line.trim();
+      if (!text.startsWith("{")) continue;
+      try {
+        const fromLine = readJsonMetricNumber(JSON.parse(text));
+        if (fromLine !== undefined) return { value: fromLine, source: "json" };
+      } catch {
+        // Line is not JSON; keep scanning.
+      }
+    }
+  }
+
+  // 4. Last numeric token in stdout
+  let last: RegExpExecArray | null = null;
+  for (const match of trimmed.matchAll(NUMBER_TOKEN_RE)) {
+    last = match;
+  }
+  if (last === null) return null;
+  const num = Number(last[0]);
+  if (!Number.isFinite(num)) return null;
+  return { value: num, source: "stdout" };
+}
+
+// ============================================================================
+// Frozen harness tamper protection
+// ============================================================================
+
+/**
+ * Verify the frozen benchmark harness directory: it must exist, be a real
+ * directory, be non-writable, contain at least one file, and every file in it
+ * (scanned recursively) must carry zero write permission bits (owner/group/other).
+ * Any symlinks must resolve inside the harness directory.
+ * Throws Error with an actionable message on the first violation; returns silently
+ * when the harness is sound.
+ */
+export function verifyFrozenHarness(harnessDir: string, cwd?: string): void {
+  const baseDir = cwd ?? process.cwd();
+  const resolved = resolve(baseDir, harnessDir);
+  let dirStat: ReturnType<typeof statSync>;
+  try {
+    dirStat = statSync(resolved);
+  } catch {
+    throw new Error(
+      `harness directory "${harnessDir}" does not exist (expected the frozen read-only ` +
+        `harness at ${DEFAULT_HARNESS_DIR}); create it with read-only files before benchmarking`
+    );
+  }
+  if (!dirStat.isDirectory()) {
+    throw new Error(`harness path "${harnessDir}" is not a directory`);
+  }
+  if ((dirStat.mode & 0o222) !== 0) {
+    throw new Error(
+      `harness directory "${harnessDir}" is writable (mode 0o` +
+        `${(dirStat.mode & 0o777).toString(8).padStart(3, "0")}) — agents could rewrite the ` +
+        "timing harness directory they are graded by; chmod it read-only"
+    );
+  }
+
+  // Recursive walk to find all files and check write bits and symlinks
+  const canonicalHarnessDir = realpathSync(resolved);
+  const allFiles: { relPath: string; fullPath: string; isSymlink: boolean }[] = [];
+
+  function walk(currentDir: string): void {
+    const entries = readdirSync(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = resolve(currentDir, entry.name);
+      const relPath = relative(resolved, fullPath);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
+        allFiles.push({ relPath, fullPath, isSymlink: entry.isSymbolicLink() });
+      }
+    }
+  }
+
+  walk(resolved);
+
+  if (allFiles.length === 0) {
+    throw new Error(
+      `harness directory "${harnessDir}" contains no files; the frozen harness must ship at least one file`
+    );
+  }
+
+  for (const file of allFiles) {
+    if (file.isSymlink) {
+      let targetRealPath: string;
+      try {
+        targetRealPath = realpathSync(file.fullPath);
+      } catch (cause) {
+        throw new Error(
+          `cannot resolve symlink "${file.relPath}" in "${harnessDir}": "${(cause as Error).message}"`
+        );
+      }
+      const rel = relative(canonicalHarnessDir, targetRealPath);
+      if (rel.startsWith("..") || isAbsolute(rel)) {
+        throw new Error(
+          `symlink "${file.relPath}" in "${harnessDir}" resolves outside the harness directory (${targetRealPath})`
+        );
+      }
+    }
+
+    let fileMode: number;
+    try {
+      fileMode = statSync(file.fullPath).mode;
+    } catch (cause) {
+      throw new Error(
+        `cannot stat harness file "${file.relPath}" in "${harnessDir}": "${(cause as Error).message}"`
+      );
+    }
+    if ((fileMode & 0o222) !== 0) {
+      throw new Error(
+        `frozen harness file "${file.relPath}" in "${harnessDir}" is writable (mode 0o` +
+          `${(fileMode & 0o777).toString(8).padStart(3, "0")}) — agents could rewrite the ` +
+          "timing harness they are graded by; chmod it read-only"
+      );
+    }
+  }
+}
+
+// ============================================================================
+// Captured execution (same rigor as the invariant gate)
+// ============================================================================
+
+export interface BenchmarkRunOptions {
+  readonly command: string;
+  readonly cwd?: string;
+  readonly timeoutMs?: number;
+  readonly env?: Readonly<Record<string, string>>;
+  readonly samples?: number;
+  readonly unit?: string;
+  /**
+   * Provide to enforce frozen-harness tamper protection (existence, non-empty,
+   * all files read-only). Omit for the plain benchmarking API with no
+   * enforcement; integration decides what to pass.
+   */
+  readonly harnessDir?: string;
+}
+
+interface CapturedOutput {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly durationMs: number;
+}
+
+function killProcessGroup(pid: number | undefined): void {
+  if (pid === undefined || pid <= 0) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // Group kill failed (e.g. Windows without negative pid support, or ESRCH).
+    // Attempt single-pid kill fallback.
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Process already gone (ESRCH) or unsupported — swallow error.
+    }
+  }
+}
+
+const benchmarkFailure = (
+  command: string,
+  error: string,
+  message: string,
+  rawOutput?: string
+): BenchmarkExecutionError =>
+  new BenchmarkExecutionError({ command, error, rawOutput, message });
+
+/**
+ * One measured execution of the benchmark command with the identical
+ * spawn hygiene of the invariant gate: detached process group so the kill
+ * reaches worker children, 2MB per-stream capture caps with truncation
+ * marker, SIGKILL process-group kill on deadline, a 500ms force-settle
+ * fallback if the killed process refuses to exit, and interruption cleanup.
+ * Exit-code protocol: 0 = success, nonzero/timeout = BenchmarkExecutionError.
+ */
+const runCapturedCommand = (options: {
+  readonly command: string;
+  readonly cwd?: string;
+  readonly timeoutMs: number;
+  readonly env?: Readonly<Record<string, string>>;
+}): Effect.Effect<CapturedOutput, BenchmarkExecutionError> =>
+  Effect.callback<CapturedOutput, BenchmarkExecutionError>((resume) => {
+    const startedAt = Date.now();
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    let settled = false;
+    let timedOut = false;
+    let forceSettleTimer: NodeJS.Timeout | undefined;
+
+    const child = spawn(options.command, {
+      shell: true,
+      detached: true,
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (stdoutTruncated) return;
+      const remaining = MAX_CAPTURE_BYTES - stdoutBytes;
+      if (chunk.length <= remaining) {
+        stdout += chunk.toString();
+        stdoutBytes += chunk.length;
+      } else {
+        stdout += chunk.subarray(0, remaining).toString() + TRUNCATION_MARKER;
+        stdoutBytes = MAX_CAPTURE_BYTES;
+        stdoutTruncated = true;
+      }
+    });
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (stderrTruncated) return;
+      const remaining = MAX_CAPTURE_BYTES - stderrBytes;
+      if (chunk.length <= remaining) {
+        stderr += chunk.toString();
+        stderrBytes += chunk.length;
+      } else {
+        stderr += chunk.subarray(0, remaining).toString() + TRUNCATION_MARKER;
+        stderrBytes = MAX_CAPTURE_BYTES;
+        stderrTruncated = true;
+      }
+    });
+
+    const settle = (result: Effect.Effect<CapturedOutput, BenchmarkExecutionError>): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (forceSettleTimer !== undefined) {
+        clearTimeout(forceSettleTimer);
+      }
+      resume(result);
+    };
+
+    const timeoutResult = (why: string): Effect.Effect<CapturedOutput, BenchmarkExecutionError> =>
+      Effect.fail(
+        benchmarkFailure(
+          options.command,
+          why,
+          `Benchmark command "${options.command}" timed out after ${options.timeoutMs}ms ` +
+            `(exit ${TIMEOUT_EXIT_CODE}). The command was killed with SIGKILL along with its whole ` +
+            "process group; raise `metrics[].timeout_ms` in .perfgym.yaml if this benchmark is " +
+            `legitimately slow (hard cap: ${MAX_BENCHMARK_TIMEOUT_MS}ms).`
+        )
+      );
+
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      killProcessGroup(child.pid);
+
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+
+      forceSettleTimer = setTimeout(() => {
+        settle(timeoutResult(`process did not exit after SIGKILL (force-settled after ${FORCE_SETTLE_TIMEOUT_MS}ms)`));
+      }, FORCE_SETTLE_TIMEOUT_MS);
+      forceSettleTimer.unref();
+    }, options.timeoutMs);
+
+    child.on("error", (cause: Error) => {
+      settle(
+        Effect.fail(
+          benchmarkFailure(
+            options.command,
+            cause.message,
+            `Benchmark command "${options.command}" could not spawn: ${cause.message}`
+          )
+        )
+      );
+    });
+
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      if (timedOut) {
+        settle(timeoutResult("deadline exceeded"));
+        return;
+      }
+      if (code !== 0) {
+        const reason = signal !== null && code === null ? `killed by ${signal}` : `exit ${code ?? -1}`;
+        settle(
+          Effect.fail(
+            benchmarkFailure(
+              options.command,
+              `exit code ${code ?? -1}`,
+              `Benchmark command "${options.command}" failed (${reason}): ` +
+                `${(stdout + stderr).trim().slice(0, 2000)}`
+            )
+          )
+        );
+        return;
+      }
+      settle(
+        Effect.succeed({
+          stdout,
+          stderr,
+          durationMs: Date.now() - startedAt,
+        })
+      );
+    });
+
+    // If the fiber is interrupted (test harness, pipeline shutdown, ...),
+    // make sure no process group is left behind either.
+    return Effect.sync(() => {
+      clearTimeout(deadline);
+      if (forceSettleTimer !== undefined) {
+        clearTimeout(forceSettleTimer);
+      }
+      killProcessGroup(child.pid);
+    });
+  });
+
+/**
+ * The deterministic benchmark seam: optional frozen-harness verification,
+ * then 1 discarded warmup run, then N sequential measured samples reduced to
+ * a full BenchmarkDistribution with robust MAD/IQR spread statistics.
+ */
+export const runBenchmark = (
+  options: BenchmarkRunOptions
+): Effect.Effect<BenchmarkDistribution, BenchmarkExecutionError> => {
+  const timeoutMs = resolveBenchmarkTimeoutMs(options.timeoutMs);
+  const sampleCount = resolveSampleCount(options.samples);
+  const unit = options.unit ?? "count";
+
+  let resolvedCwd: string | undefined;
+  if (options.cwd !== undefined) {
+    resolvedCwd = resolve(options.cwd);
+    let isDir = false;
+    try {
+      isDir = statSync(resolvedCwd).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) {
+      return Effect.fail(
+        benchmarkFailure(
+          options.command,
+          `Invalid working directory: ${options.cwd}`,
+          `Benchmark failed: working directory "${options.cwd}" does not exist or is not a directory`
+        )
+      );
+    }
+  }
+
+  const executionOptions = {
+    command: options.command,
+    cwd: resolvedCwd,
+    timeoutMs,
+    env: options.env,
+  };
+
+  return Effect.gen(function* () {
+    // 1. Frozen harness tamper protection — only when enforced by the caller.
+    const harnessDir = options.harnessDir;
+    if (harnessDir !== undefined && harnessDir !== "") {
+      yield* Effect.try({
+        try: () => verifyFrozenHarness(harnessDir, options.cwd),
+        catch: (cause: unknown) =>
+          benchmarkFailure(
+            options.command,
+            cause instanceof Error ? cause.message : String(cause),
+            `Benchmark harness verification failed: ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`
+          ),
+      });
+    }
+
+    const execute = runCapturedCommand(executionOptions);
+
+    // 2. Exactly one discarded warmup run (JIT/page-cache settle).
+    yield* Effect.asVoid(execute);
+
+    // 3. N sequential measured samples, recorded in capture order.
+    const collected: number[] = [];
+    for (let i = 0; i < sampleCount; i++) {
+      const captured = yield* execute;
+      const parsed = parseBenchmarkValue(captured.stdout);
+      if (parsed === null) {
+        return yield* Effect.fail(
+          benchmarkFailure(
+            options.command,
+            "unparseable benchmark output",
+            "Benchmark command exited 0 but produced no parseable numeric metric. " +
+              "Emit a JSON object with a standard metric key (" +
+              `${BENCHMARK_JSON_KEYS.join("/")}) or end stdout with a plain number.`,
+            captured.stdout.trim() || captured.stderr.trim()
+          )
+        );
+      }
+      collected.push(parsed.value);
+    }
+
+    return computeBenchmarkDistribution(collected, unit);
+  });
+};
