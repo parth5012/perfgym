@@ -219,6 +219,7 @@ async function main(): Promise<void> {
 
   const tStart = Date.now();
 
+  try {
   for (const scenario of SCENARIOS) {
     const { workingDir, config, context } = buildSandbox(scenario);
 
@@ -321,12 +322,13 @@ async function main(): Promise<void> {
     `  - Invariant Process: ${color.green("100% REAL")} (Subprocess spawning invariant checks with zero-retry abort)`
   );
   console.log("");
-
-  // Clean up temp fixtures
-  try {
-    rmSync(BASE_TMP, { recursive: true, force: true });
-  } catch {
-    // ignore
+  } finally {
+    // Clean up temp fixtures (best-effort, even on abort)
+    try {
+      rmSync(BASE_TMP, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   }
 
   if (!allPassed) {
