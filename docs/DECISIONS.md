@@ -76,7 +76,7 @@ This document records the architectural decisions, context, tradeoffs, and ratio
 ---
 
 ## ADR-008: Invariant Flakiness & Retries Policy
-* **Status:** Accepted
+* **Status:** Superseded by ADR-020 (zero-tolerance, no retries)
 * **Context:** Handling sporadic test runner flakiness without accepting broken code.
 * **Decision:** Configurable in `.perfgym.yaml` target settings via `invariants.retries: 0 | 1 | 2` (default 0).
 * **Rationale:** Strict zero-tolerance by default ensures no regression leaks; configurable retries allow teams with complex integration tests to guard against transient network or timing blips.
@@ -208,7 +208,7 @@ This document records the architectural decisions, context, tradeoffs, and ratio
 ---
 
 ## ADR-020: Invariant Test Timeout & Flakiness Policy
-* **Status:** Accepted (Grilling #25)
+* **Status:** Accepted (Grilling #25). Supersedes ADR-008.
 * **Context:** Defining the invariant failure handling strategy for the 4-stage evaluation pipeline: whether flaky failures trigger retries, what the hard timeout ceiling is, which test scopes can run per-step, and how the invariant command is executed and interpreted.
 * **Decision:**
   - **Zero-tolerance flakiness policy:** Any invariant failure (test failure, crash, or timeout) is a real failure on the first occurrence. **No retries.** Score = -inf, instant rollback. A "sporadic hiccup" from invariant code is itself a red flag — flaky invariants should be fixed, not masked by retries. This keeps accept/rollback deterministic and un-gameable (retry bands would let cheaters get bonus attempts).

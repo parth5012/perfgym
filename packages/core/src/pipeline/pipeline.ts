@@ -9,7 +9,7 @@ import {
   statSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { Effect, Exit } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import type { AstLinterEngine, ScanResult, TypecheckGate } from "../../../linter/src/index.js";
 import type {
   BenchmarkDistribution,
@@ -242,6 +242,8 @@ export class EvaluationPipeline {
     const meta = { context, opts, startedAt, iteration };
     const pipeline = this;
 
+    let completedInvariants: InvariantResult | undefined;
+
     const program: Effect.Effect<StepEvaluation, Error> = Effect.gen(function* () {
       // ----------------------------------------------------------------
       // Stage 1 — invariant gate (correctness precedes speed). Any
@@ -275,6 +277,7 @@ export class EvaluationPipeline {
         return stage1.step;
       }
       const invariants: InvariantResult = stage1;
+      completedInvariants = invariants;
 
       // ----------------------------------------------------------------
       // Stage 2 — anti-cheat scan: disqualify-action rules, @ts-ignore /
@@ -404,7 +407,7 @@ export class EvaluationPipeline {
     return rejectedStep({
       ...meta,
       revertReason: `pipeline error: ${truncate(describeExit(exit.cause))}`,
-      invariants: {
+      invariants: completedInvariants ?? {
         passed: false,
         output: truncate(describeExit(exit.cause)),
         durationMs: Date.now() - startedAt,
@@ -434,6 +437,7 @@ export class EvaluationPipeline {
       current: stageData.distributions[0],
       minSignificanceDelta: meta.opts?.minSignificanceDelta,
       weights: Object.fromEntries(this.#config.metrics.map((m) => [m.name, m.weight])),
+      primaryGoal: this.#config.metrics[0]?.goal,
     });
 
     return {
@@ -563,11 +567,28 @@ function truncate(text: string, limit: number = REJECT_MESSAGE_LIMIT): string {
  * only has to be a best effort for genuine bugs.
  */
 function describeExit(cause: unknown): string {
-  const causeRecord = cause as { failures?: Array<{ error?: unknown; _tag?: string }> };
-  for (const failure of causeRecord?.failures ?? []) {
-    const message = (failure?.error as { message?: unknown } | null)?.message;
-    if (typeof message === "string" && message !== "") {
-      return message;
+  if (Cause.isCause(cause)) {
+    const reasons = cause.reasons;
+    for (const reason of reasons) {
+      const rec = reason as {
+        readonly _tag?: string;
+        readonly error?: unknown;
+        readonly defect?: unknown;
+      };
+      if (rec._tag === "Fail" && rec.error !== undefined) {
+        const msg = (rec.error as { readonly message?: unknown } | null)?.message;
+        if (typeof msg === "string" && msg !== "") return msg;
+        return String(rec.error);
+      }
+      if (rec._tag === "Die" && rec.defect !== undefined) {
+        const msg = (rec.defect as { readonly message?: unknown } | null)?.message;
+        if (typeof msg === "string" && msg !== "") return msg;
+        return String(rec.defect);
+      }
+    }
+    const pretty = Cause.pretty(cause);
+    if (typeof pretty === "string" && pretty !== "") {
+      return pretty;
     }
   }
   return "unknown pipeline defect";

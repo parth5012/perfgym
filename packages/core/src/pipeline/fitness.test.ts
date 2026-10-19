@@ -193,6 +193,71 @@ describe("computeFitnessVerdict — tail guard edge cases", () => {
       expect(verdict.tailGuardPassed).toBe(true);
     }
   });
+
+  it("passes tail guard when baseline MAD is non-finite", () => {
+    const baseline = { ...dist(10, 0), mad: Number.NaN };
+    const verdict = computeFitnessVerdict({
+      invariants: passedInvariants,
+      violations: [],
+      metrics: [metric("latency", 5)],
+      baseline,
+      current: { ...dist(10, 0), p50: 9, p99: 999 },
+    });
+    expect(verdict.tailGuardPassed).toBe(true);
+  });
+
+  it("for goal maximize: accepts when current.min does not fall below baseline.p50 - 3*MAD", () => {
+    // baseline: p50 1000, mad 10 -> floor = 1000 - 30 = 970
+    const baseline: BenchmarkDistribution = {
+      ...dist(1000, 10),
+      min: 980,
+    };
+    // current: throughput win, everything high, min = 975 (> 970)
+    const current: BenchmarkDistribution = {
+      ...dist(1500, 5),
+      min: 975,
+    };
+    const verdict = computeFitnessVerdict({
+      invariants: passedInvariants,
+      violations: [],
+      metrics: [metric("ops", 50)],
+      baseline,
+      current,
+      primaryGoal: "maximize",
+    });
+
+    expect(verdict.tailGuardPassed).toBe(true);
+    expect(verdict.accepted).toBe(true);
+    expect(verdict.score).toBe(50);
+  });
+
+  it("for goal maximize: rejects with -Infinity when current.min falls below baseline.p50 - 3*MAD", () => {
+    // baseline: p50 1000, mad 10 -> floor = 970
+    const baseline: BenchmarkDistribution = {
+      ...dist(1000, 10),
+      min: 980,
+    };
+    // current: throughput win on p50, but min = 960 (< 970)
+    const current: BenchmarkDistribution = {
+      ...dist(1500, 5),
+      min: 960,
+    };
+    const verdict = computeFitnessVerdict({
+      invariants: passedInvariants,
+      violations: [],
+      metrics: [metric("ops", 50)],
+      baseline,
+      current,
+      primaryGoal: "maximize",
+    });
+
+    expect(verdict.tailGuardPassed).toBe(false);
+    expect(verdict.score).toBe(-Infinity);
+    expect(verdict.rejected?.reason).toBe("tail-guard");
+    expect(verdict.rejected?.message).toContain("fell below floor");
+    expect(verdict.tailGuardCeiling).toBe(970);
+    expect(verdict.currentP99).toBe(960);
+  });
 });
 
 // ============================================================================
@@ -687,6 +752,38 @@ describe("evaluateFitness (Effect wrapper)", () => {
       })
     );
     expect(score).toBe(18.8);
+  });
+
+  it("fails with TailGuardRegressionError when goal=maximize drops below low-tail floor", async () => {
+    const baseDist = { ...dist(100, 2), min: 95 }; // floor = 100 - 6 = 94
+    const result = await Effect.runPromise(
+      evaluateFitness({
+        invariants: passedInvariants,
+        violations: [],
+        metrics: [metric("ops", 20)],
+        baseline: baseDist,
+        current: { ...dist(120, 2), min: 90 }, // drops below floor
+        primaryGoal: "maximize",
+      }).pipe(
+        Effect.map((score) => ({ ok: true as const, score })),
+        Effect.catchTag("TailGuardRegressionError", (err) =>
+          Effect.succeed({
+            ok: false as const,
+            tag: err._tag,
+            metric: err.metric,
+            p99: err.currentP99,
+            ceiling: err.maxAllowedCeiling,
+          })
+        )
+      )
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.tag).toBe("TailGuardRegressionError");
+      expect(result.p99).toBe(90);
+      expect(result.ceiling).toBe(94);
+    }
   });
 });
 

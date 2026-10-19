@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Effect } from "effect";
@@ -64,6 +64,15 @@ const TRUNCATION_MARKER = "\n[truncated]";
  */
 function killProcessGroup(pid: number | undefined): void {
   if (pid === undefined || pid <= 0) return;
+  if (process.platform === "win32") {
+    // taskkill /T /F reliably kills Windows trees (process-group negative pid is unsupported there).
+    try {
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
   try {
     process.kill(-pid, "SIGKILL");
   } catch {

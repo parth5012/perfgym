@@ -458,9 +458,9 @@ describe("EvaluationPipeline — stage 4 verdict", () => {
     expect(step.revertReason).toContain("significance threshold");
   });
 
-  it("rejects tail-guard regression even with a huge positive delta", async () => {
+  it("rejects tail-guard regression for goal minimize when p99 exceeds ceiling", async () => {
     const { sandboxDir, config } = makeSandbox({
-      metricCommand: `node -e "console.log(JSON.stringify({ value: 200 }))"`, // 100% gain
+      metricCommand: `node -e "console.log(JSON.stringify({ value: 200 }))"`,
     });
     const engine = new AstLinterEngine([], sandboxDir);
     const pipeline = new EvaluationPipeline(config, engine);
@@ -476,6 +476,38 @@ describe("EvaluationPipeline — stage 4 verdict", () => {
     expect(step.accepted).toBe(false);
     expect(step.fitnessScore).toBe(-Infinity);
     expect(step.revertReason).toContain("Tail degraded");
+  });
+
+  it("accepts a huge positive gain for goal maximize when low tail does not regress", async () => {
+    const { sandboxDir, config: baseConfig } = makeSandbox();
+    const config: PerfGymConfig = {
+      ...baseConfig,
+      metrics: [
+        {
+          name: "ops",
+          command: `node -e "console.log(JSON.stringify({ value: 200 }))"`, // 100% throughput gain
+          goal: "maximize",
+          weight: 1,
+          unit: "count",
+        },
+      ],
+    };
+    const engine = new AstLinterEngine([], sandboxDir);
+    const pipeline = new EvaluationPipeline(config, engine);
+
+    // Baseline throughput 100 ops/sec, MAD 5 -> floor is 100 - 3*5 = 85. Current is 200 (min 200 > 85).
+    const baseline = computeBenchmarkDistribution([100, 100, 100, 100], "count");
+
+    const step = await pipeline.evaluateStep(contextFor(sandboxDir), ["src/hot.ts"], {
+      baselineMetrics: { ops: 100 },
+      baseline,
+      samples: SAMPLES,
+    });
+
+    expect(step.accepted).toBe(true);
+    expect(step.isSignificant).toBe(true);
+    expect(step.fitnessScore).toBeGreaterThan(0);
+    expect(step.deltaPercent).toBe(100);
   });
 
   it("rejects when no baseline metric value was supplied (no relative signal)", async () => {
