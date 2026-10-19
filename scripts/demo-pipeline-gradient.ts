@@ -219,6 +219,8 @@ async function main(): Promise<void> {
 
   const tStart = Date.now();
 
+  let allPassed = true;
+
   try {
   for (const scenario of SCENARIOS) {
     const { workingDir, config, context } = buildSandbox(scenario);
@@ -269,8 +271,6 @@ async function main(): Promise<void> {
     )
   );
   console.log("  " + "-".repeat(74));
-
-  let allPassed = true;
 
   for (const r of results) {
     const name = `${r.scenario.id} (${r.scenario.name})`.padEnd(25);
