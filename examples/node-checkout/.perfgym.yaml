@@ -1,0 +1,16 @@
+version: "1.0"
+target:
+  name: "node-checkout"
+  language: "javascript"
+  files: ["src/api/checkout/process.js"]
+
+invariants:
+  command: "node --test tests/checkout.test.js"
+  timeoutMs: 10000
+
+metrics:
+  - name: "latency"
+    command: "node tests/bench.js"
+    goal: "minimize"
+    weight: 1
+    unit: "ms"
