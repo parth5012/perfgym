@@ -415,6 +415,24 @@ describe("EvaluationPipeline — stage 3 benchmark failures", () => {
     expect(step.fitnessScore).toBe(-Infinity);
     expect(step.revertReason).toContain("benchmark failed");
   });
+
+  it("forwards per-metric timeoutMs to runBenchmark in stage 3", async () => {
+    const { sandboxDir, config } = makeSandbox({
+      metricCommand: `node -e "setTimeout(() => {}, 2000)"`,
+    });
+    config.metrics[0].timeoutMs = 300;
+    const engine = new AstLinterEngine([], sandboxDir);
+    const pipeline = new EvaluationPipeline(config, engine);
+
+    const step = await pipeline.evaluateStep(contextFor(sandboxDir), ["src/hot.ts"], {
+      baselineMetrics: BASELINE,
+      samples: SAMPLES,
+    });
+
+    expect(step.accepted).toBe(false);
+    expect(step.fitnessScore).toBe(-Infinity);
+    expect(step.revertReason).toContain("timed out after 300ms");
+  });
 });
 
 // ============================================================================

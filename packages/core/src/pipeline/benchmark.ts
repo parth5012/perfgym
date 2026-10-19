@@ -250,8 +250,8 @@ const ANSI_REGEX = /\x1B\[[0-9;]*[a-zA-Z]/g;
 const THOUSANDS_SEPARATOR_REGEX = new RegExp("(?<=\\d),(?=\\d)", "g");
 const NUMBER_TOKEN_RE = /[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?/g;
 
-/** Scan text for the first balanced top-level JSON object. */
-function extractFirstBalancedJsonObject(text: string): string | null {
+/** Scan text for balanced top-level JSON objects and find one with a metric key. */
+function extractMetricFromJsonObjects(text: string): number | undefined {
   let start = -1;
   let depth = 0;
   let inString = false;
@@ -281,34 +281,36 @@ function extractFirstBalancedJsonObject(text: string): string | null {
         depth--;
         if (depth === 0 && start !== -1) {
           const candidate = text.slice(start, i + 1);
+          start = -1;
           try {
             const parsed = JSON.parse(candidate);
-            if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-              return candidate;
+            const val = readJsonMetricNumber(parsed);
+            if (val !== undefined) {
+              return val;
             }
           } catch {
-            // Not valid JSON; reset and keep scanning
+            // Not valid JSON; keep scanning
           }
-          start = -1;
         }
       }
     }
   }
-  return null;
+  return undefined;
 }
 
 /**
  * Parse a benchmark command's stdout into a single metric number:
- * 1. Strip ANSI escape sequences and thousands separators between digits.
+ * 1. Strip ANSI escape sequences globally.
  * 2. Attempt JSON.parse on the whole stdout first (covers standard/pretty JSON).
- * 3. If that fails, scan for the first balanced top-level JSON object from the text
+ * 3. If that fails, scan consecutive balanced top-level JSON objects from the text
  *    or any line starting with JSON, checking for recognized metric keys.
- * 4. Fall back to the LAST numeric token in stdout, rejecting non-finite values.
+ * 4. Fall back to the LAST numeric token in stdout (stripping thousands separators),
+ *    rejecting non-finite values.
  * 5. Otherwise null — the caller must fail loudly rather than guess.
  */
 export function parseBenchmarkValue(stdout: string): ParsedBenchmarkValue | null {
-  // Strip ANSI escape sequences and thousands separators
-  const cleaned = stdout.replace(ANSI_REGEX, "").replace(THOUSANDS_SEPARATOR_REGEX, "");
+  // Strip ANSI escape sequences globally
+  const cleaned = stdout.replace(ANSI_REGEX, "");
   const trimmed = cleaned.trim();
   if (trimmed !== "") {
     // 1. Whole-stdout JSON (covers single-line and pretty-printed multi-line schemas).
@@ -319,15 +321,10 @@ export function parseBenchmarkValue(stdout: string): ParsedBenchmarkValue | null
       // Not whole-stdout JSON; try extracting balanced JSON object.
     }
 
-    // 2. Extract first balanced top-level JSON object from text.
-    const balanced = extractFirstBalancedJsonObject(trimmed);
-    if (balanced !== null) {
-      try {
-        const fromBalanced = readJsonMetricNumber(JSON.parse(balanced));
-        if (fromBalanced !== undefined) return { value: fromBalanced, source: "json" };
-      } catch {
-        // Fall through
-      }
+    // 2. Scan consecutive balanced top-level JSON objects from text.
+    const fromObjects = extractMetricFromJsonObjects(trimmed);
+    if (fromObjects !== undefined) {
+      return { value: fromObjects, source: "json" };
     }
 
     // 3. Fallback per-line JSON check (e.g. single-line embedded in non-JSON lines).
@@ -343,9 +340,10 @@ export function parseBenchmarkValue(stdout: string): ParsedBenchmarkValue | null
     }
   }
 
-  // 4. Last numeric token in stdout
+  // 4. Last numeric token in stdout (with thousands separators stripped)
+  const fallbackText = trimmed.replace(THOUSANDS_SEPARATOR_REGEX, "");
   let last: RegExpExecArray | null = null;
-  for (const match of trimmed.matchAll(NUMBER_TOKEN_RE)) {
+  for (const match of fallbackText.matchAll(NUMBER_TOKEN_RE)) {
     last = match;
   }
   if (last === null) return null;

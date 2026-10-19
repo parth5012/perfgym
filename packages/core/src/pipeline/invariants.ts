@@ -67,7 +67,13 @@ function killProcessGroup(pid: number | undefined): void {
   try {
     process.kill(-pid, "SIGKILL");
   } catch {
-    // Group already gone (ESRCH) or unsupported platform — nothing to do.
+    // Group kill failed (e.g. Windows without negative pid support, or ESRCH).
+    // Attempt single-pid kill fallback.
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Process already gone (ESRCH) or unsupported — swallow error.
+    }
   }
 }
 
@@ -194,6 +200,7 @@ export const runInvariantGate = (
     }, timeoutMs);
 
     child.on("error", (cause: Error) => {
+      if (timedOut) return;
       settle(
         Effect.fail(
           new InvariantFailureError({
