@@ -8,6 +8,7 @@ export default defineConfig({
       "@perfgym/cli": resolve(__dirname, "packages/cli/src/index.ts"),
       "@perfgym/linter": resolve(__dirname, "packages/linter/src/index.ts"),
       "@perfgym/adapter-web": resolve(__dirname, "packages/adapters/web/src/index.ts"),
+      "@perfgym/mcp-server": resolve(__dirname, "packages/mcp-server/src/index.ts"),
     },
   },
   test: {
