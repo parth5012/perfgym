@@ -93,7 +93,15 @@ export interface FitnessVerdict {
   readonly reasons: readonly string[];
   readonly minSignificanceDelta: number;
   readonly primaryDeltaPercent?: number;
+  /**
+   * For goal="minimize", the high-tail ceiling: baseline p50 + 3 × baseline MAD.
+   * For goal="maximize", the low-tail floor: baseline p50 - 3 × baseline MAD.
+   */
   readonly tailGuardCeiling?: number;
+  /**
+   * For goal="minimize", current.p99.
+   * For goal="maximize", current.min (the worst low-tail sample; distribution has min, no p1).
+   */
   readonly currentP99?: number;
   readonly baselineMad?: number;
   readonly normalizedWeights: Readonly<Record<string, number>>;
@@ -108,6 +116,13 @@ export interface FitnessParams {
   readonly current?: BenchmarkDistribution;
   readonly minSignificanceDelta?: number;
   readonly weights?: Record<string, number>;
+  /**
+   * Optimization goal for the primary metric ("minimize" | "maximize").
+   * Default: "minimize".
+   * - "minimize": rejects when current.p99 > baseline.p50 + 3 × baseline.mad
+   * - "maximize": rejects when current.min < baseline.p50 - 3 × baseline.mad
+   */
+  readonly primaryGoal?: "minimize" | "maximize";
 }
 
 // ============================================================================
@@ -284,40 +299,76 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
     });
   }
 
-  // 3. Tail guard — current p99 ceiling = baseline p50 + 3 × baseline MAD.
+  // 3. Tail guard — depends on primaryGoal:
+  // - "minimize" (latency/size): rejects when current p99 > baseline p50 + 3 × baseline MAD.
+  // - "maximize" (throughput/ops): rejects when current min < baseline p50 - 3 × baseline MAD.
+  // Note on maximize: benchmark distribution exposes min (not p1); min is used as the worst
+  // low-tail sample.
   const baseline = params.baseline;
   const current = params.current;
+  const primaryGoal = params.primaryGoal ?? "minimize";
   let tailGuardPassed = true;
   let ceiling: number | undefined;
   let currentP99: number | undefined;
   if (baseline !== undefined && current !== undefined) {
-    ceiling = baseline.p50 + 3 * baseline.mad;
-    currentP99 = current.p99;
-    // Non-finite distribution statistics (ceiling or p99): the check cannot
-    // be applied, so it does not fail (tailGuardPassed stays true).
-    if (
-      Number.isFinite(ceiling) &&
-      Number.isFinite(currentP99) &&
-      currentP99 > ceiling
-    ) {
-      tailGuardPassed = false;
-      return finish({
-        score: -Infinity,
-        accepted: false,
-        isSignificant: false,
-        tailGuardPassed,
-        rejected: {
-          reason: "tail-guard",
-          message: `Tail degraded: current p99 (${currentP99}) exceeded ceiling (${ceiling.toFixed(
-            2
-          )}) = baseline p50 (${baseline.p50}) + 3 × baseline MAD (${baseline.mad})`,
-        },
-        reasons: weightResolution.notes,
-        totalPenalty: 0,
-        tailGuardCeiling: ceiling,
-        currentP99,
-        baselineMad: baseline.mad,
-      });
+    if (primaryGoal === "maximize") {
+      ceiling = baseline.p50 - 3 * baseline.mad;
+      currentP99 = current.min;
+      // Non-finite distribution statistics (ceiling/floor or min): the check cannot
+      // be applied, so it does not fail (tailGuardPassed stays true).
+      if (
+        Number.isFinite(ceiling) &&
+        Number.isFinite(currentP99) &&
+        currentP99 < ceiling
+      ) {
+        tailGuardPassed = false;
+        return finish({
+          score: -Infinity,
+          accepted: false,
+          isSignificant: false,
+          tailGuardPassed,
+          rejected: {
+            reason: "tail-guard",
+            message: `Tail degraded: current min (${currentP99}) fell below floor (${ceiling.toFixed(
+              2
+            )}) = baseline p50 (${baseline.p50}) - 3 × baseline MAD (${baseline.mad})`,
+          },
+          reasons: weightResolution.notes,
+          totalPenalty: 0,
+          tailGuardCeiling: ceiling,
+          currentP99,
+          baselineMad: baseline.mad,
+        });
+      }
+    } else {
+      ceiling = baseline.p50 + 3 * baseline.mad;
+      currentP99 = current.p99;
+      // Non-finite distribution statistics (ceiling or p99): the check cannot
+      // be applied, so it does not fail (tailGuardPassed stays true).
+      if (
+        Number.isFinite(ceiling) &&
+        Number.isFinite(currentP99) &&
+        currentP99 > ceiling
+      ) {
+        tailGuardPassed = false;
+        return finish({
+          score: -Infinity,
+          accepted: false,
+          isSignificant: false,
+          tailGuardPassed,
+          rejected: {
+            reason: "tail-guard",
+            message: `Tail degraded: current p99 (${currentP99}) exceeded ceiling (${ceiling.toFixed(
+              2
+            )}) = baseline p50 (${baseline.p50}) + 3 × baseline MAD (${baseline.mad})`,
+          },
+          reasons: weightResolution.notes,
+          totalPenalty: 0,
+          tailGuardCeiling: ceiling,
+          currentP99,
+          baselineMad: baseline.mad,
+        });
+      }
     }
   }
   const penaltyResolution = sumPenalties(params.violations);

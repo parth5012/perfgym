@@ -60,7 +60,7 @@ PerfGym's sandbox is **application-level**, not an OS sandbox:
 
 ---
 
-## 4. Recommendation (proposed ADR-020: `CommandExecutor` seam)
+## 4. Recommendation (proposed ADR-021: `CommandExecutor` seam)
 
 Mirror ADR-003's proven pattern: **seam + injected backends**, so isolation strategy is swappable and testable.
 
@@ -94,5 +94,5 @@ Config surface: `perfgym.config → sandbox.commandBackend: "node-permission" | 
 
 1. **Probe MXC** on the dev machine (`wxc-exec` availability + `BaseContainer` support).
 2. **Spike `MxcExecutor`** behind the seam (Windows) and a `BwrapExecutor` (Linux CI).
-3. **Record ADR-020** with probe results and backend choice per platform.
+3. **Record ADR-021** with probe results and backend choice per platform.
 4. **Ticket** the `CommandExecutor` seam + Tier 0 backend into the next applicable map (Map 3 pipeline or Map 4 loop).
