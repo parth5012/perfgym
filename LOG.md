@@ -131,3 +131,11 @@
 * `npx vitest run packages/core/src/pipeline/pipeline.test.ts`: 18/18 green (happy path, stage-1/2/3 short-circuits via side-effect sentinel files, insignificant noise, tail-guard breach, weights, harness freeze + mid-flight tamper, timeout clamp, InMemorySandboxDriver integration, retries=2 legacy ignored).
 * `npx vitest run` full suite: 16 files, 182 tests green (matcher micro-benchmark is load-flaky under heavy parallel CPU load — passed on re-run; pre-existing).
 * `npx tsc --noEmit`: 0 errors.
+
+## 2026-10-19 — Wayfinder Map 3 (#11) full run: Invariant & Deterministic Fitness Pipeline
+- Status: Done
+- Phase 1 (HITL): #25 grilling resolved (ADR-020: zero-tolerance/no-retry, 10s/30s clamp + SIGKILL group kill, unit-only per-step w/ E2E certification pre-pass, exit-code protocol). #26 prototype approved by human (scripts/demo-pipeline-gradient.ts, 4-target scenario matrix, real pipeline).
+- Phase 2 (AFK, single-PR mode = 4 code tickets): #12 invariants.ts gate; #13 benchmark.ts parser/robust-stats; #14 fitness.ts canonical calculator; #15 pipeline.ts EvaluationPipeline deep module. Each: TDD, adversarial CodeReviewer gate, findings applied, committed.
+- Code changes: packages/core/src/pipeline/{invariants,benchmark,fitness,pipeline}.ts + tests, index.ts wiring, scripts/demo-pipeline-gradient.ts, docs/DECISIONS.md (ADR-020).
+- Verification: pnpm vitest run 190/190 green (16 files); npx tsc --noEmit clean; demo exit 0.
+- Notes: eslint 127 pre-existing repo-wide (not installed). Map 6 (#6) verified fully closed. PR for map 3 opened on feat/map-3-pipeline-fitness.
