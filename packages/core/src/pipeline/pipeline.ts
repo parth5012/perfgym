@@ -353,6 +353,7 @@ export class EvaluationPipeline {
             cwd: context.workingDir,
             samples: opts?.samples,
             unit: metricConfig.unit ?? "count",
+            ...(metricConfig.timeoutMs !== undefined ? { timeoutMs: metricConfig.timeoutMs } : {}),
             ...(harnessEnforcementDir !== null && harnessEnforcementDir !== ""
               ? { harnessDir: harnessEnforcementDir }
               : {}),

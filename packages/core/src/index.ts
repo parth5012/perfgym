@@ -106,6 +106,8 @@ export interface PerfGymConfig {
     weight: number;
     /** Measured unit of the metric command's output (defaults to "count"). */
     unit?: "instructions" | "bytes" | "ms" | "count";
+    /** Per-metric execution timeout in milliseconds. */
+    timeoutMs?: number;
     /**
      * Immutable benchmark-runner scripts to snapshot into the frozen
      * `.perfgym/.harness` grader directory at initializeHarness (#15).

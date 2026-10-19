@@ -211,6 +211,26 @@ Benchmark complete!
       source: "json",
     });
   });
+
+  it("scans multiple JSON objects and parses metric keys without falling back", () => {
+    expect(
+      parseBenchmarkValue('{"log":"telemetry", "ignored": 5}\n{"value": 42}')
+    ).toEqual({
+      value: 42,
+      source: "json",
+    });
+  });
+
+  it("regression: compact JSON arrays/objects are not corrupted by thousands separator removal", () => {
+    expect(parseBenchmarkValue('{"samples":[1,2,3],"value":101}')).toEqual({
+      value: 101,
+      source: "json",
+    });
+    expect(parseBenchmarkValue('{"a":1,"b":2,"value":99}')).toEqual({
+      value: 99,
+      source: "json",
+    });
+  });
 });
 
 describe("computeMetricResult (minimize vs maximize semantics)", () => {

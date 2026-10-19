@@ -147,18 +147,21 @@ function printScoreCard(scenario: ScenarioDef, step: StepEvaluation): void {
     : color.red("FAIL (aborted cascade)");
   console.log(` [Stage 1] Invariants Gate:   ${s1Status}`);
   if (!step.invariants.passed) {
-    console.log(`           ${color.dim(`Output: ${step.invariants.output.split("\n")[0]}`)}`);
+    console.log(`           ${color.dim(`Output: ${step.invariants.output?.split("\n")[0] ?? ""}`)}`);
   }
 
   // Stage 2 output
   const hasDisqualify = step.violations.some((v) => v.action === "disqualify");
-  const s2Status = !step.invariants.passed
-    ? color.gray("SKIPPED (short-circuited by Stage 1)")
-    : hasDisqualify
-    ? color.red(`REJECT (${step.violations.filter((v) => v.action === "disqualify").length} disqualifier(s) caught)`)
-    : step.violations.length > 0
-    ? color.yellow(`PASS (${step.violations.length} penalizable violation(s))`)
-    : color.green("PASS (0 violations)");
+  let s2Status: string;
+  if (!step.invariants.passed) {
+    s2Status = color.gray("SKIPPED (short-circuited by Stage 1)");
+  } else if (hasDisqualify) {
+    s2Status = color.red(`REJECT (${step.violations.filter((v) => v.action === "disqualify").length} disqualifier(s) caught)`);
+  } else if (step.violations.length > 0) {
+    s2Status = color.yellow(`PASS (${step.violations.length} penalizable violation(s))`);
+  } else {
+    s2Status = color.green("PASS (0 violations)");
+  }
   console.log(` [Stage 2] Anti-Cheat & Lint: ${s2Status}`);
 
   if (step.violations.length > 0) {
@@ -173,18 +176,21 @@ function printScoreCard(scenario: ScenarioDef, step: StepEvaluation): void {
 
   // Stage 3 output
   const s3Ran = step.metrics.length > 0;
+  const s3Sign = step.deltaPercent > 0 ? "+" : "";
   const s3Status = !s3Ran
     ? color.gray("SKIPPED (short-circuited before benchmark)")
-    : color.green(`MEASURED (${step.metrics[0].value} vs baseline 100, delta: +${step.deltaPercent.toFixed(1)}%)`);
+    : color.green(`MEASURED (${step.metrics[0].value} vs baseline 100, delta: ${s3Sign}${step.deltaPercent.toFixed(1)}%)`);
   console.log(` [Stage 3] Benchmark Gate:    ${s3Status}`);
 
   // Stage 4 output
-  const scoreFmt =
-    step.fitnessScore === -Infinity
-      ? color.red("-Infinity")
-      : step.fitnessScore > 0
-      ? color.green(`+${step.fitnessScore.toFixed(2)}`)
-      : color.red(step.fitnessScore.toFixed(2));
+  let scoreFmt: string;
+  if (step.fitnessScore === -Infinity) {
+    scoreFmt = color.red("-Infinity");
+  } else if (step.fitnessScore > 0) {
+    scoreFmt = color.green(`+${step.fitnessScore.toFixed(2)}`);
+  } else {
+    scoreFmt = color.red(step.fitnessScore.toFixed(2));
+  }
 
   const verdictLabel = step.accepted
     ? color.green("ACCEPTED")
@@ -274,7 +280,13 @@ async function main(): Promise<void> {
 
   for (const r of results) {
     const name = `${r.scenario.id} (${r.scenario.name})`.padEnd(25);
-    const delta = (r.step.deltaPercent > 0 ? `+${r.step.deltaPercent}%` : `${r.step.deltaPercent}%`).padEnd(10);
+    const deltaStr =
+      r.step.metrics.length === 0
+        ? "N/A"
+        : r.step.deltaPercent > 0
+        ? `+${r.step.deltaPercent.toFixed(1)}%`
+        : `${r.step.deltaPercent.toFixed(1)}%`;
+    const delta = deltaStr.padEnd(10);
     const penaltyTotal = r.step.violations.reduce((sum, v) => sum + (v.penalty ?? 0), 0);
     const violText = `${r.step.violations.length} (-${penaltyTotal})`.padEnd(16);
     const scoreStr = (r.step.fitnessScore === -Infinity ? "-Infinity" : r.step.fitnessScore.toFixed(1)).padEnd(15);
