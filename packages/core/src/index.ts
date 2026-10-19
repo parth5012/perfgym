@@ -13,6 +13,7 @@ export * from "./sandbox/coordinator.js";
 export * from "./pipeline/invariants.js";
 export * from "./pipeline/benchmark.js";
 export * from "./pipeline/fitness.js";
+export * from "./pipeline/pipeline.js";
 
 export interface MetricResult {
   name: string;
@@ -54,6 +55,15 @@ export interface BenchmarkDistribution {
   readonly unit: string;
 }
 
+/**
+ * Result of evaluating a candidate mutation step across all pipeline stages.
+ *
+ * NOTE: When rejected (e.g. invariant failure, anti-cheat disqualification,
+ * or tail regression), `fitnessScore` is `-Infinity`. Because JSON does not
+ * represent `Infinity` or `-Infinity`, `JSON.stringify` serializes `-Infinity`
+ * to `null`. Consumers parsing serialized evaluations must treat
+ * `accepted === false || fitnessScore === null` as rejected.
+ */
 export interface StepEvaluation {
   readonly iteration: number;
   readonly fitnessScore: number;
@@ -96,6 +106,11 @@ export interface PerfGymConfig {
     weight: number;
     /** Measured unit of the metric command's output (defaults to "count"). */
     unit?: "instructions" | "bytes" | "ms" | "count";
+    /**
+     * Immutable benchmark-runner scripts to snapshot into the frozen
+     * `.perfgym/.harness` grader directory at initializeHarness (#15).
+     */
+    harnessScripts?: string[];
   }>;
 }
 

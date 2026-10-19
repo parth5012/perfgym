@@ -109,3 +109,25 @@
 * ADR numbering verified — ADR-018/019 already exist, so the new seam proposal is numbered **ADR-020**.
 * PR #29 merged into `main` via rebase merge (`--delete-branch`) per the `merge-pr` skill after this commit; demo server unaffected.
 * Skill-pipeline notes: `ocr-review` skipped (no UI/screenshot change — markdown only); `code-review`/CodeRabbit re-run on push as PR-level bot; diff self-reviewed before commit.
+
+## Iteration 7: EvaluationPipeline Deep Module (wayfinder #15)
+* **Date**: Sun Oct 19 2026
+* **Status**: `Done`
+* **Subsystem**: `packages/core/src/pipeline/pipeline.ts` (+ sibling `pipeline.test.ts`)
+
+### What Was Built
+1. `EvaluationPipeline` — tiny 3-method surface (constructor / `initializeHarness` / `evaluateStep`) hiding the full 4-stage cascade with in-band short-circuits; rejected steps resolve as `StepEvaluation` (Score -Infinity, `revertReason` populated) — callers get verdicts, not throws.
+2. Stage flow: (1) invariant gate (zero retries, config timeout clamped by #12 seam); (2) anti-cheat scan (disqualify rules + `@ts-ignore`/config-tamper integrity via AstLinterEngine/TypecheckGate) with instant abort before benchmarks; (3) per-metric `runBenchmark` → `computeMetricResult`; (4) `computeFitnessVerdict` (weights normalized, 2.5% significance, MAD tail guard).
+3. Frozen harness: `initializeHarness` copies invariant-command file paths + new `metrics[].harnessScripts` config extension into `<repo>/.perfgym/.harness` read-only (0444/0555); empty harness ⇒ harness stay null and stage 3 skips enforcement (never blocks benchmarking). Mid-flight writable chmod ⇒ benchmark -Inf.
+4. `packages/core/src/index.ts`: export line + `harnessScripts?: string[]` on the metric config type.
+
+### Deviations / Notes
+* Constructor's 3rd param is optional (`typechecker?: TypecheckGate`) — the linter's `scan` already embeds the two-tier gate; the explicit gate adds an independent integrity/tier-2 check when a tsconfig exists.
+* Benchmarks execute sequentially per metric (per #13); missing `baselineMetrics` entry ⇒ Δ% 0 ⇒ insignificant rejection.
+* `Effect.catchIf` used for in-band typed failure envelopes (this Effect v4 build has no `Effect.either/catchAll`; `Cause` introspection on private-field classes is unreliable).
+* Vitest needs relative imports (`../../../linter/src/engine.js`) since packages have no runtime package.json/aliases.
+
+### Verification Results
+* `npx vitest run packages/core/src/pipeline/pipeline.test.ts`: 18/18 green (happy path, stage-1/2/3 short-circuits via side-effect sentinel files, insignificant noise, tail-guard breach, weights, harness freeze + mid-flight tamper, timeout clamp, InMemorySandboxDriver integration, retries=2 legacy ignored).
+* `npx vitest run` full suite: 16 files, 182 tests green (matcher micro-benchmark is load-flaky under heavy parallel CPU load — passed on re-run; pre-existing).
+* `npx tsc --noEmit`: 0 errors.
