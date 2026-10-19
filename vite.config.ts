@@ -2,6 +2,14 @@ import { defineConfig } from "vitest/config";
 import { resolve } from "path";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@perfgym/core": resolve(__dirname, "packages/core/src/index.ts"),
+      "@perfgym/cli": resolve(__dirname, "packages/cli/src/index.ts"),
+      "@perfgym/linter": resolve(__dirname, "packages/linter/src/index.ts"),
+      "@perfgym/adapter-web": resolve(__dirname, "packages/adapters/web/src/index.ts"),
+    },
+  },
   test: {
     // Scratch space (.tmp/) holds demo sandbox repos and agent artifacts —
     // never let its fixture files be collected as real tests.
