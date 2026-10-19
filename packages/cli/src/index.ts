@@ -7,6 +7,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { runInit, runBaseline, runStep } from "./engine.js";
+import { runOptimizationLoop } from "./commands/run.js";
 
 const program = new Command();
 
@@ -106,6 +107,31 @@ program
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(chalk.red(`✖ Step evaluation error: ${msg}`));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("run")
+  .description("Execute autonomous hill-climbing optimization loop in an isolated sandbox worktree")
+  .option("-i, --iterations <number>", "Maximum number of optimization iterations", "15")
+  .option("-t, --target-branch <branch>", "Target branch to promote winning commits to", "main")
+  .option("-m, --model <provider/model>", "LLM provider and model for mutation generation")
+  .option("-s, --samples <number>", "Number of benchmark samples per evaluation", "5")
+  .action(async (options: { iterations: string; targetBranch: string; model?: string; samples: string }) => {
+    try {
+      const iterations = parseInt(options.iterations, 10) || 15;
+      const samples = parseInt(options.samples, 10) || 5;
+
+      await runOptimizationLoop({
+        maxIterations: iterations,
+        targetBranch: options.targetBranch,
+        model: options.model,
+        samples,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(chalk.red(`✖ Autonomous optimization loop failed: ${msg}`));
       process.exitCode = 1;
     }
   });
