@@ -199,6 +199,17 @@ describe("MarkdownFormatter — remaining surface", () => {
     expect(output).not.toContain("    at ");
   });
 
+  it("strips ANSI from revert reasons and error messages", () => {
+    const noisyStep = {
+      ...rejectedStep,
+      revertReason: "\u001b[31mInvariants failed\u001b[0m",
+    };
+
+    expect(formatter.formatStep(noisyStep)).not.toMatch(ANSI_PATTERN);
+    expect(formatter.formatStep(noisyStep)).toContain("Invariants failed");
+    expect(formatter.formatError(new Error("\u001b[31mboom\u001b[0m"))).not.toMatch(ANSI_PATTERN);
+  });
+
   it("never emits ANSI across the whole surface", () => {
     const outputs = [
       formatter.formatBaseline(distribution()),

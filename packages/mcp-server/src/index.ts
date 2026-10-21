@@ -6,12 +6,34 @@
 import * as readline from "node:readline";
 import { execFileSync } from "node:child_process";
 import {
+  createFormatter,
+  stripAnsi,
+  type OutputFormat,
+  type PerfGymConfig,
+} from "../../core/src/index.js";
+import {
   runBaseline,
   runStep,
   readState,
   loadConfig,
   type PerfGymState,
 } from "../../cli/src/engine.js";
+
+/**
+ * Every tool accepts an explicit response format. Agents are the primary MCP
+ * consumer, so JSON is the default; markdown is for humans reading transcripts.
+ */
+const FORMAT_PROPERTY = {
+  type: "string",
+  enum: ["markdown", "json"],
+  default: "json",
+  description:
+    'Response format: "json" (LLD §6.1, default) or "markdown" (LLD §6.2)',
+} as const;
+
+const resolveFormat = (args: Record<string, unknown>): OutputFormat =>
+  // Unknown or missing values fall back to JSON rather than failing the call.
+  args.format === "markdown" ? "markdown" : "json";
 
 export interface McpTool {
   name: string;
@@ -34,6 +56,7 @@ export const PERFGYM_TOOLS: McpTool[] = [
           type: "number",
           description: "Number of benchmark samples to collect (default: 5)",
         },
+        format: FORMAT_PROPERTY,
       },
     },
   },
@@ -56,6 +79,7 @@ export const PERFGYM_TOOLS: McpTool[] = [
           type: "number",
           description: "Minimum significance delta percentage threshold",
         },
+        format: FORMAT_PROPERTY,
       },
     },
   },
@@ -64,7 +88,9 @@ export const PERFGYM_TOOLS: McpTool[] = [
     description: "Manually restores the worktree to the last checkpoint.",
     inputSchema: {
       type: "object",
-      properties: {},
+      properties: {
+        format: FORMAT_PROPERTY,
+      },
     },
   },
 ];
@@ -141,7 +167,9 @@ export class PerfGymMcpServer {
           const params = req.params ?? {};
           const toolName = params.name;
           const args = params.arguments ?? {};
-          const toolResult = await this.executeTool(toolName, args);
+          // Tool responses are already rendered through the shared formatter;
+          // strip ANSI at the protocol boundary as a belt-and-braces guarantee.
+          const text = stripAnsi(await this.executeTool(toolName, args));
 
           return {
             jsonrpc: "2.0",
@@ -150,7 +178,7 @@ export class PerfGymMcpServer {
               content: [
                 {
                   type: "text",
-                  text: JSON.stringify(toolResult, null, 2),
+                  text,
                 },
               ],
             },
@@ -181,7 +209,19 @@ export class PerfGymMcpServer {
     }
   }
 
-  private async executeTool(name: string, args: Record<string, any>): Promise<any> {
+  private bestEffortConfig(): PerfGymConfig | undefined {
+    try {
+      return loadConfig(this.cwd);
+    } catch {
+      // The tools must stay usable before `perfgym init` — config is optional.
+      return undefined;
+    }
+  }
+
+  /** Renders a tool response through the shared OutputFormatter seam. */
+  private async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+    const formatter = createFormatter(resolveFormat(args));
+
     switch (name) {
       case "perfgym_baseline": {
         const samples = typeof args.samples === "number" ? args.samples : undefined;
@@ -191,34 +231,59 @@ export class PerfGymMcpServer {
         if (!state || samples !== undefined) {
           const res = await runBaseline({ cwd: this.cwd, samples });
           if (!res.success) {
-            return {
-              status: "error",
-              error: res.error,
-            };
+            return formatter.formatError(new Error(String(res.error)));
           }
           state = res.state;
         }
 
-        let config;
-        try {
-          config = loadConfig(this.cwd);
-        } catch {
-          // best-effort
+        const config = this.bestEffortConfig();
+        const primaryName = config?.metrics[0]?.name;
+        const primaryDistribution =
+          primaryName === undefined ? undefined : state.baselineDistributions?.[primaryName];
+
+        if (formatter.format === "markdown") {
+          const body =
+            primaryDistribution === undefined
+              ? "### 📊 Baseline Recorded"
+              : formatter.formatBaseline(primaryDistribution, config);
+          return `${body}\n\n- **Target:** \`${state.targetName}\`\n- **Invariants:** ${
+            state.invariantsPassed ? "✅ Passed" : "❌ Failed"
+          }`;
         }
 
-        return {
-          status: "ok",
-          targetName: state.targetName,
-          invariantsPassed: state.invariantsPassed,
-          baselineMetrics: state.baselineMetrics,
-          bestFitnessScore: state.bestFitnessScore,
-          config: config
-            ? {
-                target: config.target,
-                metrics: config.metrics.map((m) => ({ name: m.name, goal: m.goal, weight: m.weight })),
-              }
-            : undefined,
-        };
+        const baselineDoc =
+          primaryDistribution === undefined
+            ? { status: "BASELINE" }
+            : (JSON.parse(formatter.formatBaseline(primaryDistribution, config)) as Record<
+                string,
+                unknown
+              >);
+
+        return JSON.stringify(
+          {
+            ...baselineDoc,
+            targetName: state.targetName,
+            invariantsPassed: state.invariantsPassed,
+            baselineMetrics: state.baselineMetrics,
+            bestFitnessScore: Number.isFinite(state.bestFitnessScore)
+              ? state.bestFitnessScore
+              : null,
+            ...(config === undefined
+              ? {}
+              : {
+                  config: {
+                    target: config.target,
+                    metrics: config.metrics.map((m) => ({
+                      name: m.name,
+                      goal: m.goal,
+                      weight: m.weight,
+                    })),
+                  },
+                }),
+          },
+          null,
+          2,
+        );
       }
 
       case "perfgym_step": {
@@ -226,41 +291,18 @@ export class PerfGymMcpServer {
         const samples = typeof args.samples === "number" ? args.samples : undefined;
         const minDelta = typeof args.minDelta === "number" ? args.minDelta : undefined;
 
-        const res = await runStep({
-          cwd: this.cwd,
-          files,
-          samples,
-          minSignificanceDelta: minDelta,
-        });
+        try {
+          const res = await runStep({
+            cwd: this.cwd,
+            files,
+            samples,
+            minSignificanceDelta: minDelta,
+          });
 
-        const ev = res.evaluation;
-        return {
-          status: "ok",
-          accepted: ev.accepted,
-          fitnessScore: ev.fitnessScore === -Infinity ? null : ev.fitnessScore,
-          deltaPercent: ev.deltaPercent,
-          isSignificant: ev.isSignificant,
-          invariants: {
-            passed: ev.invariants.passed,
-            durationMs: ev.invariants.durationMs,
-          },
-          violations: ev.violations.map((v) => ({
-            ruleId: v.ruleId,
-            message: v.message,
-            file: v.file,
-            line: v.line,
-            action: v.action,
-            penalty: v.penalty,
-          })),
-          metrics: ev.metrics.map((m) => ({
-            name: m.name,
-            value: m.value,
-            improved: m.improved,
-            deltaPercent: m.deltaPercent,
-          })),
-          revertReason: ev.revertReason,
-          executionTimeMs: ev.executionTimeMs,
-        };
+          return formatter.formatStep(res.evaluation, this.bestEffortConfig());
+        } catch (err: unknown) {
+          return formatter.formatError(err);
+        }
       }
 
       case "perfgym_rollback": {
@@ -273,22 +315,30 @@ export class PerfGymMcpServer {
             cwd: this.cwd,
             stdio: "ignore",
           });
-          return {
-            status: "ok",
-            message: "Rollback completed. Working tree restored to HEAD.",
-          };
+          return this.renderMessage(
+            formatter,
+            "Rollback completed. Working tree restored to HEAD.",
+          );
         } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            status: "error",
-            message: `Rollback failed: ${msg}`,
-          };
+          return formatter.formatError(
+            new Error(`Rollback failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
         }
       }
 
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
+  }
+
+  /**
+   * Lifecycle messages (rollback) have no LLD schema and no formatter method;
+   * render them consistently in whichever mode the caller asked for.
+   */
+  private renderMessage(formatter: { format: OutputFormat }, message: string): string {
+    return formatter.format === "markdown"
+      ? `### ✅ Rollback\n\n${message}`
+      : JSON.stringify({ status: "ok", message }, null, 2);
   }
 
   public listen(
