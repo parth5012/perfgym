@@ -125,8 +125,12 @@ const renderDistributionSection = (
 
   const unit = current.unit;
   const tail = tailGuardOf(baseline, current, goal);
-  const tailNote =
-    tail.passed === null ? "(Tail Guard unchecked)" : `(Tail Guard ${tail.passed ? "passed" : "failed"})`;
+  let tailNote: string;
+  if (tail.passed === null) {
+    tailNote = "(Tail Guard unchecked)";
+  } else {
+    tailNote = `(Tail Guard ${tail.passed ? "passed" : "failed"})`;
+  }
   const tailLabel = goal === "maximize" ? "Min (Tail)" : "p99 (Tail)";
   const tailBaseline = goal === "maximize" ? baseline.min : baseline.p99;
   const tailCurrent = goal === "maximize" ? current.min : current.p99;
@@ -197,7 +201,7 @@ export class MarkdownFormatter {
     const status = evaluation.accepted ? "ACCEPTED" : "REVERTED";
     const emoji = evaluation.accepted ? "✅" : "❌";
     const score = formatScore(evaluation.fitnessScore);
-    const goal: MetricGoal | null = config?.metrics[0]?.goal ?? null;
+    const goal: MetricGoal | null = config?.metrics?.[0]?.goal ?? null;
     const lines: string[] = [
       `### ${emoji} [${status}] Mutation at step ${evaluation.iteration} (Score: ${score})`,
       "",

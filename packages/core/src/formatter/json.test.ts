@@ -13,6 +13,7 @@ import {
   violation,
 } from "./test-fixtures.js";
 import { JsonFormatter } from "./json.js";
+import type { PerfGymConfig } from "../index.js";
 
 const formatter = new JsonFormatter();
 
@@ -262,6 +263,16 @@ describe("JsonFormatter — remaining surface", () => {
     expect(parsed.unit).toBe("ms");
     expect(parsed.sampleCount).toBe(5);
     expect((parsed.distribution as Record<string, unknown>).p99).toBe(58);
+  });
+
+  it("formatBaseline tolerates a partial config and reports absent fields as null", () => {
+    const parsed = parse(
+      formatter.formatBaseline(distribution(), { metrics: [] } as unknown as PerfGymConfig),
+    );
+
+    expect(parsed.status).toBe("BASELINE");
+    expect(parsed.target).toBeNull();
+    expect(parsed.goal).toBeNull();
   });
 
   it("formatStatus emits the session state and lock", () => {

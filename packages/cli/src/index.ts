@@ -121,8 +121,17 @@ program
   .option(...OUTPUT_OPTIONS[0])
   .option(...OUTPUT_OPTIONS[1])
   .action((options: { force?: boolean } & OutputOptions) => {
+    let formatter: OutputFormatter;
     try {
-      const formatter = resolveFormatter(options);
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      // An invalid --format cannot be honoured; fall back to the default
+      // formatter for this one error, like the other commands do.
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+
+    try {
       applyColorPolicy(formatter, options);
       const res = runInit({ force: options.force });
 
@@ -165,9 +174,9 @@ program
         process.exitCode = 1;
       }
     } catch (error: unknown) {
-      // Do not re-resolve with the same options: an invalid --format would
-      // throw again inside this catch.
-      fail(resolveFormatter({}), options, error);
+      // `formatter` already reflects --format json, so the failure is emitted
+      // as JSON on stdout rather than as markdown on stderr.
+      fail(formatter, options, error);
     }
   });
 
