@@ -321,6 +321,28 @@ describe("JsonFormatter — remaining surface", () => {
     expect(unknown.error).toMatchObject({ name: "UnknownError", message: "just a string" });
   });
 
+  it("falls back to _tag for code when a tagged Error has no code field", () => {
+    class Tagged extends Error {
+      readonly _tag = "SandboxError";
+    }
+
+    const parsed = parse(formatter.formatError(new Tagged("sandbox died")));
+    expect(parsed.error).toMatchObject({
+      name: "Error",
+      code: "SandboxError",
+      message: "sandbox died",
+    });
+  });
+
+  it("strips ANSI from lastError and keeps null as null", () => {
+    const parsed = parse(
+      formatter.formatStatus({ ...sessionState, lastError: "\u001b[31mboom\u001b[0m" }),
+    );
+
+    expect(parsed.lastError).toBe("boom");
+    expect(parse(formatter.formatStatus(sessionState)).lastError).toBeNull();
+  });
+
   it("never emits ANSI across the whole surface", () => {
     const outputs = [
       formatter.formatBaseline(distribution()),

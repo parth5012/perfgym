@@ -75,6 +75,36 @@ const ANSI_ESCAPE = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 
 export const stripAnsi = (text: string): string => text.replace(ANSI_ESCAPE, "");
 
+/**
+ * Strip ANSI from every string inside a JSON-shaped value.
+ *
+ * `render` only governs colour the CLI itself adds; escapes that arrive from
+ * subprocess output survive `JSON.stringify` (as `\u001b`) and are restored by
+ * the consumer's `JSON.parse`. Deep-clean the payload before serialising it.
+ */
+export const stripAnsiDeep = <T>(value: T): T => {
+  if (typeof value === "string") {
+    return stripAnsi(value) as unknown as T;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => stripAnsiDeep(item)) as unknown as T;
+  }
+
+  if (typeof value === "object" && value !== null) {
+    const prototype: unknown = Object.getPrototypeOf(value);
+    if (prototype === Object.prototype || prototype === null) {
+      const cleaned: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value)) {
+        cleaned[key] = stripAnsiDeep(item);
+      }
+      return cleaned as unknown as T;
+    }
+  }
+
+  return value;
+};
+
 export const toDistributionJson = (distribution: BenchmarkDistribution): DistributionJson => ({
   p50: distribution.p50,
   p90: distribution.p90,
@@ -167,10 +197,20 @@ export const tailGuardOf = (
 
 export const describeError = (error: unknown): ErrorJson => {
   if (error instanceof Error) {
-    const code = (error as { code?: unknown }).code;
+    // Effect `Data.TaggedError` values extend Error, so the `_tag` fallback
+    // must match the plain-object branch: same domain error, same `code`.
+    const candidate = error as { code?: unknown; _tag?: unknown };
+
+    let code: string | null = null;
+    if (typeof candidate.code === "string") {
+      code = candidate.code;
+    } else if (typeof candidate._tag === "string") {
+      code = candidate._tag;
+    }
+
     return {
       name: error.name,
-      code: typeof code === "string" ? code : null,
+      code,
       // Messages often embed raw subprocess output; consumers must never get ANSI.
       message: stripAnsi(error.message),
     };

@@ -169,7 +169,8 @@ export class PerfGymMcpServer {
           const args = params.arguments ?? {};
           // Tool responses are already rendered through the shared formatter;
           // strip ANSI at the protocol boundary as a belt-and-braces guarantee.
-          const text = stripAnsi(await this.executeTool(toolName, args));
+          const outcome = await this.executeTool(toolName, args);
+          const text = stripAnsi(outcome.text);
 
           return {
             jsonrpc: "2.0",
@@ -181,6 +182,7 @@ export class PerfGymMcpServer {
                   text,
                 },
               ],
+              ...(outcome.isError === true ? { isError: true } : {}),
             },
           };
         }
@@ -218,8 +220,16 @@ export class PerfGymMcpServer {
     }
   }
 
-  /** Renders a tool response through the shared OutputFormatter seam. */
-  private async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+  /**
+   * Renders a tool response through the shared OutputFormatter seam.
+   *
+   * `isError` travels alongside the text so `tools/call` can set the MCP
+   * `result.isError` flag: a formatted failure is still a failed tool call.
+   */
+  private async executeTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<{ text: string; isError?: boolean }> {
     const formatter = createFormatter(resolveFormat(args));
 
     switch (name) {
@@ -231,7 +241,7 @@ export class PerfGymMcpServer {
         if (!state || samples !== undefined) {
           const res = await runBaseline({ cwd: this.cwd, samples });
           if (!res.success) {
-            return formatter.formatError(new Error(String(res.error)));
+            return { text: formatter.formatError(new Error(String(res.error))), isError: true };
           }
           state = res.state;
         }
@@ -246,9 +256,11 @@ export class PerfGymMcpServer {
             primaryDistribution === undefined
               ? "### 📊 Baseline Recorded"
               : formatter.formatBaseline(primaryDistribution, config);
-          return `${body}\n\n- **Target:** \`${state.targetName}\`\n- **Invariants:** ${
-            state.invariantsPassed ? "✅ Passed" : "❌ Failed"
-          }`;
+          return {
+            text: `${body}\n\n- **Target:** \`${state.targetName}\`\n- **Invariants:** ${
+              state.invariantsPassed ? "✅ Passed" : "❌ Failed"
+            }`,
+          };
         }
 
         const baselineDoc =
@@ -259,31 +271,29 @@ export class PerfGymMcpServer {
                 unknown
               >);
 
-        return JSON.stringify(
-          {
-            ...baselineDoc,
-            targetName: state.targetName,
-            invariantsPassed: state.invariantsPassed,
-            baselineMetrics: state.baselineMetrics,
-            bestFitnessScore: Number.isFinite(state.bestFitnessScore)
-              ? state.bestFitnessScore
-              : null,
-            ...(config === undefined
-              ? {}
-              : {
-                  config: {
-                    target: config.target,
-                    metrics: config.metrics.map((m) => ({
-                      name: m.name,
-                      goal: m.goal,
-                      weight: m.weight,
-                    })),
-                  },
-                }),
-          },
-          null,
-          2,
-        );
+        const document = {
+          ...baselineDoc,
+          targetName: state.targetName,
+          invariantsPassed: state.invariantsPassed,
+          baselineMetrics: state.baselineMetrics,
+          bestFitnessScore: Number.isFinite(state.bestFitnessScore)
+            ? state.bestFitnessScore
+            : null,
+          ...(config === undefined
+            ? {}
+            : {
+                config: {
+                  target: config.target,
+                  metrics: config.metrics.map((m) => ({
+                    name: m.name,
+                    goal: m.goal,
+                    weight: m.weight,
+                  })),
+                },
+              }),
+        };
+
+        return { text: JSON.stringify(document, null, 2) };
       }
 
       case "perfgym_step": {
@@ -299,9 +309,9 @@ export class PerfGymMcpServer {
             minSignificanceDelta: minDelta,
           });
 
-          return formatter.formatStep(res.evaluation, this.bestEffortConfig());
+          return { text: formatter.formatStep(res.evaluation, this.bestEffortConfig()) };
         } catch (err: unknown) {
-          return formatter.formatError(err);
+          return { text: formatter.formatError(err), isError: true };
         }
       }
 
@@ -315,14 +325,19 @@ export class PerfGymMcpServer {
             cwd: this.cwd,
             stdio: "ignore",
           });
-          return this.renderMessage(
-            formatter,
-            "Rollback completed. Working tree restored to HEAD.",
-          );
+          return {
+            text: this.renderMessage(
+              formatter,
+              "Rollback completed. Working tree restored to HEAD.",
+            ),
+          };
         } catch (err: unknown) {
-          return formatter.formatError(
-            new Error(`Rollback failed: ${err instanceof Error ? err.message : String(err)}`),
-          );
+          return {
+            text: formatter.formatError(
+              new Error(`Rollback failed: ${err instanceof Error ? err.message : String(err)}`),
+            ),
+            isError: true,
+          };
         }
       }
 
