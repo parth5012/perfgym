@@ -104,7 +104,7 @@ const renderTypesSection = (evaluation: StepEvaluation): string[] => {
     typecheckFailures.length === 0
       ? "- **Typecheck Gate:** ✅ Clean (no type suppressions)"
       : `- **Typecheck Gate:** ❌ Failed — ${typecheckFailures
-          .map((violation) => violation.message)
+          .map((violation) => stripAnsi(violation.message))
           .join("; ")}`;
 
   return ["#### 1. Invariants & Types", invariantLine, typecheckLine];
@@ -175,7 +175,7 @@ const renderViolationsSection = (violations: readonly LintViolation[]): string[]
   for (const violation of astViolations) {
     lines.push(
       `- **\`${violation.file}:${violation.line}\`** — \`${violation.ruleId}\` (penalty: -${violation.penalty})`,
-      `  > ${violation.message}`,
+      `  > ${stripAnsi(violation.message)}`,
       `  *Recommendation: ${recommendationFor(violation)}*`,
     );
   }
@@ -280,7 +280,7 @@ export class MarkdownFormatter {
       `- **Lock:** ${
         resolvedLock === null ? "none" : `pid ${resolvedLock.pid} (run \`${resolvedLock.runId}\`)`
       }`,
-      `- **Last error:** ${state.lastError ?? "none"}`,
+      `- **Last error:** ${state.lastError === null ? "none" : stripAnsi(state.lastError)}`,
     ].join("\n");
   }
 
@@ -317,7 +317,7 @@ export class MarkdownFormatter {
         `- **\`${violation.file}:${violation.line}\`** — \`${violation.ruleId}\` (${resolveLintAction(
           violation,
         )}: -${violation.penalty})`,
-        `  > ${violation.message}`,
+        `  > ${stripAnsi(violation.message)}`,
         `  *Recommendation: ${recommendationFor(violation)}*`,
       );
     }

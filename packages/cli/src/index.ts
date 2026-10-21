@@ -14,6 +14,7 @@ import chalk from "chalk";
 import {
   createFormatter,
   ERR_UNKNOWN_FORMAT,
+  stripAnsiDeep,
   UnknownFormatError,
   type OutputFormatter,
   type OutputFormat,
@@ -378,7 +379,10 @@ program
                     ? result.bestFitnessScore
                     : null,
                   promoted: result.promoted,
-                  evaluations: result.evaluations,
+                  // Evaluations carry raw invariant/revert text; escapes from
+                  // subprocess output survive JSON.stringify, so clean them
+                  // here without changing the payload's shape.
+                  evaluations: stripAnsiDeep(result.evaluations),
                 },
                 null,
                 2,

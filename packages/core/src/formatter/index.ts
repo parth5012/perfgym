@@ -107,6 +107,7 @@ export {
   resolveLintAction,
   roundToCents,
   stripAnsi,
+  stripAnsiDeep,
   tailGuardOf,
   toDistributionJson,
   toLintMatchJson,

@@ -172,7 +172,7 @@ export class JsonFormatter {
         bestStep: state.bestStep,
         historyLength: state.history.length,
         lock: lock ?? state.lock ?? null,
-        lastError: state.lastError,
+        lastError: state.lastError === null ? null : stripAnsi(state.lastError),
       },
       null,
       2,

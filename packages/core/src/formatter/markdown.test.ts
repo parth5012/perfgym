@@ -166,6 +166,25 @@ describe("MarkdownFormatter — remaining surface", () => {
     expect(formatter.formatLint([])).toContain("No AST pattern violations detected.");
   });
 
+  it("strips ANSI from typecheck, lint and lastError strings", () => {
+    const ansi = (value: string): string => `\u001b[31m${value}\u001b[0m`;
+
+    const step = formatter.formatStep({
+      ...shortCircuitStep,
+      violations: [{ ...typecheckViolation, message: ansi("Types broken") }],
+    });
+    expect(step).toContain("Types broken");
+    expect(step).not.toMatch(ANSI_PATTERN);
+
+    const lint = formatter.formatLint([{ ...violation, message: ansi("Avoid serial awaits") }]);
+    expect(lint).toContain("Avoid serial awaits");
+    expect(lint).not.toMatch(ANSI_PATTERN);
+
+    const status = formatter.formatStatus({ ...sessionState, lastError: ansi("boom") }, null);
+    expect(status).toContain("**Last error:** boom");
+    expect(status).not.toMatch(ANSI_PATTERN);
+  });
+
   it("formatLint keeps typecheck sentinel violations out of the AST list", () => {
     expect(formatter.formatLint([typecheckViolation])).toContain(
       "No AST pattern violations detected.",

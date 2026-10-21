@@ -237,6 +237,36 @@ metrics:
     expect(body.linter.matches.length).toBeGreaterThan(0);
   });
 
+  it("flags formatted tool failures with result.isError and clears it on success", async () => {
+    // No baseline for this fresh cwd: runStep throws and the formatter renders
+    // the failure, which must still be reported as a failed tool call.
+    const failed = await server.handleJsonRpcRequest({
+      jsonrpc: "2.0",
+      id: 32,
+      method: "tools/call",
+      params: { name: "perfgym_step", arguments: { files: ["src/index.ts"], format: "json" } },
+    });
+
+    expect(failed.result.isError).toBe(true);
+    const doc = JSON.parse(failed.result.content[0].text) as { error: { message: string } };
+    expect(doc.error.message.length).toBeGreaterThan(0);
+
+    // A ready workspace makes the same call succeed.
+    fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), STEP_CONFIG, "utf8");
+    fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(testDir, "src", "index.ts"), "export const x = 1;\n", "utf8");
+    writeState(testDir, stateFixture("mcp-format"));
+
+    const ok = await server.handleJsonRpcRequest({
+      jsonrpc: "2.0",
+      id: 33,
+      method: "tools/call",
+      params: { name: "perfgym_step", arguments: { files: ["src/index.ts"], format: "json" } },
+    });
+
+    expect(ok.result.isError).toBeUndefined();
+  });
+
   it("exposes a format property on every tool input schema", async () => {
     const res = await server.handleJsonRpcRequest({
       jsonrpc: "2.0",
