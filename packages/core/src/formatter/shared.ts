@@ -101,7 +101,7 @@ export const toLintMatchJson = (violation: LintViolation): LintMatchJson => ({
   line: violation.line,
   // Neither column nor a code snippet is carried on LintViolation today.
   column: null,
-  message: violation.message,
+  message: stripAnsi(violation.message),
   penalty: violation.penalty,
   action: resolveLintAction(violation),
   codeSnippet: null,
@@ -169,7 +169,8 @@ export const describeError = (error: unknown): ErrorJson => {
     return {
       name: error.name,
       code: typeof code === "string" ? code : null,
-      message: error.message,
+      // Messages often embed raw subprocess output; consumers must never get ANSI.
+      message: stripAnsi(error.message),
     };
   }
 
@@ -193,9 +194,11 @@ export const describeError = (error: unknown): ErrorJson => {
     return {
       name,
       code,
-      message: typeof candidate.message === "string" ? candidate.message : String(error),
+      message: stripAnsi(
+        typeof candidate.message === "string" ? candidate.message : String(error),
+      ),
     };
   }
 
-  return { name: "UnknownError", code: null, message: String(error) };
+  return { name: "UnknownError", code: null, message: stripAnsi(String(error)) };
 };

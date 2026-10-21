@@ -219,7 +219,7 @@ export class MarkdownFormatter {
 
     const nextDirection =
       evaluation.revertReason !== undefined && evaluation.revertReason.length > 0
-        ? `- 👉 *Next Direction: ${evaluation.revertReason}*`
+        ? `- 👉 *Next Direction: ${stripAnsi(evaluation.revertReason)}*`
         : null;
 
     if (memoryLines.length > 0 || nextDirection !== null) {
