@@ -143,7 +143,7 @@ export const tailGuardOf = (
 
   const rule = goal === "maximize" ? MAXIMIZE_TAIL_GUARD_RULE : MINIMIZE_TAIL_GUARD_RULE;
 
-  if (baseline == null || current == null) {
+  if (baseline === null || baseline === undefined || current === null || current === undefined) {
     return { passed: null, madCeiling: null, rule };
   }
 
@@ -153,12 +153,14 @@ export const tailGuardOf = (
 
   // Compare against the raw ceiling: rounding before comparison would flip
   // verdicts within ±0.005 of the boundary.
-  const passed =
-    !Number.isFinite(ceiling) || !Number.isFinite(observed)
-      ? true
-      : goal === "maximize"
-        ? !(observed < ceiling)
-        : !(observed > ceiling);
+  let passed = true;
+  if (Number.isFinite(ceiling) && Number.isFinite(observed)) {
+    if (goal === "maximize") {
+      passed = !(observed < ceiling);
+    } else {
+      passed = !(observed > ceiling);
+    }
+  }
 
   return { passed, madCeiling: ceiling, rule };
 };

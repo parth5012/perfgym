@@ -82,7 +82,7 @@ export const toStepEvaluationJson = (
 ): StepEvaluationJson => {
   const typecheckFailures = typecheckFailuresOf(evaluation);
   const astViolations = astViolationsOf(evaluation.violations);
-  const configuredMetric = config?.metrics[0];
+  const configuredMetric = config?.metrics?.[0];
   const goal: MetricGoal | null = configuredMetric?.goal ?? null;
   const distribution = evaluation.currentDistribution ?? evaluation.baselineDistribution;
 
@@ -98,7 +98,7 @@ export const toStepEvaluationJson = (
       passed: evaluation.invariants.passed,
       // Absent stays absent: no fabricated zero.
       retriesUsed: evaluation.invariants.retriesUsed ?? null,
-      command: config?.invariants.command ?? null,
+      command: config?.invariants?.command ?? null,
       durationMs: evaluation.invariants.durationMs,
     },
     typecheck: {
@@ -149,9 +149,9 @@ export class JsonFormatter {
     return JSON.stringify(
       {
         status: "BASELINE",
-        target: config?.target.name ?? null,
+        target: config?.target?.name ?? null,
         unit: distribution.unit,
-        goal: config?.metrics[0]?.goal ?? null,
+        goal: config?.metrics?.[0]?.goal ?? null,
         sampleCount: distribution.sampleCount,
         distribution: toDistributionJson(distribution),
       },

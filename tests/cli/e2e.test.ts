@@ -259,5 +259,17 @@ metrics:
     const doc = JSON.parse(res.stdout) as { error: { message: string } };
     expect(doc.error.message).toContain("Configuration file not found");
   });
+
+  it("keeps --format json when init itself throws", () => {
+    // A directory named .perfgym.yaml makes the write fail, exercising the
+    // init catch block: it must honour --format json instead of falling back
+    // to the default markdown formatter.
+    fs.mkdirSync(path.join(testDir, ".perfgym.yaml"), { recursive: true });
+
+    const res = runCli(["init", "--format", "json", "--force"]);
+    expect(res.status).toBe(1);
+    const doc = JSON.parse(res.stdout) as { error: { message: string; code: string | null } };
+    expect(doc.error.message.length).toBeGreaterThan(0);
+  });
 });
 
