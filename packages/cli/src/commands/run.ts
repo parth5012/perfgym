@@ -211,13 +211,15 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     }
 
     // Print summary table
-    printSummaryTable({
-      totalIterations: evaluations.length,
-      acceptedCount,
-      bestFitnessScore: bestFitness,
-      stoppedReason,
-      promoted,
-    });
+    if (!options.quiet) {
+      printSummaryTable({
+        totalIterations: evaluations.length,
+        acceptedCount,
+        bestFitnessScore: bestFitness,
+        stoppedReason,
+        promoted,
+      });
+    }
 
     return {
       totalIterations: evaluations.length,
