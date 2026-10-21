@@ -37,3 +37,11 @@
 ### 9. Block Comment `*/` Embedded in Docstrings
 * **Problem**: Writing `defaults to ["src/**/*"]` inside a `/** ... */` doc comment terminates the comment at `**/*` → esbuild parse error "Unexpected `*`".
 * **Solution**: Never put literal glob text containing `*/` inside block comments; rephrase (e.g. "the src globstar pattern") or use a line comment.
+
+### 10. Chalk Treats Bare `--color` argv as Force-Colour
+* **Problem**: any CLI that passes a `--color <mode>` option leaks escapes even under `--color never | cat`, because chalk inspects `process.argv` itself and treats the mere presence of a `--color` flag as "force colour". Resolving the mode yourself is not enough.
+* **Solution**: pin `chalk.level` (1 when enabled, 0 when disabled) from one authoritative `applyColorPolicy` call before emitting anything; formatters stay ANSI-free and the CLI applies colour around the finished string.
+
+### 11. `JSON.stringify` Does Not Sanitise ANSI
+* **Problem**: an escape sequence inside a string becomes `\u001b` in the JSON text and `JSON.parse` restores the real ESC, so `--format json` can still hand consumers ANSI when raw subprocess output (invariant output, revert reasons) is serialised. Stripping at the formatter boundary is not enough when a caller serialises domain objects directly.
+* **Solution**: deep-clean JSON payloads (`stripAnsiDeep`) before `JSON.stringify`, preserving shape and non-string values, and strip again at the MCP boundary as a second guarantee.
