@@ -139,3 +139,12 @@
 - Code changes: packages/core/src/pipeline/{invariants,benchmark,fitness,pipeline}.ts + tests, index.ts wiring, scripts/demo-pipeline-gradient.ts, docs/DECISIONS.md (ADR-020).
 - Verification: pnpm vitest run 190/190 green (16 files); npx tsc --noEmit clean; demo exit 0.
 - Notes: eslint 127 pre-existing repo-wide (not installed). Map 6 (#6) verified fully closed. PR for map 3 opened on feat/map-3-pipeline-fitness.
+
+## 2026-10-21 — Wayfinder Map 5 (#65) full run: OutputFormatter dual output
+- Status: Done (PR #75 open, babysat; not merged)
+- Phase 2 (AFK, single-PR mode = 3 code tickets): #33 formatter seam + adapters; #34 CLI `--format`/`--color`; #35 MCP rendering. Each ticket: TDD red→green, written + committed, ticket closed with a resolution comment.
+- Code changes: `packages/core/src/formatter/{index,json,markdown,shared}.ts` (+ tests/fixtures), CLI flags and error path, MCP `format` property, `runInit` returning config, run summary gated on `--quiet`.
+- Verification: `npx tsc --noEmit` clean; `npx vitest run` 296/296 green (25 files).
+- Review round 1 (local OCR over `origin/main..HEAD`, 7 findings): fixed the init `--format json` error path, guarded partial-config access in both adapters, flattened nested ternaries and `== null`. Commit `95e541f`.
+- Review round 2 (CodeRabbit, 6 inline findings): fixed ANSI leaks (`lastError`, typecheck/lint messages, `run --format json` evaluations via new `stripAnsiDeep`), `describeError` `_tag` fallback for `Error` instances, and MCP `result.isError: true` on formatted tool failures. Commit `8a214b0`.
+- Notes: `docs/IMPLEMENTATION_PLAN.md` referenced by the tickets does not exist in the repo or its history; implemented from `docs/LOW_LEVEL_DESIGN.md` §6.1/§6.2 plus ticket text. `parthpr-agent` failed to review twice (bot-side, no detail).
