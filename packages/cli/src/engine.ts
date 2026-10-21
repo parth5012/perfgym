@@ -134,7 +134,12 @@ export interface InitOptions {
   force?: boolean;
 }
 
-export function runInit(options: InitOptions = {}): { success: boolean; message: string; configPath: string } {
+export function runInit(options: InitOptions = {}): {
+  success: boolean;
+  message: string;
+  configPath: string;
+  config?: PerfGymConfig;
+} {
   const cwd = options.cwd ?? process.cwd();
   const configPath = path.join(cwd, CONFIG_FILE_NAME);
 
@@ -155,6 +160,7 @@ export function runInit(options: InitOptions = {}): { success: boolean; message:
     success: true,
     message: `Initialized ${CONFIG_FILE_NAME} with ${lang} preset.`,
     configPath,
+    config,
   };
 }
 
