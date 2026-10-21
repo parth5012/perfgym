@@ -15,6 +15,7 @@ export * from "./pipeline/benchmark.js";
 export * from "./pipeline/fitness.js";
 export * from "./pipeline/pipeline.js";
 export * from "./feedback/synthesizer.js";
+export * from "./formatter/index.js";
 
 export interface MetricResult {
   name: string;
