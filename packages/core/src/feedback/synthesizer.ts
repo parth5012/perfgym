@@ -7,6 +7,8 @@
  */
 
 import type { InvariantResult, LintViolation, MetricResult } from "../index.js";
+import type { NegativeMemoryEntry } from "../memory/index.js";
+import { formatDeltaPercent, formatNegativeMemoryEntry } from "../memory/render.js";
 
 export interface SynthesizerInput {
   accepted: boolean;
@@ -18,6 +20,13 @@ export interface SynthesizerInput {
   metrics: readonly MetricResult[];
   baselineMetrics?: Record<string, number>;
   revertReason?: string;
+  /**
+   * Strategies that already failed, newest first. When supplied and non-empty
+   * the feedback ends with a "Previously failed strategies" section so the
+   * agent knows what not to retry. Absent data is `null` (or an empty list) —
+   * both mean "no memory" and leave the rendered feedback unchanged.
+   */
+  negativeMemory?: readonly NegativeMemoryEntry[] | null;
 }
 
 const RULE_RECOMMENDATIONS: Record<string, string> = {
@@ -68,7 +77,7 @@ export function synthesizeGradientFeedback(input: SynthesizerInput): string {
   // Benchmarks & Metrics
   if (input.metrics.length > 0) {
     for (const m of input.metrics) {
-      const deltaSign = m.deltaPercent >= 0 ? `+${m.deltaPercent.toFixed(1)}%` : `${m.deltaPercent.toFixed(1)}%`;
+      const deltaSign = formatDeltaPercent(m.deltaPercent);
       const statusWord = m.improved ? "improved" : "degraded";
       const baseVal = input.baselineMetrics?.[m.name];
       const baseStr = baseVal !== undefined ? ` (Baseline: ${baseVal}${m.unit} -> Current: ${m.value}${m.unit})` : ` (${m.value}${m.unit})`;
@@ -121,6 +130,17 @@ export function synthesizeGradientFeedback(input: SynthesizerInput): string {
     lines.push(`Recommendation:`);
     for (const r of recommendations) {
       lines.push(`- ${r}`);
+    }
+  }
+
+  // Negative Memory — the strategies that already failed. Omitted entirely
+  // when no memory is supplied (absent, `null` or empty), so the default
+  // feedback is unchanged.
+  const negativeMemory = input.negativeMemory;
+  if (negativeMemory != null && negativeMemory.length > 0) {
+    lines.push(`Previously failed strategies:`);
+    for (const entry of negativeMemory) {
+      lines.push(`- ${formatNegativeMemoryEntry(entry)}`);
     }
   }
 

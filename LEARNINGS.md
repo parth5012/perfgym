@@ -63,3 +63,17 @@
 ### 15. Maps Keyed By Untrusted Names Need A Null Prototype
 * **Problem**: `const targets: Record<string, T> = {}` then `targets[name] = value` — a name of `__proto__` sets the prototype instead of creating an own property, so that entry vanishes from the serialised output and the lookup later resolves to `Object.prototype`.
 * **Solution**: build such maps with `Object.create(null)` so `__proto__` is an ordinary own key, and resolve lookups with `Object.prototype.hasOwnProperty.call(map, key)` so an inherited property can never be mistaken for a stored entry.
+
+## Surface-Contract Edge Cases
+
+### 16. Surfaces Must Agree On How "Absent" Is Spelled
+* **Problem**: the markdown formatter's optional dependency was `X[] | null` ("`null` means no memory"), but the gradient synthesizer's equivalent field was `X[] | undefined` — so passing `null` to the synthesizer threw `TypeError: Cannot read properties of null (reading 'length')`. Two surfaces rendering the same domain object had two different contracts for "nothing to show", and the repo convention for absent data is `null` (LLD §6.1: `stepReceipt: null`, `negativeMemoryGuidance: null`).
+* **Solution**: when the same optional field is added to more than one surface, define the absent-value contract once and apply it everywhere — widen the type to `| null` and guard with a null-safe check (`x != null && x.length > 0`) so `undefined`, `null` and `[]` all behave identically. A test should assert the `null` output is byte-identical to the omitted-field output.
+
+### 17. Shared Rendering Needs One Owner And Must Stay A Dependency-Free Leaf
+* **Problem**: the same delta/entry formatting was written twice (feedback synthesizer and markdown formatter) and the two copies would drift. Hoisting it into a shared module raised the opposite risk — if the shared module sits behind the package barrel, a renderer ends up pulling the cache's `node:fs` / `node:crypto` into its runtime graph.
+* **Solution**: put shared rendering in a leaf module with ZERO runtime imports (a type-only import is erased at compile time) and import it by its direct path, never through the barrel that re-exports the I/O-bearing module. Verify the runtime closure, not just the import statements.
+
+### 18. Every Rendered Free Text Must Pass The Formatter's ANSI Filter
+* **Problem**: each free-text field in the markdown formatter was routed through `stripAnsi` — except a newly added one. A remembered failure's `reason` is a revert reason and can carry subprocess ANSI, so the markdown output would have leaked escape codes, breaking the "the formatter never emits ANSI" contract in LLD §6.1/§6.2.
+* **Solution**: route every rendered text through `stripAnsi` at the formatter boundary — including text composed by a shared renderer — and add a test asserting no `\u001b[` appears in the output.
