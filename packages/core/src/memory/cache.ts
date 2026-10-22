@@ -24,7 +24,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { NegativeMemoryEntry } from "./index.js";
 
@@ -270,7 +270,24 @@ export class NegativeMemoryCache {
     };
 
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+
+    // Write to a sibling temp file and rename it over the destination: a
+    // rename within one directory is atomic, so an interrupted run can never
+    // leave a half-written file behind. A truncated file would read back as
+    // empty (the loader never throws) and the next save would then discard
+    // the entries of every other target.
+    const tempFile = `${file}.tmp.${process.pid}.${Date.now()}`;
+    try {
+      writeFileSync(tempFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+      renameSync(tempFile, file);
+    } catch (error: unknown) {
+      try {
+        rmSync(tempFile, { force: true });
+      } catch {
+        // The temp file is best-effort cleanup; the original error matters more.
+      }
+      throw error;
+    }
   }
 
   /**
