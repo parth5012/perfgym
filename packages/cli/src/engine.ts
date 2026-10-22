@@ -167,9 +167,25 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   // The YAML is returned verbatim — the documented `agent_budget` block
   // (`max_iterations`, `rollback_on_failure`) survives as the user wrote it.
   // `agentBudget` is the normalised, typed view of the same block.
+  const rawLlm = asRecord(parsed.llm);
+  const normalisedLlm = rawLlm
+    ? {
+        driver: rawLlm.driver as any,
+        provider: rawLlm.provider as string | undefined,
+        model: rawLlm.model as string | undefined,
+        baseUrl: (rawLlm.base_url ?? rawLlm.baseUrl) as string | undefined,
+        apiKeyEnv: (rawLlm.api_key_env ?? rawLlm.apiKeyEnv) as string | undefined,
+        cliCommand: (rawLlm.cli_command ?? rawLlm.cliCommand) as string | undefined,
+        cliArgs: (rawLlm.cli_args ?? rawLlm.cliArgs) as string[] | undefined,
+        timeoutMs: (rawLlm.timeout_ms ?? rawLlm.timeoutMs) as number | undefined,
+        pricing: rawLlm.pricing as any,
+      }
+    : undefined;
+
   return {
     ...(parsed as unknown as PerfGymConfig),
     agentBudget: normaliseAgentBudget(parsed),
+    ...(normalisedLlm ? { llm: normalisedLlm } : {}),
   };
 }
 
