@@ -137,7 +137,7 @@ export function synthesizeGradientFeedback(input: SynthesizerInput): string {
   // when no memory is supplied (absent, `null` or empty), so the default
   // feedback is unchanged.
   const negativeMemory = input.negativeMemory;
-  if (negativeMemory != null && negativeMemory.length > 0) {
+  if (negativeMemory !== undefined && negativeMemory !== null && negativeMemory.length > 0) {
     lines.push(`Previously failed strategies:`);
     for (const entry of negativeMemory) {
       lines.push(`- ${formatNegativeMemoryEntry(entry)}`);

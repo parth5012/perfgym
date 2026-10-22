@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -379,6 +379,65 @@ metrics:
       expect(res.evaluation.accepted).toBe(true);
       expect(res.evaluation.fitnessScore).toBeGreaterThan(0);
       expect(res.evaluation.deltaPercent).toBeCloseTo(20, 1);
+    });
+
+    it("warns and writes no cache when every modified path cannot be read as a file", async () => {
+      const configYaml = `
+version: "1.0"
+target:
+  name: "test-target"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "instructions"
+    command: "node -e 'console.log(JSON.stringify({ value: 80 }))'"
+    goal: "minimize"
+    weight: 1
+`;
+      fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), configYaml, "utf8");
+
+      // A directory passes the step's "exists + matches target glob" filter,
+      // but it cannot be read as a file — exactly the vanished/unreadable-path
+      // case where every modified path yields `null`.
+      fs.mkdirSync(path.join(testDir, "src", "unreadable"), { recursive: true });
+
+      writeState(testDir, {
+        version: "0.1.0",
+        initializedAt: Date.now(),
+        updatedAt: Date.now(),
+        targetName: "test-target",
+        baselineMetrics: { instructions: 100 },
+        invariantsPassed: true,
+        bestFitnessScore: 0,
+        acceptedStepCount: 0,
+        totalStepCount: 0,
+      });
+
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        const res = await runStep({
+          cwd: testDir,
+          files: ["src/unreadable"],
+          samples: 1,
+          recordNegativeMemory: true,
+        });
+
+        expect(res.evaluation.accepted).toBe(false);
+        expect(warn).toHaveBeenCalledTimes(1);
+
+        const message = String(warn.mock.calls[0]?.[0]);
+        expect(message).toContain("1 modified file");
+        expect(message).toContain("nothing was recorded");
+
+        expect(
+          fs.existsSync(path.join(testDir, ".perfgym", "negative-memory.json")),
+        ).toBe(false);
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it("rejects when AST violations (e.g. @ts-ignore) are present", async () => {

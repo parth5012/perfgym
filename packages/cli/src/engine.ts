@@ -534,6 +534,14 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
         step: evaluation.iteration,
       });
       cache.save(negativeMemoryFilePath(cwd));
+    } else {
+      // The user asked to record a failure, but none of the modified paths
+      // could be read (an ancestor vanished, the tree was reverted, or the
+      // path is not a file). Writing an entry for nothing is not useful, but
+      // the skip must not be silent: say what happened and why.
+      console.warn(
+        `⚠ Negative memory not recorded: could not read any of the ${modifiedFiles.length} modified file(s); nothing was recorded.`,
+      );
     }
   }
 

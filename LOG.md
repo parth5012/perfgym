@@ -185,3 +185,13 @@
 - Self-review (3 iterations): round 1 blocked on (a) the failure being recorded after the feedback was synthesized, (b) an accepted-but-not-better mutation being remembered as a failure, and (c) `loadConfig` discarding the documented `agent_budget` keys. Round 2 blocked on the persisted memory never reaching the FIRST mutation of a run (LEARNINGS #19) and the camelCase budget's other fields being stripped (LEARNINGS #21). Round 3 addressed the remaining cheap items (blank reason fallback, duplicated e2e helper + a new `any`, the undocumented schema key, `memory clear` creating a needless file, an ambiguous citation, unused exports).
 - Orchestrator rulings: an accepted mutation is never a failure, however the loop rolled it back (LEARNINGS #20); the generator receives the remembered failures as a structured `MutationContext.negativeMemory` channel rather than a fabricated synthetic "initial feedback" string.
 - Parked (non-blocking): `asRecord` duplicated against the core's unexported `isRecord`; a rejected step with a NaN `deltaPercent` persists as `null` and is dropped on reload (root cause in the core cache, out of scope); the `strategy` label is a sorted path list pending Map 7's prompt builder; `memory clear --format json` carries extra keys; MCP and the web adapter stay unwired; Windows path behaviour untested.
+
+### PR #76 — whole-PR review pass
+- Status: Done
+- A whole-PR OCR review of `main..feat/map-6-negative-memory` (all three tickets together) reported 4 findings, all low severity. Three were actionable and are fixed in a follow-up commit:
+  - `packages/core/src/feedback/synthesizer.ts` — `negativeMemory != null` was the only loose-equality check in `packages/core/src`; made explicit. (An earlier round rejected this finding on the grounds that the repo has no such rule; the tree shows an overwhelming strict-null convention, so the earlier ruling is superseded.)
+  - `packages/cli/src/engine.ts` — `perfgym step --record-negative-memory` could silence a recording entirely when no modified path read as a file; it now warns with the attempted path count and still writes nothing.
+  - `packages/cli/src/commands/run.ts` — the `finally` save is now gated on `memoryDirty`, so a run that learned nothing no longer rewrites (or risks clobbering) `.perfgym/negative-memory.json` (LEARNINGS #22).
+  - Not changed: `loadTargetMemory`'s `loadConfig()` — the reviewer confirmed both call sites wrap it in the action's `try`.
+- Verification: `npx vitest run` 391/391 green (27 files, +2 new tests); `npx tsc --noEmit` clean.
+- Parked: a run that records still saves a snapshot taken at run start, so two concurrent runs on different targets can clobber each other. Needs re-read-and-merge before save.

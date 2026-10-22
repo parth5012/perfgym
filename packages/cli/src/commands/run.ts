@@ -100,6 +100,11 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     config.target.name,
     config.agentBudget?.negativeMemorySize,
   );
+  // Only a run that actually records a failure may rewrite the cache. Saving
+  // unconditionally would bump the file's mtime on every "nothing learned"
+  // run, and — because the cache is a snapshot taken at run start — could
+  // overwrite entries a concurrent run wrote in the meantime.
+  let memoryDirty = false;
 
   if (!state) {
     log(chalk.blue("📊 Establishing initial baseline before optimization loop..."));
@@ -216,6 +221,7 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
             ...(stepEval.revertReason !== undefined ? { reason: stepEval.revertReason } : {}),
             step: i,
           });
+          memoryDirty = true;
         }
 
         const scoreStr = stepEval.fitnessScore === -Infinity ? "-Infinity" : stepEval.fitnessScore.toFixed(2);
@@ -301,7 +307,7 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     // what the run learned is never lost. A run that learned nothing writes
     // no file at all, and a persistence failure never masks the run's own
     // error.
-    if (negativeMemory.entries().length > 0) {
+    if (memoryDirty && negativeMemory.entries().length > 0) {
       try {
         negativeMemory.save(negativeMemoryFile);
       } catch (error: unknown) {

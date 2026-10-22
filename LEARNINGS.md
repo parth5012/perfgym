@@ -91,3 +91,7 @@
 ### 21. A Config Normaliser Must Not Replace The Block It Normalises
 * **Problem**: `loadConfig` normalised `agent_budget` into a fresh `{ negativeMemorySize }` object and `delete`d the raw block. The keys `docs/SPECIFICATION.md` §1 documents (`max_iterations`, `rollback_on_failure`) vanished from the loaded config — a silent regression for anyone reading them. Even after preserving the raw block, a camelCase `agentBudget` carrying extra fields was still stripped, because the normalised object replaced it wholesale.
 * **Solution**: spread the source block into the normalised result (`{ ...budget, negativeMemorySize: resolved }`) and keep the user's original block untouched beside it. A normaliser adds fields; it must never delete them.
+
+### 22. An Unconditional Persist Rewrites State It Did Not Change
+* **Problem**: the run loop's `finally` saved the negative memory whenever the cache held entries — including runs that recorded nothing. Every such run bumped the file's mtime and, because the cache was a snapshot taken at run start, could overwrite a concurrent run's entries for a different target. The write looked harmless because the content was identical.
+* **Solution**: gate the save on a `memoryDirty` flag set where a failure is actually recorded, so a run that learned nothing touches nothing. The remaining half — a run that *does* record still saving a stale snapshot over another target's concurrent write — needs a re-read-and-merge before save; noted rather than fixed.
