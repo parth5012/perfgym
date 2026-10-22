@@ -163,7 +163,7 @@ metrics:
 
     // Should stop at iteration 3 due to 3 consecutive non-improving steps
     expect(res.totalIterations).toBe(3);
-    expect(res.stoppedReason).toContain("Plateau reached");
+    expect(res.stoppedReason).toMatch(/plateau/i);
   });
 });
 

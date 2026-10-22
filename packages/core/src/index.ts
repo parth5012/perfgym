@@ -130,5 +130,16 @@ export interface PerfGymConfig {
      */
     readonly negativeMemorySize?: number;
   };
+  llm?: {
+    driver?: "api" | "cli" | string;
+    provider?: string;
+    model?: string;
+    baseUrl?: string;
+    apiKeyEnv?: string;
+    cliCommand?: string;
+    cliArgs?: string[];
+    timeoutMs?: number;
+    pricing?: Record<string, { promptPerMillion: number; completionPerMillion: number }>;
+  };
 }
 
