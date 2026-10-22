@@ -6,10 +6,14 @@ import {
   EvaluationPipeline,
   runInvariantGate,
   runBenchmark,
+  NegativeMemoryCache,
+  hashMutatedFiles,
+  DEFAULT_NEGATIVE_MEMORY_ENTRIES,
   type PerfGymConfig,
   type StepEvaluation,
   type WorkspaceContext,
   type BenchmarkDistribution,
+  type NegativeMemoryEntry,
   matchesGlob,
 } from "../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../linter/src/index.js";
@@ -97,7 +101,57 @@ export function generateStarterConfig(language: SupportedLanguage = "typescript"
 }
 
 export const STATE_PATH = path.join(".perfgym", "state.json");
+export const NEGATIVE_MEMORY_PATH = path.join(".perfgym", "negative-memory.json");
 export const CONFIG_FILE_NAME = ".perfgym.yaml";
+
+/** A plain object (not an array, not null) — the shape of a YAML mapping. */
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+/**
+ * The capacity of the negative memory: a positive whole number, or the
+ * documented default of 5 entries (the "top 5 anti-patterns" bound of
+ * FLAW-13). Anything else — 0, a negative number, NaN, a non-numeric YAML
+ * scalar, or a size that floors to 0 — falls back to the default instead of
+ * producing a zero-capacity cache that would remember nothing at all.
+ */
+const resolveNegativeMemorySize = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_NEGATIVE_MEMORY_ENTRIES;
+  }
+  const floored = Math.floor(value);
+  // A capacity below 1 entry would disable the feature silently — the
+  // documented default is the better answer.
+  return floored > 0 ? floored : DEFAULT_NEGATIVE_MEMORY_ENTRIES;
+};
+
+/**
+ * Normalise the documented `agent_budget` block onto the camelCase
+ * `agentBudget` shape of `PerfGymConfig`.
+ *
+ * The `agent_budget` block itself is documented in docs/SPECIFICATION.md §1
+ * (`max_iterations`, `rollback_on_failure`); the `negative_memory_size` entry
+ * inside it comes from the wayfinder map #66 GitHub issue (the bounded
+ * negative memory of FLAW-13 — not docs/WAYFINDER_MAPS.md, which only
+ * covers Maps 1–4). The YAML spells the block in snake_case while the
+ * TypeScript config type is camelCase — both spellings are accepted here so
+ * the documented configuration actually works.
+ */
+const normaliseAgentBudget = (config: Record<string, unknown>): PerfGymConfig["agentBudget"] => {
+  const budget = asRecord(config.agentBudget ?? config.agent_budget);
+  const size =
+    budget === null ? undefined : (budget.negativeMemorySize ?? budget.negative_memory_size);
+
+  // The block is untyped YAML: its other fields (e.g. the documented
+  // `max_iterations` / `rollback_on_failure`) are carried through verbatim,
+  // and only the memory size is normalised onto the typed shape.
+  return {
+    ...(budget ?? {}),
+    negativeMemorySize: resolveNegativeMemorySize(size),
+  } as PerfGymConfig["agentBudget"];
+};
 
 export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   const configPath = path.join(rootDir, CONFIG_FILE_NAME);
@@ -105,12 +159,114 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
     throw new Error(`Configuration file not found: ${configPath}. Run 'perfgym init' first.`);
   }
   const content = fs.readFileSync(configPath, "utf8");
-  const parsed = parseYaml(content) as PerfGymConfig;
-  if (!parsed || !parsed.target || !parsed.invariants || !parsed.metrics) {
+  const parsed = asRecord(parseYaml(content) as unknown);
+  if (parsed === null || !parsed.target || !parsed.invariants || !parsed.metrics) {
     throw new Error(`Invalid configuration format in ${configPath}`);
   }
-  return parsed;
+
+  // The YAML is returned verbatim — the documented `agent_budget` block
+  // (`max_iterations`, `rollback_on_failure`) survives as the user wrote it.
+  // `agentBudget` is the normalised, typed view of the same block.
+  return {
+    ...(parsed as unknown as PerfGymConfig),
+    agentBudget: normaliseAgentBudget(parsed),
+  };
 }
+
+// ============================================================================
+// Negative memory — the bounded record of failed mutation strategies
+// ============================================================================
+
+/** The absolute path of the negative memory file of a project. */
+export const negativeMemoryFilePath = (rootDir: string): string =>
+  path.join(rootDir, NEGATIVE_MEMORY_PATH);
+
+/**
+ * Load the negative memory of one target.
+ *
+ * The capacity fallback lives HERE: a hand-built config may omit the
+ * `agentBudget` block entirely, and the cache must still get the documented
+ * default capacity. Every caller goes through this helper, so "which file,
+ * which target, how many entries" is decided in exactly one place.
+ */
+export const loadNegativeMemory = (
+  rootDir: string,
+  target: string,
+  maxEntries?: number,
+): NegativeMemoryCache =>
+  NegativeMemoryCache.load(
+    negativeMemoryFilePath(rootDir),
+    target,
+    resolveNegativeMemorySize(maxEntries),
+  );
+
+/**
+ * A short, human-readable label for the mutation strategy that failed.
+ *
+ * The mutation generator hands back file paths, not strategy names, so the
+ * label is derived deterministically from the mutated paths (sorted, joined
+ * with `", "`). The prompt builder (Map 7) will eventually name the
+ * strategies itself; until then this keeps the memory inspectable.
+ */
+const describeMutationStrategy = (
+  files: readonly { readonly relPath: string }[],
+): string =>
+  [...files.map((file) => file.relPath.replace(/\\/g, "/"))].sort().join(", ");
+
+/** Everything a rejected step contributes to the negative memory. */
+export interface NegativeMemoryRecord {
+  /** The mutated files — their contents decide the dedup hash. */
+  readonly files: readonly { readonly relPath: string; readonly content: string }[];
+  /** The measured delta of the failed attempt. */
+  readonly deltaPercent: number;
+  /** The revert reason; a rejected step without one is remembered as "rejected". */
+  readonly reason?: string;
+  /** The iteration the attempt belongs to. */
+  readonly step: number;
+  /** Epoch milliseconds of the attempt (defaults to now). */
+  readonly timestamp?: number;
+}
+
+/**
+ * Build the compact fingerprint of a failed attempt:
+ * `[Hash, FailedStrategyName, DeltaScore, BriefReason]` (FLAW-13).
+ */
+const buildNegativeMemoryEntry = (record: NegativeMemoryRecord): NegativeMemoryEntry => {
+  // A blank (whitespace-only) reason carries no information — the entry
+  // falls back to the generic "rejected".
+  const reason = record.reason?.trim() ?? "";
+
+  return {
+    id: hashMutatedFiles(record.files),
+    strategy: describeMutationStrategy(record.files),
+    deltaPercent: record.deltaPercent,
+    reason: reason.length > 0 ? reason : "rejected",
+    step: record.step,
+    timestamp: record.timestamp ?? Date.now(),
+  };
+};
+
+/**
+ * Remember a failed attempt in the negative memory.
+ *
+ * One place builds the fingerprint and records it, so the optimization loop
+ * and the manual `perfgym step` cannot drift apart.
+ */
+export const recordNegativeMemory = (
+  cache: NegativeMemoryCache,
+  failure: NegativeMemoryRecord,
+): void => {
+  cache.record(buildNegativeMemoryEntry(failure));
+};
+
+/** Read a file's contents, tolerating a file that disappeared in the meantime. */
+const readFileIfPresent = (absolutePath: string): string | null => {
+  try {
+    return fs.readFileSync(absolutePath, "utf8");
+  } catch {
+    return null;
+  }
+};
 
 export function readState(rootDir: string = process.cwd()): PerfGymState | null {
   const stateFile = path.join(rootDir, STATE_PATH);
@@ -262,6 +418,13 @@ export interface StepOptions {
   files?: string[];
   samples?: number;
   minSignificanceDelta?: number;
+  /**
+   * Opt-in: remember a rejected step in the negative memory cache.
+   *
+   * `perfgym step` never records by default — the optimization loop owns the
+   * cache — so the flag has to be passed explicitly.
+   */
+  recordNegativeMemory?: boolean;
 }
 
 export interface StepResult {
@@ -345,6 +508,34 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
     state.acceptedStepCount += 1;
   }
   writeState(cwd, state);
+
+  // Negative memory — opt-in only, and only for a REJECTED step: the memory
+  // holds failures, and an accepted step is not one. `perfgym step` discovers
+  // the modified files as paths only, so their contents are read from disk to
+  // compute the content hash.
+  if (options.recordNegativeMemory === true && !evaluation.accepted) {
+    const mutated = modifiedFiles
+      .map((relPath) => {
+        const content = readFileIfPresent(path.resolve(cwd, relPath));
+        return content === null ? null : { relPath, content };
+      })
+      .filter((file): file is { relPath: string; content: string } => file !== null);
+
+    if (mutated.length > 0) {
+      const cache = loadNegativeMemory(
+        cwd,
+        config.target.name,
+        config.agentBudget?.negativeMemorySize,
+      );
+      recordNegativeMemory(cache, {
+        files: mutated,
+        deltaPercent: evaluation.deltaPercent,
+        ...(evaluation.revertReason !== undefined ? { reason: evaluation.revertReason } : {}),
+        step: evaluation.iteration,
+      });
+      cache.save(negativeMemoryFilePath(cwd));
+    }
+  }
 
   return {
     success: evaluation.accepted,

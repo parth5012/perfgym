@@ -31,6 +31,7 @@ metrics:
 agent_budget:
   max_iterations?: number
   rollback_on_failure?: boolean
+  negative_memory_size?: number  # bounds the negative memory (failed strategies), default 5
 ```
 
 ---

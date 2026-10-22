@@ -117,5 +117,17 @@ export interface PerfGymConfig {
      */
     harnessScripts?: string[];
   }>;
+  /**
+   * The search budget of the agent. The YAML spells it `agent_budget`
+   * (snake_case, as documented in docs/SPECIFICATION.md) and the CLI
+   * normalises it onto this camelCase shape.
+   */
+  agentBudget?: {
+    /**
+     * How many failed mutation strategies the negative memory may keep
+     * (defaults to 5 — the "top 5 anti-patterns" bound of FLAW-13).
+     */
+    readonly negativeMemorySize?: number;
+  };
 }
 

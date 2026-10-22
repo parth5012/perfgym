@@ -22,6 +22,7 @@ import type {
   PerfGymConfig,
   StepEvaluation,
 } from "../index.js";
+import type { NegativeMemoryEntry } from "../memory/index.js";
 import type { PerfGymSessionState, SessionLockState } from "../store/index.js";
 import { JsonFormatter } from "./json.js";
 import { MarkdownFormatter, type MarkdownFormatterOptions } from "./markdown.js";
@@ -63,6 +64,19 @@ export interface OutputFormatter {
 
   /** A benchmark distribution, optionally against a baseline. */
   formatBenchmark(distribution: BenchmarkDistribution, baseline?: BenchmarkDistribution): string;
+
+  /**
+   * The remembered failures of one target — the bounded negative memory.
+   *
+   * `entries` are the resolved entries (newest first); the formatter never
+   * touches the cache itself. `options.target` names the target the memory
+   * belongs to: it is `null`/absent when the caller has no target, and an
+   * empty string is treated the same way.
+   */
+  formatNegativeMemory(
+    entries: readonly NegativeMemoryEntry[],
+    options?: { target?: string | null },
+  ): string;
 
   /** Any thrown or tagged error, rendered without leaking stack traces. */
   formatError(error: unknown): string;

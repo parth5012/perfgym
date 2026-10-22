@@ -17,6 +17,7 @@ import type {
   StepEvaluation,
 } from "../index.js";
 import type { PerfGymSessionState, SessionLockState } from "../store/index.js";
+import type { NegativeMemoryEntry } from "../memory/index.js";
 import {
   type DistributionJson,
   type LintMatchJson,
@@ -231,5 +232,32 @@ export class JsonFormatter {
 
   formatError(error: unknown): string {
     return JSON.stringify({ error: describeError(error) }, null, 2);
+  }
+
+  formatNegativeMemory(
+    entries: readonly NegativeMemoryEntry[],
+    options?: { target?: string | null },
+  ): string {
+    // Pure: the entry type is imported type-only, so the JSON adapter never
+    // pulls the cache (and its node:fs / node:crypto) into its runtime graph.
+    const target = options?.target;
+    return JSON.stringify(
+      {
+        // Absent, null and "" all mean "no target" — the same rule the
+        // markdown adapter applies to its target line.
+        target: typeof target === "string" && target.length > 0 ? target : null,
+        count: entries.length,
+        entries: entries.map((entry) => ({
+          id: entry.id,
+          strategy: stripAnsi(entry.strategy),
+          deltaPercent: entry.deltaPercent,
+          reason: stripAnsi(entry.reason),
+          step: entry.step,
+          timestamp: entry.timestamp,
+        })),
+      },
+      null,
+      2,
+    );
   }
 }

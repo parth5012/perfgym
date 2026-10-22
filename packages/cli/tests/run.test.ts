@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { runOptimizationLoop, type MutationGenerator } from "../src/commands/run.js";
+import { runOptimizationLoop, type MutationContext, type MutationGenerator } from "../src/commands/run.js";
 import { writeState } from "../src/engine.js";
 
 describe("Autonomous Hill-Climbing Loop (perfgym run - Ticket #20)", () => {
@@ -164,5 +164,285 @@ metrics:
     // Should stop at iteration 3 due to 3 consecutive non-improving steps
     expect(res.totalIterations).toBe(3);
     expect(res.stoppedReason).toContain("Plateau reached");
+  });
+});
+
+describe("Negative Memory in the Run Loop (Ticket #38)", () => {
+  const NEGATIVE_MEMORY_FILE = path.join(".perfgym", "negative-memory.json");
+
+  let testDir: string;
+
+  const configYaml = `
+version: "1.0"
+target:
+  name: "memory-test"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "instructions"
+    command: "node -e 'const fs = require(\\"fs\\"); const txt = fs.readFileSync(\\"src/index.ts\\", \\"utf8\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
+    goal: "minimize"
+    weight: 1
+    unit: "count"
+`;
+
+  const readMemoryFile = (dir: string): {
+    version: number;
+    targets: Record<string, { target: string; entries: Array<Record<string, unknown>> }>;
+  } => JSON.parse(fs.readFileSync(path.join(dir, NEGATIVE_MEMORY_FILE), "utf8"));
+
+  beforeEach(() => {
+    testDir = path.join(
+      tmpdir(),
+      `perfgym-run-memory-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    );
+    fs.mkdirSync(testDir, { recursive: true });
+
+    try {
+      execFileSync("git", ["init", "-b", "main"], { cwd: testDir, stdio: "ignore" });
+    } catch {
+      execFileSync("git", ["init"], { cwd: testDir, stdio: "ignore" });
+    }
+    execFileSync("git", ["config", "user.name", "Test Sentinel"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "sentinel@test.com"], {
+      cwd: testDir,
+      stdio: "ignore",
+    });
+
+    fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(testDir, "src", "index.ts"), "// value: 100\nexport let count = 0;\n", "utf8");
+    fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), configYaml, "utf8");
+    execFileSync("git", ["add", "-A"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: testDir, stdio: "ignore" });
+
+    writeState(testDir, {
+      version: "1.0",
+      initializedAt: Date.now(),
+      updatedAt: Date.now(),
+      targetName: "memory-test",
+      baselineMetrics: { instructions: 100 },
+      invariantsPassed: true,
+      bestFitnessScore: 0,
+      acceptedStepCount: 0,
+      totalStepCount: 0,
+    });
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it("records a rejected step and persists the cache at run end", async () => {
+    // A regression (100 -> 150) is rejected: the negative memory must learn it.
+    const generator: MutationGenerator = async () => [
+      { relPath: "src/index.ts", content: "// value: 150\nexport let count = 1;\n" },
+    ];
+
+    const res = await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 1,
+      generator,
+      samples: 1,
+    });
+
+    expect(res.acceptedCount).toBe(0);
+    expect(res.evaluations).toHaveLength(1);
+    expect(res.evaluations[0]!.accepted).toBe(false);
+
+    const memoryFile = path.join(testDir, NEGATIVE_MEMORY_FILE);
+    expect(fs.existsSync(memoryFile)).toBe(true);
+
+    const doc = readMemoryFile(testDir);
+    const entries = doc.targets["memory-test"]?.entries ?? [];
+    expect(entries).toHaveLength(1);
+
+    const entry = entries[0]!;
+    expect(entry.strategy).toBe("src/index.ts");
+    expect(entry.step).toBe(1);
+    expect(entry.deltaPercent).toBe(res.evaluations[0]!.deltaPercent);
+    expect(typeof entry.reason).toBe("string");
+    expect((entry.reason as string).length).toBeGreaterThan(0);
+    expect(typeof entry.id).toBe("string");
+    expect((entry.id as string).length).toBeGreaterThan(0);
+  });
+
+  it("reloads the previous run's entries and merges them with the new one", async () => {
+    const firstGenerator: MutationGenerator = async () => [
+      { relPath: "src/index.ts", content: "// value: 150\nexport let count = 1;\n" },
+    ];
+    await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 1,
+      generator: firstGenerator,
+      samples: 1,
+    });
+
+    const afterFirst = readMemoryFile(testDir);
+    expect(afterFirst.targets["memory-test"]?.entries).toHaveLength(1);
+    const firstId = afterFirst.targets["memory-test"]!.entries[0]!.id;
+
+    // A different mutation content -> a different hash -> a second entry.
+    const secondGenerator: MutationGenerator = async () => [
+      { relPath: "src/index.ts", content: "// value: 170\nexport let count = 2;\n" },
+    ];
+    await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 1,
+      generator: secondGenerator,
+      samples: 1,
+    });
+
+    const afterSecond = readMemoryFile(testDir);
+    const entries = afterSecond.targets["memory-test"]?.entries ?? [];
+    expect(entries).toHaveLength(2);
+
+    const ids = entries.map((entry) => entry.id);
+    expect(ids).toContain(firstId);
+    expect(new Set(ids).size).toBe(2);
+    expect(entries.map((entry) => entry.step).sort()).toEqual([1, 1]);
+  });
+
+  it("writes no cache file when the run learned nothing", async () => {
+    const generator: MutationGenerator = async () => [
+      { relPath: "src/index.ts", content: "// value: 70\nexport let count = 3;\n" },
+    ];
+
+    const res = await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 1,
+      generator,
+      samples: 1,
+    });
+
+    expect(res.acceptedCount).toBe(1);
+    expect(fs.existsSync(path.join(testDir, NEGATIVE_MEMORY_FILE))).toBe(false);
+  });
+
+  it("feeds the failure of step i into the feedback the generator gets at step i+1", async () => {
+    const contexts: MutationContext[] = [];
+    const contents = [
+      "// value: 150\nexport let count = 1;\n",
+      "// value: 170\nexport let count = 2;\n",
+    ];
+    let index = 0;
+
+    const generator: MutationGenerator = async (context) => {
+      contexts.push(context);
+      const content = contents[index++] ?? contents[0]!;
+      return [{ relPath: "src/index.ts", content }];
+    };
+
+    await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 2,
+      generator,
+      samples: 1,
+    });
+
+    // The memory channel is present on EVERY iteration — the first one
+    // included, even when nothing has been remembered yet.
+    expect(Array.isArray(contexts[0]!.negativeMemory)).toBe(true);
+    expect(contexts[0]!.negativeMemory).toHaveLength(0);
+
+    // The second iteration must already know about the failure of the first.
+    const secondFeedback = contexts[1]!.lastFeedback;
+    expect(secondFeedback).toBeDefined();
+    expect(secondFeedback).toContain("Previously failed strategies:");
+    expect(secondFeedback).toContain("src/index.ts");
+    expect(secondFeedback).toContain("-50.0%");
+  });
+
+  it("gives the first mutation of a run the memory persisted by the previous run", async () => {
+    // Seed the memory of a previous run for this target.
+    fs.mkdirSync(path.join(testDir, ".perfgym"), { recursive: true });
+    fs.writeFileSync(
+      path.join(testDir, NEGATIVE_MEMORY_FILE),
+      JSON.stringify(
+        {
+          version: 1,
+          targets: {
+            "memory-test": {
+              target: "memory-test",
+              entries: [
+                {
+                  id: "seeded-entry",
+                  strategy: "src/previous.ts",
+                  deltaPercent: -12.5,
+                  reason: "Regressed tail latency.",
+                  step: 7,
+                  timestamp: 1_700_000_000_000,
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const contexts: MutationContext[] = [];
+    const generator: MutationGenerator = async (context) => {
+      contexts.push(context);
+      return [{ relPath: "src/index.ts", content: "// value: 150\nexport let count = 1;\n" }];
+    };
+
+    await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 1,
+      generator,
+      samples: 1,
+    });
+
+    // The very first mutation already knows about the persisted failure.
+    const remembered = contexts[0]!.negativeMemory;
+    expect(remembered).toHaveLength(1);
+    expect(remembered[0]!.id).toBe("seeded-entry");
+    expect(remembered[0]!.strategy).toBe("src/previous.ts");
+  });
+
+  it("never remembers an accepted-but-not-better mutation as a failure", async () => {
+    // 1: accepted (100 -> 70, best +30). 2: accepted by the pipeline (100 -> 90,
+    // +10) but it does not beat the champion, so the loop rolls it back.
+    // 3: a genuine regression (100 -> 150) that the pipeline rejects.
+    const contents = [
+      "// value: 70\nexport let count = 1;\n",
+      "// value: 90\nexport let count = 2;\n",
+      "// value: 150\nexport let count = 3;\n",
+    ];
+    let index = 0;
+
+    const generator: MutationGenerator = async () => [
+      { relPath: "src/index.ts", content: contents[index++] ?? contents[0]! },
+    ];
+
+    const res = await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 3,
+      generator,
+      samples: 1,
+    });
+
+    expect(res.evaluations[1]!.accepted).toBe(true);
+    expect(res.evaluations[2]!.accepted).toBe(false);
+
+    const doc = readMemoryFile(testDir);
+    const entries = doc.targets["memory-test"]?.entries ?? [];
+
+    // Only the genuine failure is remembered.
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.step).toBe(3);
+    expect(entries[0]!.deltaPercent).toBe(res.evaluations[2]!.deltaPercent);
+
+    // The accepted-but-not-better step must not appear at all.
+    expect(entries.some((entry) => entry.step === 2)).toBe(false);
+    expect(entries.some((entry) => entry.deltaPercent === 10)).toBe(false);
   });
 });

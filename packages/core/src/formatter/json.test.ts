@@ -14,6 +14,7 @@ import {
 } from "./test-fixtures.js";
 import { JsonFormatter } from "./json.js";
 import type { PerfGymConfig } from "../index.js";
+import type { NegativeMemoryEntry } from "../memory/index.js";
 
 const formatter = new JsonFormatter();
 
@@ -236,6 +237,65 @@ describe("JsonFormatter.formatStep — LLD §6.1 schema", () => {
     for (const evaluation of [rejectedStep, acceptedStep, shortCircuitStep]) {
       expect(formatter.formatStep(evaluation)).not.toMatch(ANSI_PATTERN);
     }
+  });
+});
+
+describe("JsonFormatter.formatNegativeMemory — the memory surface", () => {
+  const memory: readonly NegativeMemoryEntry[] = [
+    {
+      id: "hash-serial-awaits",
+      strategy: "src/api/checkout.ts, src/api/order.ts",
+      deltaPercent: -8.3,
+      reason: "Regressed tail latency.",
+      step: 2,
+      timestamp: 1_700_000_000_000,
+    },
+  ];
+
+  it("emits a parseable document with the target, the count and the entries", () => {
+    const parsed = parse(formatter.formatNegativeMemory(memory, { target: "checkout" }));
+
+    expect(parsed.target).toBe("checkout");
+    expect(parsed.count).toBe(1);
+
+    const entries = parsed.entries as Array<Record<string, unknown>>;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.id).toBe("hash-serial-awaits");
+    expect(entries[0]!.strategy).toBe("src/api/checkout.ts, src/api/order.ts");
+    expect(entries[0]!.deltaPercent).toBe(-8.3);
+    expect(entries[0]!.reason).toBe("Regressed tail latency.");
+    expect(entries[0]!.step).toBe(2);
+    expect(entries[0]!.timestamp).toBe(1_700_000_000_000);
+  });
+
+  it("reports a null target and zero entries for an empty memory", () => {
+    const parsed = parse(formatter.formatNegativeMemory([]));
+
+    expect(parsed.target).toBeNull();
+    expect(parsed.count).toBe(0);
+    expect(parsed.entries).toEqual([]);
+  });
+
+  it("reports an empty or null target as null", () => {
+    expect(parse(formatter.formatNegativeMemory(memory, { target: "" })).target).toBeNull();
+    expect(parse(formatter.formatNegativeMemory(memory, { target: null })).target).toBeNull();
+  });
+
+  it("strips ANSI from a remembered failure", () => {
+    const parsed = parse(
+      formatter.formatNegativeMemory(
+        [{ ...memory[0]!, reason: "\u001b[31mRegressed tail latency.\u001b[39m" }],
+        { target: "checkout" },
+      ),
+    );
+
+    const entries = parsed.entries as Array<Record<string, unknown>>;
+    expect(entries[0]!.reason).toBe("Regressed tail latency.");
+  });
+
+  it("never emits ANSI across the whole surface", () => {
+    expect(formatter.formatNegativeMemory(memory, { target: "checkout" })).not.toMatch(ANSI_PATTERN);
+    expect(formatter.formatNegativeMemory([])).not.toMatch(ANSI_PATTERN);
   });
 });
 
