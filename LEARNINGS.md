@@ -99,3 +99,22 @@
 ### 23. `JSON.stringify` Turns `NaN` Into `null` — Persisted Numbers Need A Finiteness Gate
 * **Problem**: the cache accepted a `NaN`/`Infinity` `deltaPercent` from the pipeline (a zero baseline makes the percentage undefined or infinite). `JSON.stringify` silently writes both as `null`, and the loader's validator then rejected the entry — so a real pipeline rejection disappeared on the next run. Worse, a `NaN` weight made the eviction comparison return `false` in both directions, so which entry was evicted depended on Map insertion order, breaking the module's determinism guarantee.
 * **Solution**: normalise at the write boundary (`Number.isFinite(value) ? value : 0`) so the persisted value is always representable. An unmeasurable delta is genuinely the least informative outcome, which is exactly what the eviction rule already ranks last — so the failure keeps its strategy and reason and is merely first to be evicted, instead of vanishing on reload.
+
+## LLM Driver & Subprocess Automation Edge Cases
+
+### 24. Stdin EPIPE In Subprocess Streaming
+* **Problem**: When piping prompt text via `child.stdin.write()` into a CLI agent process that terminates early (e.g. syntax error, auth failure, immediate exit before reading stdin), Node emits an unhandled `EPIPE` error on `child.stdin`, which crashes the host process.
+* **Solution**: Attach a dedicated `child.stdin.on("error", () => {})` handler before initiating `write()` and check `child.stdin.writable` before calling `write()` or `end()`.
+
+### 25. Process Tree Orphan Prevention On Timeout
+* **Problem**: Invoking `process.kill(child.pid)` only terminates the direct parent launcher (e.g. `npx` or `sh`), leaving the actual model runner or background workers running orphaned and locking file handles or consuming memory.
+* **Solution**: Launch subprocesses with `detached: true` on POSIX to create a distinct process group, and terminate the whole tree using negative PID `process.kill(-child.pid, "SIGTERM")` followed by `SIGKILL`. On Windows, execute `taskkill /pid <pid> /T /F` to kill all child processes.
+
+### 26. Balanced JSON Extraction From Mixed CLI Prose
+* **Problem**: LLMs and agent CLIs frequently wrap structured output in markdown code fences or conversational prose. Greedy regex like `/\{[\s\S]*\}/` matches across multiple detached JSON blocks or fails when braces appear in prose.
+* **Solution**: Use a depth-counting brace parser that tracks string literals and escape sequences (`\"`, `\\`) to accurately extract the balanced root `{ ... }` object, then parse and validate with Zod.
+
+### 27. Cross-Platform Glob Path Matching In Target File Discovery
+* **Problem**: Windows backslashes (`\`) cause POSIX-style glob matchers to fail when matching discovered candidate files against `config.target.files`.
+* **Solution**: Normalize all relative paths with `relPath.split(path.sep).join("/")` before evaluating against target globs.
+

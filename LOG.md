@@ -203,3 +203,34 @@
   - `packages/core/src/memory/cache.ts` — `record()` accepted a non-finite `deltaPercent`; `JSON.stringify` writes `NaN`/`Infinity` as `null` and the loader then rejected the entry, so a real failure vanished on reload. A `NaN` weight also made `isLessInformative` return `false` in both directions, so eviction depended on Map insertion order. Normalised at the entry point (LEARNINGS #23). **This supersedes the earlier "parked, root cause in the core cache" ruling** — CodeRabbit was right that the fix belongs here, and it is now applied rather than carried forward.
   - `packages/core/src/memory/render.ts` — a `reason` or `strategy` containing a newline rendered across multiple lines, weakening FLAW-13's compact-context bound. Collapsed in the shared renderer so both consumers (the synthesizer's section and the markdown adapter) inherit it; neither had its own multi-line path.
 - Verification: `npx vitest run` 396/396 green (27 files, +5 tests); `npx tsc --noEmit` clean.
+
+---
+
+## 2026-10-22 — Wayfinder Map 7 (#67): Autonomous LLM Driver — Self-Generating Mutations for perfgym run
+- Status: Done (Phase 2, AFK, Stacked-PR mode: PRs #77, #78, #79, #80)
+- Architecture: Pluggable `LlmDriver` seam supporting direct API calls (Vercel AI SDK) and zero-key CLI agent subprocesses (`opencode`, `claude`), integrated into `perfgym run` with token and cost budgeting and automated stop reason classification.
+
+### Ticket #39 — Implement LlmDriver Seam, MutationSchema & PromptBuilder
+- Status: Done (PR #77)
+- Code changes: `packages/core/src/llm/driver.ts` (`LlmDriver`, `LlmRequest`, `LlmResult`, `DriverFactory`), `packages/core/src/llm/schema.ts` (`MutationSchema`, `MutationBatchSchema`), `packages/core/src/llm/prompt-builder.ts` (`PromptBuilder` with 7 structured blocks and ~60KB budget truncation), `packages/core/src/llm/index.ts`, `packages/core/src/index.ts`.
+- Verification: 9 unit tests passing in `packages/core/src/llm/prompt-builder.test.ts`. Full test suite: 405/405 green. Typecheck clean. OCR review clean.
+
+### Ticket #40 — Implement VercelAiSdkDriver with Backoff, Timeout & Cost Tracking
+- Status: Done (PR #78)
+- Code changes: `packages/core/src/llm/vercel-driver.ts` (Vercel AI SDK integration, exponential backoff retries on transient errors, fatal auth error handling, abort timeout), `packages/core/src/llm/usage.ts` (bundled pricing model and token counter), `packages/core/src/llm/vercel-driver.test.ts`.
+- Verification: 7 tests passing in `packages/core/src/llm/vercel-driver.test.ts`. Full test suite: 412/412 green. Typecheck clean. OCR review clean.
+
+### Ticket #41 — Implement CliAgentSubprocessDriver
+- Status: Done (PR #79)
+- Code changes: `packages/core/src/llm/cli-driver.ts` (subprocess piping via stdin with error listeners, balanced JSON parser, process tree termination via process group / `taskkill`), `packages/core/src/llm/cli-driver.test.ts`.
+- Verification: 5 tests passing in `packages/core/src/llm/cli-driver.test.ts`. Full test suite: 417/417 green. Typecheck clean. OCR review clean.
+
+### Ticket #42 — Wire the LLM Driver into perfgym run
+- Status: Done (PR #80)
+- Code changes: `packages/cli/src/commands/run.ts` (autonomous loop driver execution, budget enforcement, give-up and error stop reasons), `packages/cli/src/engine.ts` (`llm:` block normalisation), `packages/cli/src/index.ts` (CLI options: `--driver`, `--provider`, `--model`, `--cli-command`, `--max-cost-usd`, `--max-tokens`, `--llm-timeout-ms`), `packages/cli/tests/llm-run.test.ts`.
+- Verification: 7 tests passing in `packages/cli/tests/llm-run.test.ts`. Full test suite: 424/424 green across 31 test files. Typecheck clean. OCR review clean.
+
+### Whole Map 7 Verification & Review Pass
+- All 4 PRs (#77, #78, #79, #80) linked in T3 Code and registered on GitHub with all CI checks passing green.
+- Issue #67 and child tickets #39, #40, #41, #42 all closed as completed.
+
