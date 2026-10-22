@@ -17,6 +17,8 @@ import type {
   StepEvaluation,
 } from "../index.js";
 import type { PerfGymSessionState, SessionLockState } from "../store/index.js";
+import type { NegativeMemoryEntry } from "../memory/index.js";
+import { formatNegativeMemoryEntry } from "../memory/render.js";
 import {
   astViolationsOf,
   describeError,
@@ -27,23 +29,14 @@ import {
   typecheckFailuresOf,
 } from "./shared.js";
 
-/**
- * A single remembered failure. `MarkdownFormatter` accepts these through its
- * constructor as an *optional, nullable* dependency — the memory module that
- * produces them is Map 6, so the formatter must work without it.
- *
- * Named `MarkdownNegativeMemoryEntry` so the canonical `NegativeMemoryEntry`
- * of the memory module (`../memory/index.js`) owns that name in the package
- * barrel.
- */
-export interface MarkdownNegativeMemoryEntry {
-  readonly step: number;
-  readonly attempt?: string;
-  readonly guidance: string;
-}
-
 export interface MarkdownFormatterOptions {
-  readonly negativeMemory?: readonly MarkdownNegativeMemoryEntry[] | null;
+  /**
+   * The strategies that already failed. Resolved entries — the formatter never
+   * touches the memory cache itself, so it stays testable in isolation — and
+   * nullable: `null` (or an empty list) means "no memory", which omits the
+   * section entirely.
+   */
+  readonly negativeMemory?: readonly NegativeMemoryEntry[] | null;
 }
 
 const RULE_RECOMMENDATIONS: Record<string, string> = {
@@ -188,14 +181,14 @@ const renderViolationsSection = (violations: readonly LintViolation[]): string[]
 };
 
 const hasMemory = (
-  memory: readonly MarkdownNegativeMemoryEntry[] | null | undefined,
-): memory is readonly MarkdownNegativeMemoryEntry[] =>
+  memory: readonly NegativeMemoryEntry[] | null | undefined,
+): memory is readonly NegativeMemoryEntry[] =>
   memory !== undefined && memory !== null && memory.length > 0;
 
 export class MarkdownFormatter {
   readonly format = "markdown" as const;
 
-  readonly #negativeMemory: readonly MarkdownNegativeMemoryEntry[] | null;
+  readonly #negativeMemory: readonly NegativeMemoryEntry[] | null;
 
   constructor(options: MarkdownFormatterOptions = {}) {
     this.#negativeMemory = options.negativeMemory ?? null;
@@ -222,7 +215,7 @@ export class MarkdownFormatter {
 
     const memory = this.#negativeMemory;
     const memoryLines = hasMemory(memory)
-      ? memory.map((entry) => `- ⚠️ *${entry.guidance}*`)
+      ? memory.map((entry) => `- ⚠️ *${stripAnsi(formatNegativeMemoryEntry(entry))}*`)
       : [];
 
     const nextDirection =

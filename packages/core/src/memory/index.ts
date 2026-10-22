@@ -40,3 +40,4 @@ export {
   hashMutatedFiles,
 } from "./cache.js";
 export type { NegativeMemoryCacheOptions } from "./cache.js";
+export { formatDeltaPercent, formatNegativeMemoryEntry } from "./render.js";

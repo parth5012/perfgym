@@ -11,7 +11,8 @@ import {
   typecheckViolation,
   violation,
 } from "./test-fixtures.js";
-import { MarkdownFormatter, type MarkdownNegativeMemoryEntry } from "./markdown.js";
+import { MarkdownFormatter } from "./markdown.js";
+import type { NegativeMemoryEntry } from "../memory/index.js";
 
 const formatter = new MarkdownFormatter();
 
@@ -107,18 +108,34 @@ describe("MarkdownFormatter.formatStep — LLD §6.2 template", () => {
     expect(output).not.toContain("Next Direction");
   });
 
-  it("renders negative memory when a memory cache is supplied", () => {
-    const memory: readonly MarkdownNegativeMemoryEntry[] = [
-      { step: 2, attempt: "serial awaits", guidance: "Do not attempt serial awaits — this regressed latency." },
-      { step: 4, attempt: "batch size 500", guidance: "Keep batch size <= 50 to stay inside the socket pool." },
+  it("renders negative memory when entries are supplied", () => {
+    const memory: readonly NegativeMemoryEntry[] = [
+      {
+        id: "hash-serial-awaits",
+        strategy: "serial awaits",
+        deltaPercent: -8.3,
+        reason: "Regressed tail latency.",
+        step: 2,
+        timestamp: 1_700_000_000_000,
+      },
+      {
+        id: "hash-batch-500",
+        strategy: "batch size 500",
+        deltaPercent: 2.5,
+        reason: "Keep batch size <= 50 to stay inside the socket pool.",
+        step: 4,
+        timestamp: 1_700_000_001_000,
+      },
     ];
     const withMemory = new MarkdownFormatter({ negativeMemory: memory });
 
     const output = withMemory.formatStep(rejectedStep);
 
     expect(output).toContain("#### 4. Negative Memory & Next Action");
-    expect(output).toContain("⚠️ *Do not attempt serial awaits");
-    expect(output).toContain("*Keep batch size <= 50");
+    expect(output).toContain("- ⚠️ *serial awaits (-8.3%): Regressed tail latency.*");
+    expect(output).toContain(
+      "- ⚠️ *batch size 500 (+2.5%): Keep batch size <= 50 to stay inside the socket pool.*",
+    );
     expect(output).toContain("Next Direction");
   });
 
@@ -126,6 +143,31 @@ describe("MarkdownFormatter.formatStep — LLD §6.2 template", () => {
     const withNullMemory = new MarkdownFormatter({ negativeMemory: null });
 
     expect(withNullMemory.formatStep(acceptedStep)).not.toContain("#### 4. Negative Memory");
+  });
+
+  it("strips ANSI escapes from a remembered failure", () => {
+    const memory: readonly NegativeMemoryEntry[] = [
+      {
+        id: "hash-ansi",
+        strategy: "serial awaits",
+        deltaPercent: -8.3,
+        reason: "\u001b[31mRegressed tail latency.\u001b[39m",
+        step: 2,
+        timestamp: 1_700_000_000_000,
+      },
+    ];
+
+    const output = new MarkdownFormatter({ negativeMemory: memory }).formatStep(rejectedStep);
+
+    expect(output).toContain("- ⚠️ *serial awaits (-8.3%): Regressed tail latency.*");
+    expect(output).not.toContain("\u001b[");
+  });
+
+  it("treats an empty memory list as absent", () => {
+    const withEmptyMemory = new MarkdownFormatter({ negativeMemory: [] });
+
+    expect(withEmptyMemory.formatStep(acceptedStep)).not.toContain("#### 4. Negative Memory");
+    expect(withEmptyMemory.formatStep(acceptedStep)).not.toContain("⚠️");
   });
 
   it("emits no ANSI escape sequences", () => {

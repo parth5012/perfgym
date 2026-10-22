@@ -3,6 +3,7 @@ import {
   synthesizeGradientFeedback,
   type SynthesizerInput,
 } from "../../src/feedback/synthesizer.js";
+import type { NegativeMemoryEntry } from "../../src/memory/index.js";
 
 describe("GradientFeedbackSynthesizer (Ticket #19)", () => {
   it("synthesizes feedback for an accepted improvement step", () => {
@@ -162,5 +163,126 @@ describe("GradientFeedbackSynthesizer (Ticket #19)", () => {
     expect(feedback).toContain("no-unindexed-filter");
     expect(feedback).toContain("no-sync-methods");
     expect(feedback).toContain("asynchronous non-blocking alternatives");
+  });
+
+  it("appends the previously failed strategies from the negative memory", () => {
+    const input: SynthesizerInput = {
+      accepted: false,
+      fitnessScore: -Infinity,
+      deltaPercent: -8.3,
+      isSignificant: false,
+      invariants: {
+        passed: true,
+        output: "OK",
+        durationMs: 180,
+      },
+      violations: [],
+      metrics: [
+        {
+          name: "latency",
+          value: 45,
+          unit: "ms",
+          improved: false,
+          deltaPercent: -8.3,
+        },
+      ],
+      revertReason: "regressed tail latency",
+      negativeMemory: [
+        {
+          id: "hash-serial-awaits",
+          strategy: "serial awaits",
+          deltaPercent: -8.3,
+          reason: "regressed tail latency",
+          step: 2,
+          timestamp: 1_700_000_000_000,
+        },
+        {
+          id: "hash-batch-500",
+          strategy: "batch size 500",
+          deltaPercent: 2.5,
+          reason: "gain below the significance threshold",
+          step: 4,
+          timestamp: 1_700_000_001_000,
+        },
+      ],
+    };
+
+    const feedback = synthesizeGradientFeedback(input);
+
+    expect(feedback).toContain("Previously failed strategies:");
+    expect(feedback).toContain("- serial awaits (-8.3%): regressed tail latency");
+    expect(feedback).toContain("- batch size 500 (+2.5%): gain below the significance threshold");
+    // The section is appended at the very end — nothing follows it.
+    expect(
+      feedback.endsWith(
+        "Previously failed strategies:\n" +
+          "- serial awaits (-8.3%): regressed tail latency\n" +
+          "- batch size 500 (+2.5%): gain below the significance threshold",
+      ),
+    ).toBe(true);
+  });
+
+  it("omits the previously failed strategies section when the negative memory is empty", () => {
+    const input: SynthesizerInput = {
+      accepted: true,
+      fitnessScore: 12.5,
+      deltaPercent: 12.5,
+      isSignificant: true,
+      invariants: {
+        passed: true,
+        output: "OK",
+        durationMs: 120,
+      },
+      violations: [],
+      metrics: [],
+      negativeMemory: [],
+    };
+
+    const feedback = synthesizeGradientFeedback(input);
+
+    expect(feedback).not.toContain("Previously failed strategies");
+    expect(feedback.endsWith("Recommendation:\n- Continue with further optimizations along this gradient, or look for additional serial bottlenecks.")).toBe(true);
+  });
+
+  it("omits the previously failed strategies section when no negative memory is supplied", () => {
+    const input: SynthesizerInput = {
+      accepted: true,
+      fitnessScore: 12.5,
+      deltaPercent: 12.5,
+      isSignificant: true,
+      invariants: {
+        passed: true,
+        output: "OK",
+        durationMs: 120,
+      },
+      violations: [],
+      metrics: [],
+    };
+
+    const feedback = synthesizeGradientFeedback(input);
+
+    expect(feedback).not.toContain("Previously failed strategies");
+  });
+
+  it("treats a null negative memory exactly like an omitted one", () => {
+    const base: SynthesizerInput = {
+      accepted: true,
+      fitnessScore: 12.5,
+      deltaPercent: 12.5,
+      isSignificant: true,
+      invariants: {
+        passed: true,
+        output: "OK",
+        durationMs: 120,
+      },
+      violations: [],
+      metrics: [],
+    };
+
+    const omitted = synthesizeGradientFeedback(base);
+    const withNull = synthesizeGradientFeedback({ ...base, negativeMemory: null });
+
+    expect(withNull).toBe(omitted);
+    expect(withNull).not.toContain("Previously failed strategies");
   });
 });
