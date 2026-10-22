@@ -180,7 +180,18 @@ export class NegativeMemoryCache {
    * in place (never duplicated); a new entry competes with the retained ones
    * for the cache slots and only displaces a *less* informative failure.
    */
-  record(entry: NegativeMemoryEntry): void {
+  record(incoming: NegativeMemoryEntry): void {
+    // A non-finite delta cannot be ordered or serialised: the eviction rule
+    // compares weighted deltas, and `JSON.stringify` writes `NaN`/`Infinity` as
+    // `null`, which the loader rejects — the failure would be forgotten on the
+    // next run. A delta we could not measure is the least informative outcome,
+    // and the eviction rule already treats the lowest `|delta|` as least
+    // informative, so keep the failure (its strategy and reason are the
+    // actionable part) at weight 0: it is simply first in line to be evicted.
+    const entry = Number.isFinite(incoming.deltaPercent)
+      ? incoming
+      : { ...incoming, deltaPercent: 0 };
+
     const existing = this.#entries.get(entry.id);
     if (existing !== undefined) {
       this.#entries.set(entry.id, {

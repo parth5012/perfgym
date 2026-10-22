@@ -230,6 +230,64 @@ describe("NegativeMemoryCache — bounded eviction", () => {
   });
 });
 
+describe("NegativeMemoryCache — non-finite deltas", () => {
+  it("keeps a non-finite failure across a save and load round trip", () => {
+    const file = join(makeTempDir(), "negative-memory.json");
+    const cache = new NegativeMemoryCache({ target: "checkout" });
+
+    cache.record(
+      entry({ id: "nan", deltaPercent: Number.NaN, reason: "the compiler crashed", timestamp: 1_000 }),
+    );
+    cache.record(
+      entry({
+        id: "infinite",
+        deltaPercent: Number.POSITIVE_INFINITY,
+        reason: "the harness timed out",
+        timestamp: 2_000,
+      }),
+    );
+    cache.save(file);
+
+    const loaded = NegativeMemoryCache.load(file, "checkout");
+
+    expect(loaded.entries().map((item) => item.id)).toEqual(["infinite", "nan"]);
+    expect(loaded.has("nan")).toBe(true);
+    expect(loaded.has("infinite")).toBe(true);
+    // A delta that could not be measured is stored at the least informative
+    // weight so that the failure itself — strategy and reason — survives.
+    expect(loaded.entries().map((item) => item.deltaPercent)).toEqual([0, 0]);
+    expect(loaded.entries().map((item) => item.reason)).toEqual([
+      "the harness timed out",
+      "the compiler crashed",
+    ]);
+  });
+
+  it("evicts a non-finite failure deterministically, independent of insertion order", () => {
+    const failures = {
+      nan: entry({ id: "nan", deltaPercent: Number.NaN, timestamp: 1_000 }),
+      medium: entry({ id: "medium", deltaPercent: -5, timestamp: 2_000 }),
+      strong: entry({ id: "strong", deltaPercent: -10, timestamp: 3_000 }),
+    } as const;
+
+    const run = (order: readonly (keyof typeof failures)[]): string[] => {
+      const cache = new NegativeMemoryCache({ target: "demo", maxEntries: 2 });
+      for (const key of order) {
+        cache.record(failures[key]);
+      }
+      return cache.entries().map((item) => item.id);
+    };
+
+    const forward = run(["nan", "medium", "strong"]);
+    const reordered = run(["medium", "nan", "strong"]);
+
+    expect(forward).toEqual(reordered);
+    expect(forward).not.toContain("nan");
+    expect(forward).toEqual(["strong", "medium"]);
+    // Repeating the same sequence yields the same entry list.
+    expect(run(["nan", "medium", "strong"])).toEqual(forward);
+  });
+});
+
 describe("NegativeMemoryCache — relevance ordering", () => {
   it("returns entries newest first by timestamp", () => {
     const cache = new NegativeMemoryCache({ target: "demo" });

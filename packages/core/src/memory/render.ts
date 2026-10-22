@@ -24,9 +24,19 @@ export function formatDeltaPercent(deltaPercent: number): string {
 }
 
 /**
+ * Collapse every run of whitespace — newlines and tabs included — into a single
+ * space. An entry must never render wider than one line: the memory exists to
+ * keep the feedback context compact (FLAW-13), and a `reason` can embed the
+ * multi-line output of a failed subprocess.
+ */
+const toSingleLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+/**
  * Render one remembered failure as `<strategy> (<delta>): <reason>` — the
  * shared core of every surface that shows the negative memory.
  */
 export function formatNegativeMemoryEntry(entry: NegativeMemoryEntry): string {
-  return `${entry.strategy} (${formatDeltaPercent(entry.deltaPercent)}): ${entry.reason}`;
+  const strategy = toSingleLine(entry.strategy);
+  const reason = toSingleLine(entry.reason);
+  return `${strategy} (${formatDeltaPercent(entry.deltaPercent)}): ${reason}`;
 }
