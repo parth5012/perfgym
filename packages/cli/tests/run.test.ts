@@ -324,6 +324,78 @@ metrics:
     expect(fs.existsSync(path.join(testDir, NEGATIVE_MEMORY_FILE))).toBe(false);
   });
 
+  it("leaves a pre-existing cache untouched when the run records nothing", async () => {
+    // The cache already holds entries for this target (so the old "entries
+    // exist ⇒ save" rule would rewrite it) plus another target's entries
+    // (which must survive untouched).
+    const memoryFile = path.join(testDir, NEGATIVE_MEMORY_FILE);
+    fs.mkdirSync(path.dirname(memoryFile), { recursive: true });
+    fs.writeFileSync(
+      memoryFile,
+      `${JSON.stringify(
+        {
+          version: 1,
+          targets: {
+            "memory-test": {
+              target: "memory-test",
+              entries: [
+                {
+                  id: "seeded-entry",
+                  strategy: "src/previous.ts",
+                  deltaPercent: -12.5,
+                  reason: "Regressed tail latency.",
+                  step: 7,
+                  timestamp: 1_700_000_000_000,
+                },
+              ],
+            },
+            "other-target": {
+              target: "other-target",
+              entries: [
+                {
+                  id: "other-entry",
+                  strategy: "src/other.ts",
+                  deltaPercent: -3,
+                  reason: "Failed elsewhere.",
+                  step: 1,
+                  timestamp: 1_700_000_001_000,
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    // Pin the mtime to a known instant in 2001. Any rewrite replaces it with
+    // "now", so the assertion can never flake on timestamp resolution.
+    const pinnedSeconds = 1_000_000_000;
+    fs.utimesSync(memoryFile, pinnedSeconds, pinnedSeconds);
+    const bytesBefore = fs.readFileSync(memoryFile);
+    const mtimeBefore = fs.statSync(memoryFile).mtimeMs;
+
+    const generator: MutationGenerator = async () => [
+      { relPath: "src/index.ts", content: "// value: 70\nexport let count = 3;\n" },
+    ];
+
+    const res = await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 1,
+      generator,
+      samples: 1,
+    });
+
+    // Every step was accepted: nothing new was learned, so the file is not
+    // rewritten at all.
+    expect(res.acceptedCount).toBe(1);
+    expect(fs.readFileSync(memoryFile).equals(bytesBefore)).toBe(true);
+    expect(fs.statSync(memoryFile).mtimeMs).toBe(mtimeBefore);
+    expect(mtimeBefore).toBe(pinnedSeconds * 1000);
+  });
+
   it("feeds the failure of step i into the feedback the generator gets at step i+1", async () => {
     const contexts: MutationContext[] = [];
     const contents = [
