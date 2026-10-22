@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
+import { NegativeMemoryCache } from "../../packages/core/src/index.js";
 import {
   detectProjectLanguage,
   generateStarterConfig,
@@ -11,6 +12,8 @@ import {
   runInit,
   runBaseline,
   runStep,
+  recordNegativeMemory,
+  NEGATIVE_MEMORY_PATH,
   type PerfGymState,
 } from "../../packages/cli/src/engine.js";
 
@@ -102,6 +105,180 @@ describe("CLI Engine Unit & TDD Suite", () => {
 
     it("returns null when state.json does not exist", () => {
       expect(readState(testDir)).toBeNull();
+    });
+  });
+
+  describe("loadConfig — agent budget normalisation (Ticket #38)", () => {
+    const base = `
+version: "1.0"
+target:
+  name: "budget-target"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "instructions"
+    command: "node -e 'process.exit(0)'"
+    goal: "minimize"
+    weight: 1
+`;
+
+    it("maps the documented snake_case agent_budget onto the camelCase config", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nagent_budget:\n  negative_memory_size: 9\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).agentBudget?.negativeMemorySize).toBe(9);
+    });
+
+    it("accepts the camelCase spelling as well", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nagentBudget:\n  negativeMemorySize: 3\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).agentBudget?.negativeMemorySize).toBe(3);
+    });
+
+    it("defaults to 5 when no agent budget is configured", () => {
+      fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), base, "utf8");
+
+      expect(loadConfig(testDir).agentBudget?.negativeMemorySize).toBe(5);
+    });
+
+    it("falls back to 5 for invalid negative memory sizes", () => {
+      for (const raw of ["0", "-2", '"abc"', "null"]) {
+        fs.writeFileSync(
+          path.join(testDir, ".perfgym.yaml"),
+          `${base}\nagent_budget:\n  negative_memory_size: ${raw}\n`,
+          "utf8",
+        );
+
+        expect(loadConfig(testDir).agentBudget?.negativeMemorySize).toBe(5);
+      }
+    });
+
+    it("floors a fractional size to a whole number of entries", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nagent_budget:\n  negative_memory_size: 2.7\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).agentBudget?.negativeMemorySize).toBe(2);
+    });
+
+    it("falls back to 5 when the size floors to zero", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nagent_budget:\n  negative_memory_size: 0.5\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).agentBudget?.negativeMemorySize).toBe(5);
+    });
+
+    it("keeps the documented agent_budget keys verbatim next to the normalised view", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nagent_budget:\n  max_iterations: 15\n  rollback_on_failure: true\n  negative_memory_size: 4\n`,
+        "utf8",
+      );
+
+      // The raw block is not part of the typed config — it is the user's YAML
+      // as written, so it is read through a narrow cast.
+      const config = loadConfig(testDir) as ReturnType<typeof loadConfig> & {
+        readonly agent_budget?: {
+          readonly max_iterations?: number;
+          readonly rollback_on_failure?: boolean;
+        };
+      };
+
+      expect(config.agent_budget?.max_iterations).toBe(15);
+      expect(config.agent_budget?.rollback_on_failure).toBe(true);
+      expect(config.agentBudget?.negativeMemorySize).toBe(4);
+    });
+
+    it("keeps the other fields of a camelCase agentBudget block", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nagentBudget:\n  maxIterations: 7\n  negativeMemorySize: 6\n`,
+        "utf8",
+      );
+
+      const config = loadConfig(testDir) as ReturnType<typeof loadConfig> & {
+        readonly agentBudget?: { readonly maxIterations?: number };
+      };
+
+      expect(config.agentBudget?.maxIterations).toBe(7);
+      expect(config.agentBudget?.negativeMemorySize).toBe(6);
+    });
+
+    it("keeps the other fields of a snake_case agent_budget block", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nagent_budget:\n  max_iterations: 11\n  negative_memory_size: 8\n`,
+        "utf8",
+      );
+
+      const config = loadConfig(testDir) as ReturnType<typeof loadConfig> & {
+        readonly agentBudget?: { readonly max_iterations?: number };
+      };
+
+      expect(config.agentBudget?.max_iterations).toBe(11);
+      expect(config.agentBudget?.negativeMemorySize).toBe(8);
+    });
+  });
+
+  describe("Negative memory recording (Ticket #38)", () => {
+    it("pins the documented negative memory file location", () => {
+      expect(NEGATIVE_MEMORY_PATH).toBe(path.join(".perfgym", "negative-memory.json"));
+    });
+
+    it("falls back to \"rejected\" for a blank revert reason", () => {
+      const cache = new NegativeMemoryCache({ target: "blank-reason" });
+
+      recordNegativeMemory(cache, {
+        files: [{ relPath: "src/index.ts", content: "export const a = 1;\n" }],
+        deltaPercent: -4.2,
+        reason: "   ",
+        step: 3,
+      });
+
+      const entries = cache.entries();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.reason).toBe("rejected");
+      expect(entries[0]!.deltaPercent).toBe(-4.2);
+      expect(entries[0]!.step).toBe(3);
+    });
+
+    it("falls back to \"rejected\" when no reason is given at all", () => {
+      const cache = new NegativeMemoryCache({ target: "no-reason" });
+
+      recordNegativeMemory(cache, {
+        files: [{ relPath: "src/index.ts", content: "export const a = 1;\n" }],
+        deltaPercent: -1,
+        step: 1,
+      });
+
+      expect(cache.entries()[0]!.reason).toBe("rejected");
+    });
+
+    it("keeps a real revert reason", () => {
+      const cache = new NegativeMemoryCache({ target: "real-reason" });
+
+      recordNegativeMemory(cache, {
+        files: [{ relPath: "src/index.ts", content: "export const a = 1;\n" }],
+        deltaPercent: -1,
+        reason: "Invariants failed: 1 test failed",
+        step: 1,
+      });
+
+      expect(cache.entries()[0]!.reason).toBe("Invariants failed: 1 test failed");
     });
   });
 

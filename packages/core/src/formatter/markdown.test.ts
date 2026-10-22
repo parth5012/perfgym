@@ -177,6 +177,76 @@ describe("MarkdownFormatter.formatStep — LLD §6.2 template", () => {
   });
 });
 
+describe("MarkdownFormatter.formatNegativeMemory — the memory surface", () => {
+  const memory: readonly NegativeMemoryEntry[] = [
+    {
+      id: "hash-serial-awaits",
+      strategy: "src/api/checkout.ts, src/api/order.ts",
+      deltaPercent: -8.3,
+      reason: "Regressed tail latency.",
+      step: 2,
+      timestamp: 1_700_000_000_000,
+    },
+    {
+      id: "hash-batch-500",
+      strategy: "src/api/order.ts",
+      deltaPercent: 2.5,
+      reason: "Keep batch size <= 50 to stay inside the socket pool.",
+      step: 4,
+      timestamp: 1_700_000_001_000,
+    },
+  ];
+
+  it("renders the target, the count and every remembered failure", () => {
+    const output = formatter.formatNegativeMemory(memory, { target: "checkout" });
+
+    expect(output).toContain("checkout");
+    expect(output).toContain("2");
+    expect(output).toContain(
+      "src/api/checkout.ts, src/api/order.ts (-8.3%): Regressed tail latency.",
+    );
+    expect(output).toContain(
+      "src/api/order.ts (+2.5%): Keep batch size <= 50 to stay inside the socket pool.",
+    );
+  });
+
+  it("renders the empty state when nothing is remembered", () => {
+    const output = formatter.formatNegativeMemory([], { target: "checkout" });
+
+    expect(output).toContain("checkout");
+    expect(output.toLowerCase()).toContain("nothing remembered");
+  });
+
+  it("renders without a target when none is supplied", () => {
+    const output = formatter.formatNegativeMemory(memory);
+
+    expect(output).toContain("src/api/order.ts (+2.5%)");
+  });
+
+  it("omits the target line for an empty or null target", () => {
+    const empty = formatter.formatNegativeMemory(memory, { target: "" });
+    expect(empty).not.toContain("**Target:**");
+    expect(empty).toContain("src/api/order.ts (+2.5%)");
+
+    const nullTarget = formatter.formatNegativeMemory(memory, { target: null });
+    expect(nullTarget).not.toContain("**Target:**");
+  });
+
+  it("strips ANSI escapes from a remembered failure", () => {
+    const noisy: readonly NegativeMemoryEntry[] = [
+      {
+        ...memory[0]!,
+        reason: "\u001b[31mRegressed tail latency.\u001b[39m",
+      },
+    ];
+
+    const output = formatter.formatNegativeMemory(noisy, { target: "checkout" });
+
+    expect(output).toContain("Regressed tail latency.");
+    expect(output).not.toMatch(ANSI_PATTERN);
+  });
+});
+
 describe("MarkdownFormatter — remaining surface", () => {
   it("formatBaseline renders a stats table", () => {
     const output = formatter.formatBaseline(distribution());

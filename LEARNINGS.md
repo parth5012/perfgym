@@ -77,3 +77,17 @@
 ### 18. Every Rendered Free Text Must Pass The Formatter's ANSI Filter
 * **Problem**: each free-text field in the markdown formatter was routed through `stripAnsi` — except a newly added one. A remembered failure's `reason` is a revert reason and can carry subprocess ANSI, so the markdown output would have leaked escape codes, breaking the "the formatter never emits ANSI" contract in LLD §6.1/§6.2.
 * **Solution**: route every rendered text through `stripAnsi` at the formatter boundary — including text composed by a shared renderer — and add a test asserting no `\u001b[` appears in the output.
+
+## Loop & Configuration Edge Cases
+
+### 19. A Persisted Memory Must Reach The FIRST Mutation, Not Just The Second
+* **Problem**: the run loop loaded the previous run's negative memory before the loop but only handed the agent the gradient feedback of the *previous step* — synthesized after the first evaluation. So iteration 1 ran blind to everything the last run had learned, and the persistence bought nothing for the first (often most important) attempt. The reviewer's reproduction: `ITER1_FEEDBACK = undefined`, `ITER2_FEEDBACK_HAS_MEMORY = true`.
+* **Solution**: give the generator a structured channel that exists on every iteration (`MutationContext.negativeMemory`), not only a feedback string that appears after the first step. Persisted state is only worth persisting if the first consumer can see it.
+
+### 20. A Negative Memory Records Failures, Not Rollbacks
+* **Problem**: the loop's reject branch also catches a step the pipeline ACCEPTED but that did not beat the current champion. Recording that step taught the agent that a *successful* strategy had failed — with a positive delta in the prompt ("Previously failed strategies: src/index.ts (+10.0%): rejected") — and, because eviction drops the lowest |delta|, the false positive could evict a real failure.
+* **Solution**: distinguish "the pipeline rejected it" from "the loop rolled it back". The negative memory holds pipeline rejections only (`stepEval.accepted === false`); a rollback for lack of improvement is not a failure.
+
+### 21. A Config Normaliser Must Not Replace The Block It Normalises
+* **Problem**: `loadConfig` normalised `agent_budget` into a fresh `{ negativeMemorySize }` object and `delete`d the raw block. The keys `docs/SPECIFICATION.md` §1 documents (`max_iterations`, `rollback_on_failure`) vanished from the loaded config — a silent regression for anyone reading them. Even after preserving the raw block, a camelCase `agentBudget` carrying extra fields was still stripped, because the normalised object replaced it wholesale.
+* **Solution**: spread the source block into the normalised result (`{ ...budget, negativeMemorySize: resolved }`) and keep the user's original block untouched beside it. A normaliser adds fields; it must never delete them.

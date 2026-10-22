@@ -379,4 +379,31 @@ export class MarkdownFormatter {
       ...(described.code === null ? [] : ["", `Code: \`${described.code}\``]),
     ].join("\n");
   }
+
+  formatNegativeMemory(
+    entries: readonly NegativeMemoryEntry[],
+    options?: { target?: string | null },
+  ): string {
+    const target = options?.target;
+    const lines: string[] = ["### 🧠 Negative Memory", ""];
+
+    // Only a real target name is rendered: absent, null and "" all mean
+    // "no target".
+    if (typeof target === "string" && target.length > 0) {
+      lines.push(`- **Target:** \`${target}\``);
+    }
+    lines.push(`- **Remembered failures:** ${entries.length}`);
+
+    if (entries.length === 0) {
+      lines.push("", "_Nothing remembered yet._");
+      return lines.join("\n");
+    }
+
+    lines.push("");
+    for (const entry of entries) {
+      lines.push(`- ⚠️ *${stripAnsi(formatNegativeMemoryEntry(entry))}* — step ${entry.step}`);
+    }
+
+    return lines.join("\n");
+  }
 }

@@ -16,17 +16,37 @@ import {
   GitSandboxCoordinator,
   GitWorktreeDriver,
   type MutationFile,
+  type NegativeMemoryEntry,
   type StepEvaluation,
   type WorkspaceContext,
   synthesizeGradientFeedback,
 } from "../../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../../linter/src/index.js";
-import { loadConfig, readState, writeState, runBaseline, type PerfGymState } from "../engine.js";
+import {
+  loadConfig,
+  readState,
+  writeState,
+  runBaseline,
+  loadNegativeMemory,
+  recordNegativeMemory,
+  negativeMemoryFilePath,
+  type PerfGymState,
+} from "../engine.js";
 
 export interface MutationContext {
   iteration: number;
   bestFitnessScore: number;
   lastFeedback?: string;
+  /**
+   * The remembered failures of the target — newest first.
+   *
+   * Present on EVERY iteration, including the first one: the persisted
+   * memory of the previous run must reach the first mutation of this run,
+   * otherwise the very first attempt repeats a known failure. The structured
+   * entries are the honest channel here — `lastFeedback` is the gradient of
+   * the previous step and only exists from the second iteration on.
+   */
+  readonly negativeMemory: readonly NegativeMemoryEntry[];
   targetFiles: string[];
   workingDir: string;
 }
@@ -70,6 +90,16 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
 
   const config = loadConfig(cwd);
   let state = readState(cwd);
+
+  // The negative memory is owned by the loop: it is loaded at the start of
+  // the run (so the failures of the previous run are known) and persisted at
+  // the end of it (so the next run starts from what was learned).
+  const negativeMemoryFile = negativeMemoryFilePath(cwd);
+  const negativeMemory = loadNegativeMemory(
+    cwd,
+    config.target.name,
+    config.agentBudget?.negativeMemorySize,
+  );
 
   if (!state) {
     log(chalk.blue("📊 Establishing initial baseline before optimization loop..."));
@@ -120,6 +150,9 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
           iteration: i,
           bestFitnessScore: bestFitness,
           lastFeedback,
+          // The remembered failures reach the generator on every iteration,
+          // the first one included.
+          negativeMemory: negativeMemory.entries(),
           targetFiles: config.target.files,
           workingDir: sandboxDir,
         });
@@ -154,18 +187,9 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
 
       evaluations.push(stepEval);
 
-      // Synthesize gradient feedback
-      lastFeedback = synthesizeGradientFeedback({
-        accepted: stepEval.accepted,
-        fitnessScore: stepEval.fitnessScore,
-        deltaPercent: stepEval.deltaPercent,
-        isSignificant: stepEval.isSignificant,
-        invariants: stepEval.invariants,
-        violations: stepEval.violations,
-        metrics: stepEval.metrics,
-        baselineMetrics: state.baselineMetrics,
-        revertReason: stepEval.revertReason,
-      });
+      // 1. Accept or reject the step. The reject branch rolls the mutation
+      //    back and — only for a GENUINE failure — remembers it.
+      let rolledBack = false;
 
       if (stepEval.accepted && stepEval.fitnessScore > bestFitness) {
         bestFitness = stepEval.fitnessScore;
@@ -176,19 +200,53 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
         const deltaStr = stepEval.deltaPercent >= 0 ? `+${stepEval.deltaPercent.toFixed(1)}%` : `${stepEval.deltaPercent.toFixed(1)}%`;
         log(chalk.green(`  ✔ Accepted! New best score: +${bestFitness.toFixed(2)} (Delta: ${deltaStr})`));
       } else {
+        rolledBack = true;
         consecutiveRejections++;
         await coordinator.rejectStep();
+
+        // Remember the failure — the bounded negative memory is what stops
+        // the optimizer from retrying a mutation that already failed. Only a
+        // REJECTED step failed: a mutation the pipeline accepted did not,
+        // even when the loop rolled it back because it did not beat the
+        // champion.
+        if (!stepEval.accepted) {
+          recordNegativeMemory(negativeMemory, {
+            files: mutatedFiles,
+            deltaPercent: stepEval.deltaPercent,
+            ...(stepEval.revertReason !== undefined ? { reason: stepEval.revertReason } : {}),
+            step: i,
+          });
+        }
+
         const scoreStr = stepEval.fitnessScore === -Infinity ? "-Infinity" : stepEval.fitnessScore.toFixed(2);
         log(chalk.red(`  ✖ Rejected (Score: ${scoreStr}). Mutation rolled back.`));
         if (stepEval.revertReason) {
           log(chalk.dim(`    Reason: ${stepEval.revertReason}`));
         }
+      }
 
-        if (consecutiveRejections >= plateauThreshold) {
-          stoppedReason = `Plateau reached (${consecutiveRejections} consecutive rejections)`;
-          log(chalk.yellow(`\n⚠ Plateau threshold reached (${plateauThreshold} non-improving steps). Auto-terminating.`));
-          break;
-        }
+      // 2. Synthesize the gradient feedback AFTER the verdict, so the
+      //    feedback of step i already carries the failure of step i and the
+      //    generator of step i+1 is told what not to repeat.
+      lastFeedback = synthesizeGradientFeedback({
+        accepted: stepEval.accepted,
+        fitnessScore: stepEval.fitnessScore,
+        deltaPercent: stepEval.deltaPercent,
+        isSignificant: stepEval.isSignificant,
+        invariants: stepEval.invariants,
+        violations: stepEval.violations,
+        metrics: stepEval.metrics,
+        baselineMetrics: state.baselineMetrics,
+        revertReason: stepEval.revertReason,
+        negativeMemory: negativeMemory.entries(),
+      });
+
+      // 3. The plateau check comes last: the feedback of the final step must
+      //    never be lost.
+      if (rolledBack && consecutiveRejections >= plateauThreshold) {
+        stoppedReason = `Plateau reached (${consecutiveRejections} consecutive rejections)`;
+        log(chalk.yellow(`\n⚠ Plateau threshold reached (${plateauThreshold} non-improving steps). Auto-terminating.`));
+        break;
       }
     }
 
@@ -237,6 +295,20 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
       // ignore
     }
     throw err;
+  } finally {
+    // The negative memory must survive EVERY exit path — the normal end, the
+    // plateau break, the "nothing improved" branch and a thrown error — so
+    // what the run learned is never lost. A run that learned nothing writes
+    // no file at all, and a persistence failure never masks the run's own
+    // error.
+    if (negativeMemory.entries().length > 0) {
+      try {
+        negativeMemory.save(negativeMemoryFile);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(chalk.yellow(`⚠ Could not persist the negative memory: ${message}`));
+      }
+    }
   }
 }
 

@@ -16,10 +16,18 @@ import {
   ERR_UNKNOWN_FORMAT,
   stripAnsiDeep,
   UnknownFormatError,
+  type NegativeMemoryCache,
   type OutputFormatter,
   type OutputFormat,
 } from "../../core/src/index.js";
-import { loadConfig, runInit, runBaseline, runStep } from "./engine.js";
+import {
+  loadConfig,
+  runInit,
+  runBaseline,
+  runStep,
+  loadNegativeMemory,
+  negativeMemoryFilePath,
+} from "./engine.js";
 import { runOptimizationLoop } from "./commands/run.js";
 
 type ColorMode = "auto" | "always" | "never";
@@ -276,10 +284,17 @@ program
   .option("-f, --files <files...>", "Specific modified files to evaluate")
   .option("-s, --samples <number>", "Number of benchmark samples to collect", "5")
   .option("--min-delta <number>", "Minimum significance delta percentage threshold", "2.5")
+  .option(
+    "--record-negative-memory",
+    "Remember a rejected step in the negative memory cache (.perfgym/negative-memory.json)",
+  )
   .option(...OUTPUT_OPTIONS[0])
   .option(...OUTPUT_OPTIONS[1])
   .action(
-    async (options: { files?: string[]; samples: string; minDelta: string } & OutputOptions) => {
+    async (
+      options: { files?: string[]; samples: string; minDelta: string; recordNegativeMemory?: boolean } &
+        OutputOptions,
+    ) => {
       let formatter: OutputFormatter;
       try {
         formatter = resolveFormatter(options);
@@ -297,6 +312,8 @@ program
           files: options.files,
           samples,
           minSignificanceDelta: minDelta,
+          // Opt-in only: a plain `perfgym step` never touches the cache.
+          recordNegativeMemory: options.recordNegativeMemory === true,
         });
 
         const { evaluation } = res;
@@ -396,6 +413,117 @@ program
       }
     },
   );
+
+// ============================================================================
+// `perfgym memory` — inspect and reset the negative memory
+// ============================================================================
+
+/** The negative memory cache of the configured target in the current project. */
+const loadTargetMemory = (): { target: string; cache: NegativeMemoryCache } => {
+  const config = loadConfig();
+  const cache = loadNegativeMemory(
+    process.cwd(),
+    config.target.name,
+    config.agentBudget?.negativeMemorySize,
+  );
+  return { target: config.target.name, cache };
+};
+
+const memoryCommand = program
+  .command("memory")
+  .description("Inspect and reset the negative memory (the mutation strategies that already failed)");
+
+// `perfgym memory` without a subcommand prints the help of the command.
+memoryCommand.action(() => {
+  memoryCommand.outputHelp();
+});
+
+memoryCommand
+  .command("show")
+  .description("Show the remembered failures of the current target")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action((options: OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+
+    try {
+      applyColorPolicy(formatter, options);
+      const { target, cache } = loadTargetMemory();
+      write(
+        render(formatter, formatter.formatNegativeMemory(cache.entries(), { target }), options),
+      );
+    } catch (error: unknown) {
+      fail(formatter, options, error);
+    }
+  });
+
+memoryCommand
+  .command("clear")
+  .description("Forget the remembered failures of the current target")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action((options: OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+
+    try {
+      applyColorPolicy(formatter, options);
+      const { target, cache } = loadTargetMemory();
+      const cleared = cache.entries().length;
+
+      // `clear()` + `save()` empties this target only — the entries of every
+      // other target in the same file survive. With nothing to clear the
+      // filesystem is left untouched: no empty cache file is created (the
+      // run loop does the same).
+      if (cleared > 0) {
+        cache.clear();
+        cache.save(negativeMemoryFilePath(process.cwd()));
+      }
+
+      if (formatter.format === "json") {
+        write(
+          render(
+            formatter,
+            JSON.stringify(
+              { status: "CLEARED", target, cleared, count: 0, entries: [] },
+              null,
+              2,
+            ),
+            options,
+          ),
+        );
+        return;
+      }
+
+      write(
+        render(
+          formatter,
+          [
+            "### 🧹 Negative Memory Cleared",
+            "",
+            `- **Target:** \`${target}\``,
+            `- **Cleared:** ${cleared} remembered failure${cleared === 1 ? "" : "s"}`,
+            "",
+            formatter.formatNegativeMemory([], { target }),
+          ].join("\n"),
+          options,
+        ),
+      );
+    } catch (error: unknown) {
+      fail(formatter, options, error);
+    }
+  });
 
 export { program };
 
