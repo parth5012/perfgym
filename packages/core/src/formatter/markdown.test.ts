@@ -11,7 +11,7 @@ import {
   typecheckViolation,
   violation,
 } from "./test-fixtures.js";
-import { MarkdownFormatter } from "./markdown.js";
+import { MarkdownFormatter, type MarkdownNegativeMemoryEntry } from "./markdown.js";
 
 const formatter = new MarkdownFormatter();
 
@@ -108,12 +108,11 @@ describe("MarkdownFormatter.formatStep — LLD §6.2 template", () => {
   });
 
   it("renders negative memory when a memory cache is supplied", () => {
-    const withMemory = new MarkdownFormatter({
-      negativeMemory: [
-        { step: 2, attempt: "serial awaits", guidance: "Do not attempt serial awaits — this regressed latency." },
-        { step: 4, attempt: "batch size 500", guidance: "Keep batch size <= 50 to stay inside the socket pool." },
-      ],
-    });
+    const memory: readonly MarkdownNegativeMemoryEntry[] = [
+      { step: 2, attempt: "serial awaits", guidance: "Do not attempt serial awaits — this regressed latency." },
+      { step: 4, attempt: "batch size 500", guidance: "Keep batch size <= 50 to stay inside the socket pool." },
+    ];
+    const withMemory = new MarkdownFormatter({ negativeMemory: memory });
 
     const output = withMemory.formatStep(rejectedStep);
 

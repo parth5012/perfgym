@@ -31,15 +31,19 @@ import {
  * A single remembered failure. `MarkdownFormatter` accepts these through its
  * constructor as an *optional, nullable* dependency — the memory module that
  * produces them is Map 6, so the formatter must work without it.
+ *
+ * Named `MarkdownNegativeMemoryEntry` so the canonical `NegativeMemoryEntry`
+ * of the memory module (`../memory/index.js`) owns that name in the package
+ * barrel.
  */
-export interface NegativeMemoryEntry {
+export interface MarkdownNegativeMemoryEntry {
   readonly step: number;
   readonly attempt?: string;
   readonly guidance: string;
 }
 
 export interface MarkdownFormatterOptions {
-  readonly negativeMemory?: readonly NegativeMemoryEntry[] | null;
+  readonly negativeMemory?: readonly MarkdownNegativeMemoryEntry[] | null;
 }
 
 const RULE_RECOMMENDATIONS: Record<string, string> = {
@@ -184,14 +188,14 @@ const renderViolationsSection = (violations: readonly LintViolation[]): string[]
 };
 
 const hasMemory = (
-  memory: readonly NegativeMemoryEntry[] | null | undefined,
-): memory is readonly NegativeMemoryEntry[] =>
+  memory: readonly MarkdownNegativeMemoryEntry[] | null | undefined,
+): memory is readonly MarkdownNegativeMemoryEntry[] =>
   memory !== undefined && memory !== null && memory.length > 0;
 
 export class MarkdownFormatter {
   readonly format = "markdown" as const;
 
-  readonly #negativeMemory: readonly NegativeMemoryEntry[] | null;
+  readonly #negativeMemory: readonly MarkdownNegativeMemoryEntry[] | null;
 
   constructor(options: MarkdownFormatterOptions = {}) {
     this.#negativeMemory = options.negativeMemory ?? null;
