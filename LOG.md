@@ -195,3 +195,11 @@
   - Not changed: `loadTargetMemory`'s `loadConfig()` — the reviewer confirmed both call sites wrap it in the action's `try`.
 - Verification: `npx vitest run` 391/391 green (27 files, +2 new tests); `npx tsc --noEmit` clean.
 - Parked: a run that records still saves a snapshot taken at run start, so two concurrent runs on different targets can clobber each other. Needs re-read-and-merge before save.
+
+### PR #76 — CodeRabbit and parthpr review pass
+- Status: Done
+- parthpr: all three tickets reported **fully compliant**, no security concerns, no major issues. No action.
+- CodeRabbit: 2 actionable comments, both accepted and fixed in a second follow-up commit.
+  - `packages/core/src/memory/cache.ts` — `record()` accepted a non-finite `deltaPercent`; `JSON.stringify` writes `NaN`/`Infinity` as `null` and the loader then rejected the entry, so a real failure vanished on reload. A `NaN` weight also made `isLessInformative` return `false` in both directions, so eviction depended on Map insertion order. Normalised at the entry point (LEARNINGS #23). **This supersedes the earlier "parked, root cause in the core cache" ruling** — CodeRabbit was right that the fix belongs here, and it is now applied rather than carried forward.
+  - `packages/core/src/memory/render.ts` — a `reason` or `strategy` containing a newline rendered across multiple lines, weakening FLAW-13's compact-context bound. Collapsed in the shared renderer so both consumers (the synthesizer's section and the markdown adapter) inherit it; neither had its own multi-line path.
+- Verification: `npx vitest run` 396/396 green (27 files, +5 tests); `npx tsc --noEmit` clean.

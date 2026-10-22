@@ -61,4 +61,34 @@ describe("formatNegativeMemoryEntry", () => {
       }),
     ).toBe("serial awaits (+2.5%): gain below the significance threshold");
   });
+
+  it("collapses a multi-line reason onto exactly one line", () => {
+    const rendered = formatNegativeMemoryEntry({
+      ...entry,
+      reason: "revert failed:\n  the subprocess\tcrashed \t hard",
+    });
+
+    expect(rendered).not.toContain("\n");
+    expect(rendered).not.toContain("\t");
+    expect(rendered).not.toContain("  ");
+    expect(rendered).toBe("serial awaits (-8.3%): revert failed: the subprocess crashed hard");
+  });
+
+  it("collapses a multi-line strategy onto exactly one line", () => {
+    const rendered = formatNegativeMemoryEntry({
+      ...entry,
+      strategy: "serial\nawaits\tin a loop",
+    });
+
+    expect(rendered).not.toContain("\n");
+    expect(rendered).not.toContain("\t");
+    expect(rendered).not.toContain("  ");
+    expect(rendered).toBe("serial awaits in a loop (-8.3%): regressed tail latency");
+  });
+
+  it("renders a single-line entry byte-identically", () => {
+    expect(formatNegativeMemoryEntry(entry)).toBe(
+      "serial awaits (-8.3%): regressed tail latency",
+    );
+  });
 });
