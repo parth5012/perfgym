@@ -11,6 +11,8 @@
  */
 
 import chalk from "chalk";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   EvaluationPipeline,
   GitSandboxCoordinator,
@@ -20,6 +22,11 @@ import {
   type StepEvaluation,
   type WorkspaceContext,
   synthesizeGradientFeedback,
+  PromptBuilder,
+  createDriver,
+  type LlmDriver,
+  type TargetFileContent,
+  matchesGlob,
 } from "../../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../../linter/src/index.js";
 import {
@@ -57,8 +64,16 @@ export interface RunLoopOptions {
   cwd?: string;
   targetBranch?: string;
   maxIterations?: number;
+  driver?: "api" | "cli" | string;
+  provider?: string;
   model?: string;
+  cliCommand?: string;
+  cliArgs?: string[];
+  maxCostUsd?: number;
+  maxTokens?: number;
+  llmTimeoutMs?: number;
   generator?: MutationGenerator;
+  llmDriver?: LlmDriver; // For injecting stub drivers in tests
   samples?: number;
   minSignificanceDelta?: number;
   plateauThreshold?: number;
@@ -72,6 +87,8 @@ export interface RunLoopResult {
   promoted: boolean;
   stoppedReason: string;
   evaluations: StepEvaluation[];
+  totalCostUsd?: number | null;
+  totalTokens?: number;
 }
 
 export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise<RunLoopResult> {
@@ -90,6 +107,31 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
 
   const config = loadConfig(cwd);
   let state = readState(cwd);
+
+  // Resolve driver configuration with precedence: CLI flag > .perfgym.yaml > default
+  const resolvedDriverName = options.driver ?? config.llm?.driver ?? "api";
+  const resolvedProvider = options.provider ?? config.llm?.provider ?? "openai";
+  const resolvedModel = options.model ?? config.llm?.model;
+  const resolvedCliCommand = options.cliCommand ?? config.llm?.cliCommand;
+  const resolvedCliArgs = options.cliArgs ?? config.llm?.cliArgs;
+  const resolvedTimeoutMs = options.llmTimeoutMs ?? config.llm?.timeoutMs;
+  const maxCostUsd = options.maxCostUsd;
+  const maxTokens = options.maxTokens;
+
+  // Instantiate LLM driver if no explicit generator was provided
+  let activeLlmDriver: LlmDriver | undefined = options.llmDriver;
+  if (!options.generator && !activeLlmDriver) {
+    activeLlmDriver = createDriver(resolvedDriverName, {
+      provider: resolvedProvider,
+      model: resolvedModel,
+      cliCommand: resolvedCliCommand,
+      cliArgs: resolvedCliArgs,
+      timeoutMs: resolvedTimeoutMs,
+      baseUrl: config.llm?.baseUrl,
+      apiKey: config.llm?.apiKeyEnv ? process.env[config.llm.apiKeyEnv] : undefined,
+      pricing: config.llm?.pricing,
+    });
+  }
 
   // The negative memory is owned by the loop: it is loaded at the start of
   // the run (so the failures of the previous run are known) and persisted at
@@ -136,8 +178,12 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
   let bestFitness = state.bestFitnessScore ?? 0;
   let acceptedCount = 0;
   let consecutiveRejections = 0;
+  let consecutiveLlmFailures = 0;
+  let consecutiveGiveUps = 0;
+  let cumulativeTokens = 0;
+  let cumulativeCostUsd: number | null = 0;
   let lastFeedback: string | undefined;
-  let stoppedReason = "Completed maximum iterations";
+  let stoppedReason = "max-iterations";
   const evaluations: StepEvaluation[] = [];
 
   log(chalk.bold.cyan(`\n🚀 Starting PerfGym Autonomous Optimization Loop (${maxIterations} iterations)`));
@@ -155,12 +201,129 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
           iteration: i,
           bestFitnessScore: bestFitness,
           lastFeedback,
-          // The remembered failures reach the generator on every iteration,
-          // the first one included.
           negativeMemory: negativeMemory.entries(),
           targetFiles: config.target.files,
           workingDir: sandboxDir,
         });
+      } else if (activeLlmDriver) {
+        // Collect current target files from sandboxDir (supports globs and direct files)
+        const targetFilesContent: TargetFileContent[] = [];
+        const scanDir = (dir: string, baseDir: string) => {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            const relPath = path.relative(baseDir, fullPath).replace(/\\/g, "/");
+            if (entry.isDirectory()) {
+              if (entry.name !== "node_modules" && entry.name !== ".git" && entry.name !== ".perfgym") {
+                scanDir(fullPath, baseDir);
+              }
+            } else if (entry.isFile()) {
+              const matched = config.target.files.some((pat) => matchesGlob(pat, relPath));
+              if (matched) {
+                const stat = fs.statSync(fullPath);
+                targetFilesContent.push({
+                  path: relPath,
+                  content: fs.readFileSync(fullPath, "utf8"),
+                  mtimeMs: stat.mtimeMs,
+                });
+              }
+            }
+          }
+        };
+        scanDir(sandboxDir, sandboxDir);
+
+        // Find primary metric for context
+        const primaryMetric = config.metrics[0];
+        const prompt = PromptBuilder.build({
+          target: {
+            name: config.target.name,
+            language: config.target.language,
+            files: config.target.files,
+          },
+          metric: {
+            name: primaryMetric?.name ?? "fitness",
+            unit: primaryMetric?.unit ?? "score",
+            goal: primaryMetric?.goal ?? "maximize",
+            baseline: state.baselineMetrics?.[primaryMetric?.name ?? ""],
+            currentBest: bestFitness,
+          },
+          targetFiles: targetFilesContent,
+          lastFeedback,
+          negativeMemory: negativeMemory.entries(),
+        });
+
+        const llmResult = await activeLlmDriver.complete({
+          prompt,
+          model: resolvedModel,
+          targetFiles: targetFilesContent,
+          timeoutMs: resolvedTimeoutMs,
+        });
+
+        // Accumulate usage & cost
+        if (llmResult.usage) {
+          cumulativeTokens += llmResult.usage.totalTokens;
+        }
+        if (llmResult.estimatedCostUsd !== undefined) {
+          if (llmResult.estimatedCostUsd === null) {
+            cumulativeCostUsd = null;
+          } else if (cumulativeCostUsd !== null) {
+            cumulativeCostUsd += llmResult.estimatedCostUsd;
+          }
+        }
+
+        // Check budget caps immediately after usage is accumulated
+        if (maxTokens !== undefined && cumulativeTokens >= maxTokens) {
+          stoppedReason = "budget-exhausted";
+          log(chalk.yellow(`  Token budget exhausted (${cumulativeTokens} >= ${maxTokens}). Stopping.`));
+          // Apply this iteration's mutations before stopping so work is evaluated and kept
+          mutatedFiles = llmResult.mutations.map((m) => ({
+            relPath: m.path,
+            content: m.content,
+          }));
+        } else if (maxCostUsd !== undefined && cumulativeCostUsd !== null && cumulativeCostUsd >= maxCostUsd) {
+          stoppedReason = "budget-exhausted";
+          log(chalk.yellow(`  Cost budget exhausted ($${cumulativeCostUsd.toFixed(4)} >= $${maxCostUsd}). Stopping.`));
+          // Apply this iteration's mutations before stopping so work is evaluated and kept
+          mutatedFiles = llmResult.mutations.map((m) => ({
+            relPath: m.path,
+            content: m.content,
+          }));
+        }
+
+        // Check if LLM call failed or skipped
+        if (llmResult.skipped || llmResult.error) {
+          log(chalk.yellow(`  LLM call skipped/failed: ${llmResult.error}`));
+          consecutiveLlmFailures++;
+          if (consecutiveLlmFailures >= 3) {
+            stoppedReason = "error";
+            log(chalk.red("  3 consecutive LLM failures reached. Aborting loop."));
+            break;
+          }
+          continue;
+        }
+
+        // Reset consecutive failures on valid response
+        consecutiveLlmFailures = 0;
+
+        // Check if LLM gave up (mutations: [])
+        if (!llmResult.mutations || llmResult.mutations.length === 0) {
+          log(chalk.yellow("  Model returned 0 mutations (gave up)."));
+          consecutiveGiveUps++;
+          if (consecutiveGiveUps >= 2) {
+            stoppedReason = "llm-gave-up";
+            log(chalk.yellow("  2 consecutive give-ups received. Stopping."));
+            break;
+          }
+          continue;
+        }
+
+        // Reset give-ups on mutation received
+        consecutiveGiveUps = 0;
+
+        mutatedFiles = llmResult.mutations.map((m) => ({
+          relPath: m.path,
+          content: m.content,
+        }));
       } else {
         // External loop or default fallback message
         log(chalk.yellow("  No mutation generator configured; waiting for external mutations."));
@@ -250,8 +413,13 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
       // 3. The plateau check comes last: the feedback of the final step must
       //    never be lost.
       if (rolledBack && consecutiveRejections >= plateauThreshold) {
-        stoppedReason = `Plateau reached (${consecutiveRejections} consecutive rejections)`;
+        stoppedReason = "plateau";
         log(chalk.yellow(`\n⚠ Plateau threshold reached (${plateauThreshold} non-improving steps). Auto-terminating.`));
+        break;
+      }
+
+      // 4. Check budget caps at end of iteration
+      if (stoppedReason === "budget-exhausted") {
         break;
       }
     }
@@ -292,6 +460,8 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
       promoted,
       stoppedReason,
       evaluations,
+      totalCostUsd: cumulativeCostUsd,
+      totalTokens: cumulativeTokens,
     };
   } catch (err: unknown) {
     try {

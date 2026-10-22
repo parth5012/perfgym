@@ -351,13 +351,32 @@ program
   .description("Execute autonomous hill-climbing optimization loop in an isolated sandbox worktree")
   .option("-i, --iterations <number>", "Maximum number of optimization iterations", "15")
   .option("-t, --target-branch <branch>", "Target branch to promote winning commits to", "main")
-  .option("-m, --model <provider/model>", "LLM provider and model for mutation generation")
+  .option("--driver <api|cli>", "Mutation generator driver: api or cli")
+  .option("--provider <provider>", "LLM provider for api driver (e.g. openai, anthropic, google)")
+  .option("-m, --model <model>", "LLM model for mutation generation")
+  .option("--cli-command <command>", "Command for cli driver (default: opencode run)")
+  .option("--cli-args <args...>", "Arguments for cli driver")
+  .option("--max-cost-usd <number>", "Maximum accumulated USD cost budget")
+  .option("--max-tokens <number>", "Maximum accumulated token budget")
+  .option("--llm-timeout-ms <number>", "Per-request timeout for LLM driver in milliseconds")
   .option("-s, --samples <number>", "Number of benchmark samples per evaluation", "5")
   .option(...OUTPUT_OPTIONS[0])
   .option(...OUTPUT_OPTIONS[1])
   .action(
     async (
-      options: { iterations: string; targetBranch: string; model?: string; samples: string } & OutputOptions,
+      options: {
+        iterations: string;
+        targetBranch: string;
+        driver?: string;
+        provider?: string;
+        model?: string;
+        cliCommand?: string;
+        cliArgs?: string[];
+        maxCostUsd?: string;
+        maxTokens?: string;
+        llmTimeoutMs?: string;
+        samples: string;
+      } & OutputOptions,
     ) => {
       let formatter: OutputFormatter;
       try {
@@ -369,6 +388,15 @@ program
 
       const iterations = parseInt(options.iterations, 10) || 15;
       const samples = parseInt(options.samples, 10) || 5;
+      const maxCostUsd = options.maxCostUsd !== undefined && !Number.isNaN(parseFloat(options.maxCostUsd))
+        ? parseFloat(options.maxCostUsd)
+        : undefined;
+      const maxTokens = options.maxTokens !== undefined && !Number.isNaN(parseInt(options.maxTokens, 10))
+        ? parseInt(options.maxTokens, 10)
+        : undefined;
+      const llmTimeoutMs = options.llmTimeoutMs !== undefined && !Number.isNaN(parseInt(options.llmTimeoutMs, 10))
+        ? parseInt(options.llmTimeoutMs, 10)
+        : undefined;
       const json = formatter.format === "json";
       applyColorPolicy(formatter, options);
 
@@ -376,7 +404,14 @@ program
         const result = await runOptimizationLoop({
           maxIterations: iterations,
           targetBranch: options.targetBranch,
+          driver: options.driver,
+          provider: options.provider,
           model: options.model,
+          cliCommand: options.cliCommand,
+          cliArgs: options.cliArgs,
+          maxCostUsd,
+          maxTokens,
+          llmTimeoutMs,
           samples,
           // Keep stdout pure JSON: the loop's live progress is suppressed,
           // its summary is rendered below through the formatter.
@@ -396,6 +431,8 @@ program
                     ? result.bestFitnessScore
                     : null,
                   promoted: result.promoted,
+                  totalCostUsd: result.totalCostUsd,
+                  totalTokens: result.totalTokens,
                   // Evaluations carry raw invariant/revert text; escapes from
                   // subprocess output survive JSON.stringify, so clean them
                   // here without changing the payload's shape.
