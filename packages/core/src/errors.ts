@@ -114,6 +114,29 @@ export class InsignificantDeltaError extends Data.TaggedError("InsignificantDelt
 }> {}
 
 /**
+ * ============================================================================
+ * LLM Driver Errors
+ * ============================================================================
+ */
+
+export class UnknownDriverError extends Data.TaggedError("UnknownDriverError")<{
+  readonly driverName: string;
+  readonly message: string;
+}> {}
+
+export class MissingApiKeyError extends Data.TaggedError("MissingApiKeyError")<{
+  readonly provider: string;
+  readonly envVar: string;
+  readonly message: string;
+}> {}
+
+export class LlmFatalError extends Data.TaggedError("LlmFatalError")<{
+  readonly provider: string;
+  readonly reason: string;
+  readonly message: string;
+}> {}
+
+/**
  * Union of all PerfGym domain errors
  */
 export type PerfGymDomainError =
@@ -129,4 +152,7 @@ export type PerfGymDomainError =
   | InvariantFailureError
   | BenchmarkExecutionError
   | TailGuardRegressionError
-  | InsignificantDeltaError;
+  | InsignificantDeltaError
+  | UnknownDriverError
+  | MissingApiKeyError
+  | LlmFatalError;
