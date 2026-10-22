@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -307,6 +307,25 @@ describe("NegativeMemoryCache — persistence", () => {
     cache.save(file);
 
     expect(() => readFileSync(file, "utf8")).not.toThrow();
+  });
+
+  it("writes the file atomically and leaves no temporary file behind", () => {
+    const dir = makeTempDir();
+    const file = join(dir, "negative-memory.json");
+    const cache = new NegativeMemoryCache({ target: "checkout" });
+
+    cache.record(entry({ id: "hash-a" }));
+    cache.save(file);
+    cache.record(entry({ id: "hash-b" }));
+    cache.save(file);
+
+    // The destination always holds the complete document, and the temp file
+    // used for the atomic rename is not left behind.
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+      targets: Record<string, { entries: NegativeMemoryEntry[] }>;
+    };
+    expect(parsed.targets["checkout"]?.entries).toHaveLength(2);
+    expect(readdirSync(dir)).toEqual(["negative-memory.json"]);
   });
 
   it("keeps different targets isolated in the same file", () => {
