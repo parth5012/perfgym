@@ -148,3 +148,20 @@
 - Review round 1 (local OCR over `origin/main..HEAD`, 7 findings): fixed the init `--format json` error path, guarded partial-config access in both adapters, flattened nested ternaries and `== null`. Commit `95e541f`.
 - Review round 2 (CodeRabbit, 6 inline findings): fixed ANSI leaks (`lastError`, typecheck/lint messages, `run --format json` evaluations via new `stripAnsiDeep`), `describeError` `_tag` fallback for `Error` instances, and MCP `result.isError: true` on formatted tool failures. Commit `8a214b0`.
 - Notes: `docs/IMPLEMENTATION_PLAN.md` referenced by the tickets does not exist in the repo or its history; implemented from `docs/LOW_LEVEL_DESIGN.md` §6.1/§6.2 plus ticket text. `parthpr-agent` failed to review twice (bot-side, no detail).
+
+## 2026-10-22 — Wayfinder Map 6 (#66): Negative Memory Cache
+- Status: In progress (Phase 2, AFK, single-PR mode — 3 code-changing AFK tickets < 5, so one branch + one PR)
+- Phase 1 (HITL): none — every child ticket of #66 is `[TASK:AFK]`, so the HITL phase is vacuously complete.
+- Frontier: #36 (unblocked) → #37 and #38 (both blocked by #36; #37 additionally by #33, already merged).
+
+### Ticket #36 — Implement NegativeMemoryCache Core Module
+- Status: Done
+- Code changes: new `packages/core/src/memory/` module (`index.ts`, `cache.ts`, `cache.test.ts`); `export * from "./memory/index.js"` added to `packages/core/src/index.ts`; the formatter's placeholder type renamed `NegativeMemoryEntry` → `MarkdownNegativeMemoryEntry` (see LEARNINGS #12) with the rendered output left byte-identical.
+- Behaviour: dedup by SHA-256 content hash (update in place, never duplicate); bounded to `maxEntries` (default 5); eviction takes the least informative candidate of retained ∪ incoming (LEARNINGS #13); entries returned newest-first (timestamp → step → id); persistence in one JSON file holding a map of target name → entries, so targets never contaminate each other; a missing/corrupt file loads as an empty cache without throwing; `hashMutatedFiles` normalises path separators and line endings and compares by code unit (LEARNINGS #14, #15).
+- Verification: `npx tsc --noEmit` clean; `npx vitest run packages/core/src/memory` 40/40; `npx vitest run` 336/336 green (26 files).
+- Self-review (3 iterations, `code-review` standards+spec axes and `ocr-review` on the diff):
+  - Iteration 1 — blocked: eviction victim was chosen among retained entries only, so `load()` dropped |Δ| = 2 while keeping |Δ| = 1. Fixed: union eviction, incoming entry discarded when it is itself the least informative; plus a deterministic sort tie-break. 1 test updated, 4 added.
+  - Iteration 2 — fixed: Windows/POSIX path separators produced different digests (OCR medium); `__proto__` target name polluted the prototype and was dropped on save (OCR + standards); two module-header invariants overclaimed; `entries()` ordering was not fully deterministic. 4 tests added.
+  - Iteration 3 — clean on both axes, no blocking findings.
+- Parked (non-blocking, quoted in the #36 resolution comment): the forked formatter/memory negative-memory types (owned by #37); inline `{ relPath, content }` instead of `MutationFile`; the memory module importing its own barrel; `save()` always writing `version: 1` and `load()` ignoring a `bucket.target` mismatch; `load()` trimming an over-sized file to the default capacity (the caller must pass the configured capacity — #38's job); `record()` refreshing `strategy` on a known id; the NUL separator making a crafted file set collide.
+- Notes: `docs/IMPLEMENTATION_PLAN.md`, referenced by the tickets as the design source, does not exist in the repo or in its git history — the design was taken from the map's "Decisions so far", `docs/LOW_LEVEL_DESIGN.md` §6.1/§6.2 and `docs/ADVERSARIAL_REVIEW.md` FLAW-13.

@@ -45,3 +45,21 @@
 ### 11. `JSON.stringify` Does Not Sanitise ANSI
 * **Problem**: an escape sequence inside a string becomes `\u001b` in the JSON text and `JSON.parse` restores the real ESC, so `--format json` can still hand consumers ANSI when raw subprocess output (invariant output, revert reasons) is serialised. Stripping at the formatter boundary is not enough when a caller serialises domain objects directly.
 * **Solution**: deep-clean JSON payloads (`stripAnsiDeep`) before `JSON.stringify`, preserving shape and non-string values, and strip again at the MCP boundary as a second guarantee.
+
+## Bounded-Memory & Barrel-Export Edge Cases
+
+### 12. Two `export *` Barrels Cannot Share a Name (TS2308)
+* **Problem**: adding `export * from "./memory/index.js"` to a barrel that already did `export * from "./formatter/index.js"` fails to compile when both modules export the same type name — `error TS2308: Module "./formatter/index.js" has already exported a member named 'NegativeMemoryEntry'`. It is a hard error, not a warning, and it only appears once the second barrel line is added.
+* **Solution**: give every type exactly one owner in the public surface. Rename the older placeholder type (here the formatter's `NegativeMemoryEntry` → `MarkdownNegativeMemoryEntry`) and drop its re-export from the intermediate barrel, so the canonical name is exported only by the owning module. Renaming a placeholder keeps the rendered output byte-identical — no behaviour change.
+
+### 13. Bounded-Cache Eviction Must Consider the Incoming Candidate
+* **Problem**: choosing the eviction victim among the *retained* entries only, then always inserting the incoming entry, lets a trivial failure (|Δ| = 0.1) evict an informative one (|Δ| = 8). Replaying a persisted file through that rule compounds it: reloading 6 entries (|Δ| = 1…6) into a 5-entry cache dropped |Δ| = 2 while keeping |Δ| = 1, so the retained set was no longer the "top N most relevant anti-patterns" the cache exists to hold.
+* **Solution**: pick the victim from the *union* of retained entries and the incoming entry; if the incoming entry is itself the least informative, discard it and leave the cache untouched. Result: the cache always holds the N most informative failures, and a reloaded file trims to its own top N.
+
+### 14. `localeCompare` Is Locale-Dependent — Never Use It For Content Hashes
+* **Problem**: `Array.prototype.sort((a, b) => a.path.localeCompare(b.path))` orders by the *host's* locale, so the same file set can hash differently on two machines. A dedup key must be reproducible across hosts or the cache remembers the same failure twice.
+* **Solution**: compare by code unit (`a < b ? -1 : a > b ? 1 : 0`) for anything that feeds a hash. Normalise path separators (`\` → `/`) and line endings (`\r\n` → `\n`) before hashing so a Windows mutation and a POSIX mutation of the same file produce one digest.
+
+### 15. Maps Keyed By Untrusted Names Need A Null Prototype
+* **Problem**: `const targets: Record<string, T> = {}` then `targets[name] = value` — a name of `__proto__` sets the prototype instead of creating an own property, so that entry vanishes from the serialised output and the lookup later resolves to `Object.prototype`.
+* **Solution**: build such maps with `Object.create(null)` so `__proto__` is an ordinary own key, and resolve lookups with `Object.prototype.hasOwnProperty.call(map, key)` so an inherited property can never be mistaken for a stored entry.

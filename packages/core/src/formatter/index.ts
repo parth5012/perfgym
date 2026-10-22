@@ -96,7 +96,10 @@ export function createFormatter(
 export { JsonFormatter } from "./json.js";
 export type { StepEvaluationJson } from "./json.js";
 export { MarkdownFormatter } from "./markdown.js";
-export type { MarkdownFormatterOptions, NegativeMemoryEntry } from "./markdown.js";
+export type {
+  MarkdownFormatterOptions,
+  MarkdownNegativeMemoryEntry,
+} from "./markdown.js";
 export {
   MAXIMIZE_TAIL_GUARD_RULE,
   MINIMIZE_TAIL_GUARD_RULE,
