@@ -116,6 +116,12 @@ export interface TestHandlerOptions {
   cwd?: string;
   command?: string;
   timeoutMs?: number;
+  /**
+   * Sample-count hint for handler-shape parity with handleBenchmark. The
+   * invariant gate currently runs the command once, so this is accepted and
+   * unused (coordinator/pipeline owns any future sampling change).
+   */
+  samples?: number;
 }
 
 export interface LintHandlerOptions {
