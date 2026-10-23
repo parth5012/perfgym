@@ -29,6 +29,15 @@ import {
   negativeMemoryFilePath,
 } from "./engine.js";
 import { runOptimizationLoop } from "./commands/run.js";
+import {
+  runStatusCommand,
+  runRollbackCommand,
+  runTestCommand,
+  runLintCommand,
+  runBenchmarkCommand,
+  parseStepNumber,
+  type LifecycleCommandResult,
+} from "./commands/lifecycle.js";
 
 type ColorMode = "auto" | "always" | "never";
 
@@ -450,6 +459,174 @@ program
       }
     },
   );
+
+// ============================================================================
+// Lifecycle commands (Ticket #44) — status / rollback / test / lint / benchmark
+// ============================================================================
+
+/** Emit a lifecycle-command result; failures follow the fail() parity rule. */
+const emitResult = (
+  formatter: OutputFormatter,
+  options: OutputOptions,
+  result: LifecycleCommandResult,
+): void => {
+  const text = render(formatter, result.text, options);
+  if (result.failed && formatter.format !== "json") {
+    process.stderr.write(`${text}\n`);
+  } else {
+    write(text);
+  }
+  process.exitCode = result.exitCode;
+};
+
+const optionalNumber = (value: string | undefined): number | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = parseInt(value, 10);
+  return Number.isNaN(parsed) ? undefined : parsed;
+};
+
+/**
+ * Shared action body for the lifecycle commands: resolve the formatter (an
+ * invalid --format falls back to the default for that one error), run the
+ * command module through the coordinator, and emit the result.
+ *
+ * F4: the returned promise is awaited by the (async) actions below, so
+ * parseAsync resolves only after the output has been flushed. An escaping
+ * error reproduces the fail() parity rule — JSON errors to stdout, markdown
+ * errors to stderr — and books exit code 1.
+ */
+const runLifecycle = async (
+  formatter: OutputFormatter,
+  options: OutputOptions,
+  command: (format: OutputFormat) => Promise<LifecycleCommandResult>,
+): Promise<void> => {
+  try {
+    applyColorPolicy(formatter, options);
+    const result = await command(formatter.format);
+    emitResult(formatter, options, result);
+  } catch (error: unknown) {
+    const text = render(formatter, formatter.formatError(error), options);
+    if (formatter.format === "json") {
+      write(text);
+    } else {
+      process.stderr.write(`${text}\n`);
+    }
+    process.exitCode = 1;
+  }
+};
+
+program
+  .command("status")
+  .description("Read-only session report (best score, step history, negative memory, lock state)")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action(async (options: OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+
+    await runLifecycle(formatter, options, (format) => runStatusCommand({ format }));
+  });
+
+program
+  .command("rollback")
+  .description("Restore the sandbox worktree to the last approved state (most recent accepted step)")
+  .option("--to-step <number>", "Target step in history — must be ACCEPTED")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action(async (options: { toStep?: string } & OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+
+    // F1: an invalid --to-step fails loudly BEFORE any rollback runs — it
+    // must never degrade into a default rollback with exit 0.
+    try {
+      const toStep = parseStepNumber(options.toStep);
+      await runLifecycle(formatter, options, (format) =>
+        runRollbackCommand({ format, ...(toStep !== undefined ? { toStep } : {}) }),
+      );
+    } catch (error: unknown) {
+      fail(formatter, options, error);
+    }
+  });
+
+program
+  .command("test")
+  .description("Run the invariant gate only and report pass/fail, output and duration")
+  .option("--timeout <ms>", "Timeout in milliseconds for the invariant command")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action(async (options: { timeout?: string } & OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+
+    const timeoutMs = optionalNumber(options.timeout);
+    await runLifecycle(formatter, options, (format) =>
+      runTestCommand({ format, ...(timeoutMs !== undefined ? { timeoutMs } : {}) }),
+    );
+  });
+
+program
+  .command("lint")
+  .description("Run AST pattern rules + tier-1 typecheck over target files and report violations")
+  .option("--files <files...>", "Limit the scan to these file paths")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action(async (options: { files?: string[] } & OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+
+    await runLifecycle(formatter, options, (format) =>
+      runLintCommand({ format, ...(options.files !== undefined ? { files: options.files } : {}) }),
+    );
+  });
+
+program
+  .command("benchmark")
+  .description("Measure one metric and report its distribution against the stored baseline")
+  .option("-s, --samples <number>", "Number of benchmark samples to collect", "5")
+  .option("--metric <name>", "Metric to benchmark (defaults to the first configured metric)")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action(async (options: { samples: string; metric?: string } & OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+
+    const samples = parseInt(options.samples, 10) || 5;
+    await runLifecycle(formatter, options, (format) =>
+      runBenchmarkCommand({
+        format,
+        samples,
+        ...(options.metric !== undefined ? { metric: options.metric } : {}),
+      }),
+    );
+  });
 
 // ============================================================================
 // `perfgym memory` — inspect and reset the negative memory
