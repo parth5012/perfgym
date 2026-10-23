@@ -234,3 +234,5 @@
 - All 4 PRs (#77, #78, #79, #80) linked in T3 Code and registered on GitHub with all CI checks passing green.
 - Issue #67 and child tickets #39, #40, #41, #42 all closed as completed.
 
+- [Ticket #44] Added perfgym status/rollback/test/lint/benchmark CLI commands via shared McpServerCoordinator handlers (packages/cli/src/commands/lifecycle.ts + index.ts wiring); 12 new tests in packages/cli/tests/commands.test.ts (461/461 green, tsc clean, unstaged).
+- [Ticket #44 review] Fixed F1-F4 (strict --to-step parsing, full benchmark markdown distribution, config-driven driver globs, awaited async lifecycle actions) + F5 status side-effect assertions; 465/465 green, tsc clean, unstaged.
