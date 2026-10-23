@@ -651,4 +651,15 @@ metrics:
       vi.resetModules();
     }
   });
+
+  // --- R8 --------------------------------------------------------------------
+  it("R8: the binary entrypoint parses with parseAsync so async lifecycle output survives", async () => {
+    // Red: the runtime guard invoked `program.parse(process.argv)`, which does
+    // NOT await the async lifecycle actions — output/exitCode can be lost when
+    // running the compiled binary. The guard must use `parseAsync`.
+    const entryPath = new URL("../src/index.ts", import.meta.url);
+    const source = await fs.promises.readFile(entryPath, "utf8");
+    expect(source).not.toMatch(/(?<!Async)\)\.parse\(process\.argv\)/);
+    expect(source).toContain("await program.parseAsync(process.argv)");
+  });
 });

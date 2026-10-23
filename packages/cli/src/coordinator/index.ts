@@ -92,6 +92,8 @@ export class McpServerCoordinator {
     saved: Map<string, string>;
     created: string[];
   } | null = null;
+  /** R3: host-disk files each step CREATED (for targeted rollback cleanup). */
+  private stepCreatedPaths: Map<number, string[]> = new Map();
 
   constructor(options: McpServerCoordinatorOptions = {}) {
     this.rootDir = path.resolve(options.rootDir ?? process.cwd());
@@ -205,31 +207,31 @@ export class McpServerCoordinator {
   }
 
   /**
-   * F8 companion: deletes host-disk files that are NOT part of the snapshot
-   * (files a rolled-back mutation created), bounded by the configured target
-   * globs so unrelated project files are never touched.
+   * F8 companion / R3: deletes ONLY host-disk files a rolled-back step
+   * CREATED (tracked per step via `backupDiskFiles`), plus pruning of the
+   * empty directories they left behind. Pre-existing files are never deleted
+   * merely for being absent from an in-memory snapshot — the snapshot only
+   * mirrors driver-owned files, not the whole workspace.
    */
-  private removeDiskFilesNotInSnapshot(snap: Map<string, string>): void {
+  private removeCreatedPathsAfter(restoredStep: number): void {
     const dir = this.getWorkingDir();
     if (!dir || dir.startsWith("/virtual/") || !fs.existsSync(dir)) return;
-    const walk = (currentDir: string) => {
-      for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
-        if (entry.name === "node_modules" || entry.name === ".git" || entry.name === ".perfgym") {
-          continue;
-        }
-        const full = path.join(currentDir, entry.name);
-        const rel = path.relative(dir, full).replace(/\\/g, "/");
-        if (entry.isDirectory()) {
-          walk(full);
-        } else if (entry.isFile() && !snap.has(rel)) {
-          const isTarget = this.config.target.files.some((p) => matchesGlob(p, rel));
-          if (isTarget) {
-            fs.rmSync(full, { force: true });
+    for (const [stepNumber, created] of [...this.stepCreatedPaths.entries()]) {
+      if (stepNumber <= restoredStep) continue;
+      for (const relPath of created) {
+        const full = path.resolve(dir, relPath);
+        if (fs.existsSync(full)) {
+          fs.rmSync(full, { force: true });
+          // Prune now-empty parent directories created by the mutation.
+          let parent = path.dirname(full);
+          while (parent !== dir && fs.existsSync(parent) && fs.readdirSync(parent).length === 0) {
+            fs.rmdirSync(parent);
+            parent = path.dirname(parent);
           }
         }
       }
-    };
-    walk(dir);
+      this.stepCreatedPaths.delete(stepNumber);
+    }
   }
 
   public updateConfig(newConfig: PerfGymConfig): void {
@@ -345,30 +347,37 @@ export class McpServerCoordinator {
     return undefined;
   }
 
-  private async restoreSnapshot(stepNumber: number, targetCommit?: string): Promise<void> {
+  private async restoreSnapshot(
+    stepNumber: number,
+    targetCommit?: string,
+    workingDirOverride?: string
+  ): Promise<void> {
     const snap = this.stepSnapshots.get(stepNumber);
     if (this.driver instanceof InMemorySandboxDriver) {
       if (snap) {
         // F8: typed accessor — no untyped field pokes into core state.
         this.driver.restoreFullSnapshot(snap);
-        // F8: the host disk mirrors the driver; restore AND drop extras that
-        // a rolled-back mutation created.
+        // F8/R3: the host disk mirrors the driver; restore the snapshot files
+        // AND drop exactly the files the undone steps created.
         for (const [relPath, content] of snap.entries()) {
           this.syncDriverToDisk(relPath, content);
         }
-        this.removeDiskFilesNotInSnapshot(snap);
+        this.removeCreatedPathsAfter(stepNumber);
       }
       return;
     }
 
     // Real workspace driver (e.g. GitWorktreeDriver): best-effort file restore
-    // from the recorded snapshot, then an authoritative git restore.
+    // from the recorded snapshot, then an authoritative git restore. The
+    // working dir is resolved by the CALLER (pre-acquire) — a fresh MCP-style
+    // coordinator acquires its own lock/worktree, but the restore must hit
+    // the developer's working tree (same semantics as the legacy bare reset).
     if (snap) {
       for (const [relPath, content] of snap.entries()) {
         await this.driver.writeFile(relPath, content);
       }
     }
-    const workingDir = this.getWorkingDir();
+    const workingDir = workingDirOverride ?? this.getWorkingDir();
     if (targetCommit && fs.existsSync(path.join(workingDir, ".git"))) {
       try {
         execFileSync("git", ["reset", "--hard", targetCommit], {
@@ -637,12 +646,21 @@ export class McpServerCoordinator {
       baseRef: rawContext?.baseRef ?? "HEAD",
     };
 
+    const history = state.history ?? this.history ?? [];
+
+    // R2: step numbers are MONOTONIC — derived from the highest stepNumber
+    // ever recorded in history, never from the (rewound) totalStepCount
+    // pointer. Otherwise a rollback to the baseline would re-issue step
+    // number 1 and break stepNumber-based lookups across the codebase.
+    const nextIteration =
+      history.length > 0
+        ? Math.max(...history.map((h) => h.stepNumber)) + 1
+        : 1;
+
     const primaryMetricName = this.config.metrics[0]?.name;
     const primaryBaselineDist = primaryMetricName
       ? state.baselineDistributions?.[primaryMetricName]
       : undefined;
-
-    const nextIteration = (state.totalStepCount ?? 0) + 1;
 
     const evaluation = await this.pipeline.evaluateStep(context, modifiedFiles, {
       baseline: primaryBaselineDist,
@@ -652,14 +670,18 @@ export class McpServerCoordinator {
       minSignificanceDelta: options.minDelta,
     });
 
-    const history = state.history ?? this.history ?? [];
-
     if (evaluation.accepted) {
       const receipt = await this.sandbox.acceptStep(
         evaluation.iteration,
         evaluation.fitnessScore
       );
       await this.captureSnapshot(evaluation.iteration);
+      // R3: remember the host-disk files this accepted step CREATED so a later
+      // rollback to an earlier step can remove exactly those.
+      this.stepCreatedPaths.set(
+        evaluation.iteration,
+        this.pendingDiskBackup?.created.slice() ?? []
+      );
 
       history.push({
         stepNumber: evaluation.iteration,
@@ -690,10 +712,13 @@ export class McpServerCoordinator {
       state.currentMetrics = currentMetrics;
       state.metricDeltas = metricDeltas;
 
+      // R5: every accepted step counts — the increment must not hide inside
+      // the new-best branch (an accepted step scoring below the current best
+      // still consumed a step and must be counted).
+      state.acceptedStepCount = (state.acceptedStepCount ?? 0) + 1;
       if (evaluation.fitnessScore > state.bestFitnessScore) {
         state.bestFitnessScore = evaluation.fitnessScore;
         state.bestStep = evaluation.iteration;
-        state.acceptedStepCount = (state.acceptedStepCount ?? 0) + 1;
       }
 
       writeState(this.rootDir, state);
@@ -827,6 +852,9 @@ export class McpServerCoordinator {
 
     const rules = options.rules ?? this.config.rules ?? DEFAULT_RULES;
     const violations: LintViolation[] = [];
+    // R6: rule/parse failures must be visible — a broken rule silently
+    // applying to nothing is not a clean scan (mirrors AstLinterEngine.scan).
+    const scanErrors: string[] = [];
 
     for (const file of files) {
       let content: string | null = null;
@@ -855,8 +883,12 @@ export class McpServerCoordinator {
       for (const rule of rules) {
         const lang = (rule as AstRule).language ?? language;
         const result = parseAndMatch(rule.pattern, content, lang);
-        if (result.matches) {
-          for (const match of result.matches) {
+        if (result.error) {
+          // R6: collect the failure — do not pretend the rule ran.
+          scanErrors.push(`Rule "${rule.id}" failed on ${file}: ${result.error}`);
+          continue;
+        }
+        for (const match of result.matches) {
             violations.push({
               ruleId: rule.id,
               message: rule.message,
@@ -868,7 +900,6 @@ export class McpServerCoordinator {
             });
           }
         }
-      }
     }
 
     const penalty = totalPenalty(violations);
@@ -877,12 +908,13 @@ export class McpServerCoordinator {
     const disqualified = violations.some((v) => v.action === "disqualify");
 
     return {
-      passed: violations.length === 0,
+      passed: violations.length === 0 && scanErrors.length === 0,
       violations,
       totalPenalty: penalty,
       errorCount,
       warningCount,
       disqualified,
+      scanErrors,
     };
   }
 
@@ -896,9 +928,20 @@ export class McpServerCoordinator {
     options: BenchmarkHandlerOptions = {}
   ): Promise<BenchmarkOutcome> {
     const cwd = options.cwd ?? this.getWorkingDir();
-    const metricConfig = options.metric
-      ? this.config.metrics.find((m) => m.name === options.metric) ?? this.config.metrics[0]
-      : this.config.metrics[0];
+    // R7: an unmatched explicit metric name must fail loudly — silently
+    // benchmarking metrics[0] reports numbers for the wrong metric.
+    let metricConfig = this.config.metrics[0];
+    if (options.metric) {
+      const requested = this.config.metrics.find((m) => m.name === options.metric);
+      if (!requested) {
+        throw new Error(
+          `Unknown metric '${options.metric}'. Configured: ${this.config.metrics
+            .map((m) => m.name)
+            .join(", ")}`
+        );
+      }
+      metricConfig = requested;
+    }
 
     if (!metricConfig) {
       throw new Error("No metrics configured in PerfGym config.");
@@ -999,28 +1042,45 @@ export class McpServerCoordinator {
       throw new Error("No step history found. Nothing to rollback.");
     }
 
-    let targetEntry: StepHistoryEntry | undefined;
+    // Identify the target entry by ARRAY INDEX (append order), not by
+    // stepNumber equality (R2): stepNumber-based identity is fragile around
+    // rewinds even with the monotonic numbering.
+    let targetIndex: number | undefined;
     if (options.stepNumber !== undefined) {
-      const entry = history.find((h) => h.stepNumber === options.stepNumber);
-      if (!entry) {
+      const idx = history.findIndex((h) => h.stepNumber === options.stepNumber);
+      if (idx === -1) {
         throw new Error(`Step ${options.stepNumber} not found in history.`);
       }
-      if (entry.status !== "ACCEPTED") {
+      if (history[idx].status !== "ACCEPTED") {
         throw new Error(
-          `Step ${entry.stepNumber} is ${entry.status}; only ACCEPTED (applied) steps can be rolled back.`
+          `Step ${history[idx].stepNumber} is ${history[idx].status}; only ACCEPTED (applied) steps can be rolled back.`
         );
       }
-      targetEntry = entry;
+      targetIndex = idx;
     } else {
       // F6: the default target is the most recent ACCEPTED step not yet
       // rolled back. REJECTED steps were never applied, so undoing them is a
       // no-op masquerading as a rollback. With no accepted step left, the
       // rollback rewinds to the baseline instead.
-      targetEntry = [...history].reverse().find((h) => h.status === "ACCEPTED");
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].status === "ACCEPTED") {
+          targetIndex = i;
+          break;
+        }
+      }
     }
 
-    const updatedHistory = history.map((h) => {
-      if (targetEntry !== undefined && h.stepNumber === targetEntry.stepNumber) {
+    // R1 (cascade): rolling back step N restores the worktree to the latest
+    // ACCEPTED step BEFORE N (or the baseline) and marks N AND every LATER
+    // ACCEPTED step ROLLED_BACK — superseding steps were built on top of the
+    // undone work, so leaving them "accepted" would leave the undone
+    // mutation in the worktree while history claimed it was reverted.
+    const updatedHistory = history.map((h, i) => {
+      if (
+        targetIndex !== undefined &&
+        i >= targetIndex &&
+        h.status === "ACCEPTED"
+      ) {
         return {
           ...h,
           status: "ROLLED_BACK" as const,
@@ -1029,13 +1089,37 @@ export class McpServerCoordinator {
       return h;
     });
 
-    // Restore point: the most recent accepted step that survives the rollback,
-    // or the baseline when nothing applied remains.
-    const restoredEntry = [...updatedHistory]
-      .reverse()
-      .find((h) => h.status === "ACCEPTED");
+    // Restore point: the most recent accepted step that survives the rollback
+    // (strictly BEFORE the target), or the baseline when nothing applied remains.
+    let restoredEntry: StepHistoryEntry | undefined;
+    if (targetIndex !== undefined) {
+      for (let i = targetIndex - 1; i >= 0; i--) {
+        if (updatedHistory[i].status === "ACCEPTED") {
+          restoredEntry = updatedHistory[i];
+          break;
+        }
+      }
+    }
     const restoredStep = restoredEntry ? restoredEntry.stepNumber : 0;
     const targetCommit = restoredEntry?.commitHash ?? state.baselineCommit;
+
+    // R4: refuse to LIE. A fresh coordinator (e.g. a stateless MCP tool call)
+    // carries no recorded file snapshots; when no snapshot exists for the
+    // restored step AND no commit reference can restore it, marking history
+    // ROLLED_BACK while restoring nothing would be a successful-looking
+    // no-op. Refuse before any lock/state mutation instead.
+    const hasSnapshot = this.stepSnapshots.has(restoredStep);
+    if (this.driver instanceof InMemorySandboxDriver) {
+      if (!hasSnapshot) {
+        throw new Error(
+          `Rollback failed: no file snapshot for restored step ${restoredStep} exists (fresh coordinator/session) — refusing to mark history ROLLED_BACK without restoring any workspace state.`
+        );
+      }
+    } else if (!hasSnapshot && !targetCommit) {
+      throw new Error(
+        `Rollback failed: no file snapshot and no commit reference for restored step ${restoredStep} — refusing to report success without a restore.`
+      );
+    }
 
     // 3. Acquire (translating foreign busy errors into the reported message),
     //    run, and always release a lock acquired HERE (F5).
@@ -1057,7 +1141,10 @@ export class McpServerCoordinator {
     }
 
     try {
-      // Restore worktree / driver (F7: git failures surface as thrown errors)
+      // Restore worktree / driver (F7: git failures surface as thrown errors).
+      // The restore targets THIS coordinator's sandbox worktree (resolved
+      // after acquire) — the developer's working directory is never touched
+      // by a coordinator rollback (CLI parity).
       await this.restoreSnapshot(restoredStep, targetCommit);
 
       // F3: rewind current metrics/deltas to the restored state. Simplest
@@ -1097,7 +1184,7 @@ export class McpServerCoordinator {
       return {
         success: true,
         status: "ROLLED_BACK",
-        rolledBackStep: targetEntry?.stepNumber ?? 0,
+        rolledBackStep: targetIndex !== undefined ? history[targetIndex].stepNumber : 0,
         restoredStep,
         targetCommit,
         message: `Rollback completed. Restored worktree to step ${restoredStep}${

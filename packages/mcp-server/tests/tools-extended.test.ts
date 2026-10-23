@@ -151,8 +151,6 @@ metrics:
       ["perfgym_test", { command: "node -e 'process.exit(0)'" }],
       ["perfgym_lint", { files: ["src/index.ts"] }],
       ["perfgym_benchmark", { samples: 2 }],
-      // Rollback last: it mutates the seeded state (step 1 → ROLLED_BACK).
-      ["perfgym_rollback", {}],
     ];
 
     for (const [name, args] of calls) {
@@ -164,6 +162,15 @@ metrics:
       const body = JSON.parse(res.result.content[0].text);
       expect(body, `${name} text must be a JSON object`).toBeTypeOf("object");
     }
+
+    // Rollback ran LAST in earlier revisions because it mutated the seeded
+    // state. R4: a fresh coordinator (new per call) has no restore material
+    // for the seeded in-memory session — it must REFUSE (honest failure)
+    // instead of marking history ROLLED_BACK while restoring nothing.
+    const rb = await call("perfgym_rollback", {});
+    expect(rb.result.isError, "rollback must refuse without restore material").toBe(true);
+    const rbBody = JSON.parse(rb.result.content[0].text);
+    expect(rbBody.error.message).toMatch(/rollback failed|snapshot|restore/i);
 
     // Spot-check projections behind the thin shim.
     const status = await call("perfgym_status");
@@ -217,7 +224,7 @@ metrics:
     expect(fs.readFileSync(path.join(testDir, "initial.txt"), "utf8")).toBe("corrupted");
   });
 
-  it("perfgym_rollback routes through the coordinator and marks history ROLLED_BACK", async () => {
+  it("perfgym_rollback routes through the coordinator, restores the sandbox worktree from git, and marks history ROLLED_BACK", async () => {
     const baselineCommit = seedGitRepo();
     fs.writeFileSync(path.join(testDir, "initial.txt"), "corrupted", "utf8");
     writeState(
@@ -233,15 +240,46 @@ metrics:
     expect(body.status).toBe("ok");
     expect(body.message).toContain("Rollback completed");
 
+    // The user's working directory is NEVER touched by a coordinator rollback
+    // (same contract as the CLI lifecycle): the legacy bare reset remains the
+    // only path that resets the root, for uninitialized workspaces.
+    expect(fs.readFileSync(path.join(testDir, "initial.txt"), "utf8")).toBe("corrupted");
+
+    // The restore is durable: the sandbox worktree the rollback acquired is
+    // left on disk (git-backed driver) instead of a silent no-op.
+    const worktreesDir = path.join(testDir, ".perfgym", "worktrees");
+    expect(fs.existsSync(worktreesDir)).toBe(true);
+    expect(fs.readdirSync(worktreesDir).length).toBeGreaterThanOrEqual(1);
+
     // Session state is updated by the coordinator, not by a raw git reset.
     const state = readStateFile();
     expect(state.history[0].status).toBe("ROLLED_BACK");
     expect(state.totalStepCount).toBe(0);
   });
 
-  it("new tools honor explicit format: json parses, markdown does not", async () => {
-    seedWorkspace();
+  // --- R4 --------------------------------------------------------------------
+  it("perfgym_rollback refuses (honest failure) when no snapshot and no commit material exists", async () => {
+    seedGitRepo();
+    // Seeded history WITHOUT baselineCommit and WITHOUT commitHash — a fresh
+    // coordinator has nothing to restore from. The old shim reported success
+    // while restoring nothing; it must now surface a real failure.
     writeState(testDir, stateWithHistory() as Parameters<typeof writeState>[1]);
+
+    const res = await call("perfgym_rollback");
+
+    expect(res.result.isError).toBe(true);
+    const body = JSON.parse(res.result.content[0].text);
+    expect(body.error.message).toMatch(/rollback failed|snapshot|restore|commit/i);
+  });
+
+  it("new tools honor explicit format: json parses, markdown does not", async () => {
+    // R4: rollback on a git-backed workspace with commit material — the
+    // coordinator restores via the baselineCommit recorded in state.
+    const baselineCommit = seedGitRepo();
+    writeState(
+      testDir,
+      stateWithHistory({ baselineCommit }) as Parameters<typeof writeState>[1]
+    );
 
     const newTools: Array<[string, Record<string, unknown>]> = [
       ["perfgym_status", {}],

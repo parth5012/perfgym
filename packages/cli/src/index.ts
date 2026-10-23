@@ -743,5 +743,8 @@ export { program };
 export * from "./coordinator/index.js";
 
 if (process.argv[1] && /\b(index\.[tj]s|perfgym(\.js)?)$/.test(process.argv[1])) {
-  program.parse(process.argv);
+  // R8: the runtime binary path must NOT use the non-awaiting program.parse()
+  // — async lifecycle actions would not be awaited here, so output/exitCode
+  // can be lost. parseAsync keeps the same no-parse-on-import guarantee.
+  await program.parseAsync(process.argv);
 }
