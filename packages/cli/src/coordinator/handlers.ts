@@ -70,6 +70,12 @@ export interface LintOutcome {
   readonly errorCount: number;
   readonly warningCount: number;
   readonly disqualified: boolean;
+  /**
+   * R6: rule/parse failures collected during the scan (mirrors
+   * AstLinterEngine.scan). A non-empty list forces `passed` to false so a
+   * broken rule can never report a silently clean scan.
+   */
+  readonly scanErrors: readonly string[];
 }
 
 export interface BenchmarkOutcome {

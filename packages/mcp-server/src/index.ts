@@ -9,6 +9,8 @@
  */
 
 import * as readline from "node:readline";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
   createFormatter,
@@ -16,6 +18,8 @@ import {
   type OutputFormat,
   type PerfGymConfig,
   type BenchmarkDistribution,
+  GitWorktreeDriver,
+  InMemorySandboxDriver,
 } from "../../core/src/index.js";
 import {
   readState,
@@ -391,11 +395,24 @@ export class PerfGymMcpServer {
    * same contract the engine had — and MCP tool calls are stateless: if the
    * coordinator is allowed to keep the session lock after step/baseline, the
    * next call (from the same server) would refuse with "lock busy" forever.
+   *
+   * R4: on a git workspace the coordinator must back onto a GitWorktreeDriver
+   * (the same construction edge as the CLI lifecycle factory) so rollback
+   * restores from durable git commits. The default in-memory driver keeps no
+   * snapshots across stateless calls, which used to make rollback a
+   * success-reporting no-op. Non-git workspaces stay on the in-memory driver.
    */
   private async withCoordinator<T>(
     run: (coordinator: McpServerCoordinator) => Promise<T>
   ): Promise<T> {
-    const coordinator = new McpServerCoordinator({ rootDir: this.cwd });
+    const targetGlobs = this.bestEffortConfig()?.target.files ?? ["src/**/*"];
+    const driver = fs.existsSync(path.join(this.cwd, ".git"))
+      ? new GitWorktreeDriver({ repoRoot: this.cwd, allowedGlobs: targetGlobs })
+      : new InMemorySandboxDriver({ allowedGlobs: targetGlobs });
+    const coordinator = new McpServerCoordinator({
+      rootDir: this.cwd,
+      driver,
+    });
     const sandbox = coordinator.getSandbox();
     try {
       const result = await run(coordinator);

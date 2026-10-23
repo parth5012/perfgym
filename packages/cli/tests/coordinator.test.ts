@@ -482,8 +482,8 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
     expect(status.metricDeltas.latency).toBe(0);
   });
 
-  // --- F4 -------------------------------------------------------------------
-  it("F4: best fitness/step after rollback is the max over ALL remaining ACCEPTED steps", async () => {
+  // --- R1 + F4 ----------------------------------------------------------------
+  it("R1/F4: targeted middle-step rollback cascades and best/pointers recompute over surviving ACCEPTED steps", async () => {
     await coordinator.handleBaseline({ samples: 2 }); // latency 100
 
     coordinator.updateConfig(makeConfig(40)); // step 1: +60%
@@ -508,22 +508,26 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
     expect(step2.accepted).toBe(true);
     expect(step3.accepted).toBe(true);
 
-    // Targeted rollback of the MIDDLE step (2). Remaining ACCEPTED entries are
-    // steps 1 and 3 — the most recent ACCEPTED is step 3 (score 50), but the
-    // BEST is step 1 (score 60). The old code only looked at the most recent
-    // accepted entry and would report step 3's lower score.
-    expect(step1.fitnessScore).toBeGreaterThan(step3.fitnessScore);
+    // R1 (cascade semantics): a targeted rollback to step 2 restores the worktree
+    // to the latest ACCEPTED step BEFORE 2 (step 1) and marks step 2 AND every
+    // later ACCEPTED step (3) ROLLED_BACK. The old code kept step 3 accepted and
+    // "restored" step 3 — step 2's mutation stayed in the worktree.
     await coordinator.handleRollback({ stepNumber: 2 });
-    let status = await coordinator.handleStatus();
-    expect(status.stepHistory[1].status).toBe("ROLLED_BACK");
-    expect(status.bestFitnessScore).toBe(step1.fitnessScore);
-    expect(status.bestStep).toBe(1);
 
-    // Roll back step 3 as well: only step 1 remains accepted
-    await coordinator.handleRollback({ stepNumber: 3 });
-    status = await coordinator.handleStatus();
+    expect(await driver.readFile("src/index.ts")).toBe("export const value = 2;\n");
+    const status = await coordinator.handleStatus();
+    expect(status.stepHistory[0].status).toBe("ACCEPTED");
+    expect(status.stepHistory[1].status).toBe("ROLLED_BACK");
+    expect(status.stepHistory[2].status).toBe("ROLLED_BACK");
+    expect(status.currentStep).toBe(1); // pointer rewounds to the restored step
+
+    // F4: best fitness/step is recomputed as the max over ALL remaining
+    // ACCEPTED entries — here only step 1 survives.
     expect(status.bestFitnessScore).toBe(step1.fitnessScore);
     expect(status.bestStep).toBe(1);
+    // The metric tail matches the restored step 1 state (value 40, +60%).
+    expect(status.currentValues.latency).toBe(40);
+    expect(status.metricDeltas.latency).toBeCloseTo(60);
   });
 
   // --- F5 -------------------------------------------------------------------
@@ -759,3 +763,272 @@ describe("handleRollback git restore failure surfaces (F7)", () => {
     }
   });
 });
+
+// ============================================================================
+// Review round 3 — findings R1–R8
+// ============================================================================
+
+describe("McpServerCoordinator round-3 fixes (R1–R8)", () => {
+  let testDir: string;
+  let lockDir: string;
+  let driver: InMemorySandboxDriver;
+  let sandbox: GitSandboxCoordinator;
+  let coordinator: McpServerCoordinator;
+  let config: PerfGymConfig;
+
+  const makeConfig = (latencyValue: number): PerfGymConfig => ({
+    version: "1.0",
+    target: { name: "r3-target", language: "typescript", files: ["src/**/*.ts"] },
+    invariants: { command: "node -e 'process.exit(0)'", timeoutMs: 5000 },
+    metrics: [
+      {
+        name: "latency",
+        command: `node -e 'console.log(JSON.stringify({ value: ${latencyValue} }))'`,
+        goal: "minimize",
+        weight: 1,
+        unit: "ms",
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    testDir = path.join(
+      tmpdir(),
+      `perfgym-coord-r3-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    );
+    fs.mkdirSync(testDir, { recursive: true });
+    lockDir = path.join(testDir, ".perfgym", ".lock.d");
+
+    config = makeConfig(100);
+    fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), stringifyYaml(config), "utf8");
+
+    driver = new InMemorySandboxDriver({
+      allowedGlobs: ["src/**/*.ts"],
+      initialFiles: { "src/index.ts": "export const value = 1;\n" },
+    });
+
+    sandbox = new GitSandboxCoordinator(driver, { lockDir, repoRoot: testDir });
+    coordinator = new McpServerCoordinator({ rootDir: testDir, sandbox, driver, config });
+  });
+
+  afterEach(async () => {
+    if (sandbox.isLocked()) await sandbox.release();
+    try {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  /** baseline(100) → accept step 1 (cfg 40) → accept step 2 (cfg 20) → accept step 3 (cfg 15). */
+  const seedThreeAcceptedSteps = async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+    for (const [cfg, content] of [
+      [40, "export const value = 2;\n"],
+      [20, "export const value = 3;\n"],
+      [15, "export const value = 4;\n"],
+    ] as Array<[number, string]>) {
+      coordinator.updateConfig(makeConfig(cfg));
+      const step = await coordinator.handleStep({
+        mutations: [{ relPath: "src/index.ts", content }],
+        samples: 2,
+      });
+      expect(step.accepted).toBe(true);
+    }
+    coordinator.updateConfig(config);
+  };
+
+  // --- R3 -------------------------------------------------------------------
+  it("R3: a pre-existing target file untouched by any mutation survives a full rollback", async () => {
+    // A legit target-glob file that the coordinator never wrote via a mutation.
+    fs.writeFileSync(
+      path.join(testDir, "src", "keep.ts"),
+      "export const keep = true;\n",
+      "utf8"
+    );
+
+    await coordinator.handleBaseline({ samples: 2 });
+
+    // Accepted step that CREATES a new file (goes into the driver + snapshots).
+    coordinator.updateConfig(makeConfig(30));
+    const step = await coordinator.handleStep({
+      mutations: [
+        { relPath: "src/index.ts", content: "export const value = 2;\n" },
+        { relPath: "src/extra.ts", content: "export const extra =true;\n" },
+      ],
+      samples: 2,
+    });
+    expect(step.accepted).toBe(true);
+    coordinator.updateConfig(config);
+
+    // Roll everything back to baseline.
+    await coordinator.handleRollback();
+
+    expect(fs.existsSync(path.join(testDir, "src", "extra.ts"))).toBe(false);
+    expect(await driver.readFile("src/index.ts")).toBe("export const value = 1;\n");
+
+    // The bug: removeDiskFilesNotInSnapshot deleted keep.ts just because the
+    // baseline in-memory snapshot never contained it. It must survive.
+    expect(fs.existsSync(path.join(testDir, "src", "keep.ts"))).toBe(true);
+    expect(fs.readFileSync(path.join(testDir, "src", "keep.ts"), "utf8")).toBe(
+      "export const keep = true;\n"
+    );
+  });
+
+  // --- R2 -------------------------------------------------------------------
+  it("R2: step numbers stay monotonic after a full rewind (no duplicate stepNumbers)", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+
+    // Accept steps 1 and 2.
+    coordinator.updateConfig(makeConfig(40)); // step 1: +60%
+    const step1 = await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
+      samples: 2,
+    });
+    expect(step1.accepted).toBe(true);
+
+    coordinator.updateConfig(makeConfig(20)); // step 2: +80%
+    const step2 = await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 3;\n" }],
+      samples: 2,
+    });
+    expect(step2.accepted).toBe(true);
+
+    // Roll back all the way to the baseline.
+    const rb1 = await coordinator.handleRollback(); // undoes step 2 → restored 1
+    expect(rb1.rolledBackStep).toBe(2);
+    const rb2 = await coordinator.handleRollback(); // undoes step 1 → restored 0
+    expect(rb2.rolledBackStep).toBe(1);
+
+    // Run a fresh step: it must be numbered 3 (next after the highest
+    // history stepNumber), NOT 1 (the rewound pointer) — the old bug reused
+    // the rewound totalStepCount and produced duplicate step numbers.
+    coordinator.updateConfig(makeConfig(20));
+    const step3 = await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 5;\n" }],
+      samples: 2,
+    });
+    expect(step3.accepted).toBe(true);
+    expect(step3.iteration).toBe(3);
+
+    const status = await coordinator.handleStatus();
+    const numbers = status.stepHistory.map((h) => h.stepNumber);
+    expect(new Set(numbers).size).toBe(numbers.length);
+    expect(numbers[numbers.length - 1]).toBe(3);
+    expect(status.stepHistory[2].status).toBe("ACCEPTED");
+  });
+
+  // --- R4 (coordinator-level honesty guard) ----------------------------------
+  it("R4: rollback with no restore material (fresh in-memory coordinator) refuses instead of lying", async () => {
+    await seedThreeAcceptedSteps();
+
+    // Simulate an MCP-style FRESH coordinator: seeded state on disk (with
+    // history) but no in-session snapshots and no recorded commit hashes.
+    const freshDriver = new InMemorySandboxDriver({
+      allowedGlobs: ["src/**/*.ts"],
+      initialFiles: { "src/index.ts": "export const value = 1;\n" },
+    });
+    const freshSandbox = new GitSandboxCoordinator(freshDriver, {
+      lockDir,
+      repoRoot: testDir,
+    });
+    const fresh = new McpServerCoordinator({
+      rootDir: testDir,
+      sandbox: freshSandbox,
+      driver: freshDriver,
+      config,
+    });
+
+    // Strip commit material so nothing can be restored.
+    const state = readState(testDir) as { history?: Array<{ commitHash?: string }> };
+    for (const h of state.history ?? []) delete h.commitHash;
+    writeState(testDir, state as never);
+
+    // The seeding session holds the sandbox lock (baseline acquired it);
+    // release it so the FRESH coordinator is not refused with "lock busy"
+    // (the simulated MCP call happens in another process / later session).
+    await sandbox.release();
+
+    await expect(fresh.handleRollback()).rejects.toThrow(
+      /no .*snapshot|restore material|Rollback failed/i
+    );
+
+    // The lie must not be able to happen: the state file still marks the
+    // steps ACCEPTED (the failed rollback must not have mutated history).
+    const after = readState(testDir) as {
+      history?: Array<{ stepNumber: number; status: string }>;
+    };
+    expect(after.history?.every((h) => h.status === "ACCEPTED")).toBe(true);
+    expect(freshSandbox.isLocked()).toBe(false);
+  });
+
+  // --- R5 -------------------------------------------------------------------
+  it("R5: acceptedStepCount counts every accepted step, not only new-best ones", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+
+    coordinator.updateConfig(makeConfig(40)); // step 1: +60% → new best
+    const step1 = await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
+      samples: 2,
+    });
+    expect(step1.accepted).toBe(true);
+
+    coordinator.updateConfig(makeConfig(45)); // step 2: worse than current 40, yet +55% vs baseline → still accepted
+    const step2 = await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 3;\n" }],
+      samples: 2,
+    });
+    expect(step2.accepted).toBe(true);
+
+    const status = await coordinator.handleStatus();
+    expect(status.stepHistory.filter((h) => h.status === "ACCEPTED").length).toBe(2);
+    expect(status.currentStep).toBe(2);
+
+    // The old bug: acceptedStepCount only bumped on a new best (would be 1).
+    expect(status).toHaveProperty("bestStep", 1);
+    const written = fs.readFileSync(
+      path.join(testDir, ".perfgym", "state.json"),
+      "utf8"
+    );
+    const state = JSON.parse(written) as { acceptedStepCount: number; bestStep?: number };
+    expect(state.acceptedStepCount).toBe(2);
+    expect(state.bestStep).toBe(1);
+  });
+
+  // --- R6 -------------------------------------------------------------------
+  it("R6: handleLint surfaces rule/parse errors via scanErrors and fails the scan", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+
+    const outcome = await coordinator.handleLint({
+      files: ["src/index.ts"],
+      rules: [
+        {
+          id: "broken-pattern",
+          message: "malformed rule config",
+          severity: "warning",
+          penalty: 0,
+          pattern: "$$$X",
+          // An unsupported language makes parseAndMatch throw (ast-grep
+          // itself is parse-error tolerant, so this exercises the error path).
+          language: "not-a-real-language",
+        },
+      ],
+    });
+
+    expect(outcome.passed).toBe(false);
+    expect(outcome.scanErrors!.length).toBeGreaterThanOrEqual(1);
+    expect(outcome.scanErrors![0]).toContain("broken-pattern");
+  });
+
+  // --- R7 -------------------------------------------------------------------
+  it("R7: handleBenchmark throws when an unknown metric name is requested", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+
+    await expect(coordinator.handleBenchmark({ metric: "does-not-exist" })).rejects.toThrow(
+      /Unknown metric 'does-not-exist'\. Configured: latency/
+    );
+  });
+
+  // --- R8 (imports-free check lives in commands.test.ts) ---------------------
+});
+
