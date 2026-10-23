@@ -194,14 +194,18 @@ export class JsonFormatter {
     );
   }
 
-  formatLint(violations: readonly LintViolation[]): string {
+  formatLint(violations: readonly LintViolation[], scanErrors: readonly string[] = []): string {
     const astViolations = astViolationsOf(violations);
+    const failed = astViolations.length > 0 || scanErrors.length > 0;
 
     return JSON.stringify(
       {
-        passed: astViolations.length === 0,
+        passed: !failed,
         totalPenalty: totalPenaltyOf(astViolations),
         matches: astViolations.map(toLintMatchJson),
+        // B2: rule/scan failures surface in the command output — a broken rule
+        // is infrastructural (config) failure, not a clean scan.
+        ...(scanErrors.length > 0 ? { scanErrors: [...scanErrors] } : {}),
       },
       null,
       2,

@@ -57,6 +57,8 @@ interface GymOptions {
   invariantCommand?: string;
   extraMetric?: boolean;
   lintViolation?: boolean;
+  /** B2: adds a config rule whose language cannot be resolved — handleLint must surface it as a scan error. */
+  brokenLintRule?: boolean;
 }
 
 const setupGymDir = (options: GymOptions = {}): string => {
@@ -109,7 +111,18 @@ invariants:
 metrics:
 ${metrics.join("\n")}
 `;
-  fs.writeFileSync(path.join(dir, ".perfgym.yaml"), yaml, "utf8");
+  const yamlOut = options.brokenLintRule
+    ? `${yaml}
+rules:
+  - id: "broken-rule"
+    message: "malformed rule config"
+    severity: "warning"
+    penalty: 0
+    pattern: "$$$X"
+    language: "not-a-real-language"
+`
+    : yaml;
+  fs.writeFileSync(path.join(dir, ".perfgym.yaml"), yamlOut, "utf8");
 
   git(["add", "-A"]);
   git(["commit", "-m", "initial commit"]);
@@ -507,6 +520,24 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
     expect(
       doc.matches.every((match) => match.file === "src/index.ts" && match.action === "disqualify"),
     ).toBe(true);
+  });
+
+  // --- B2 --------------------------------------------------------------------
+  it("lint honours coordinator scanErrors: broken rule means failed scan, exit 1, rendered error", async () => {
+    const dir = track(setupGymDir({ brokenLintRule: true }));
+
+    const json = await runLintCommand({ cwd: dir, format: "json" });
+    expect(json.exitCode).toBe(1);
+    expect(json.failed).toBe(true);
+    const doc = JSON.parse(json.text) as { scanErrors: string[]; passed: boolean };
+    expect(doc.passed).toBe(false);
+    expect(doc.scanErrors.length).toBeGreaterThanOrEqual(1);
+    expect(doc.scanErrors[0]).toContain("broken-rule");
+
+    const md = await runLintCommand({ cwd: dir, format: "markdown" });
+    expect(md.exitCode).toBe(1);
+    expect(md.failed).toBe(true);
+    expect(md.text).toContain("broken-rule");
   });
 
   it("benchmark reports the distribution without updating state or touching the worktree", async () => {

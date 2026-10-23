@@ -1029,6 +1029,45 @@ describe("McpServerCoordinator round-3 fixes (R1–R8)", () => {
     );
   });
 
+  // --- coverage gap (review follow-up): best ≠ most-recent after cascade ------
+  it("recovers best as max over survivors after cascade — not the most recent survivor", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+
+    coordinator.updateConfig(makeConfig(40)); // step 1: +60% → score 60 (best)
+    const step1 = await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
+      samples: 2,
+    });
+
+    coordinator.updateConfig(makeConfig(50)); // step 2: +50% → score 50
+    const step2 = await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 5;\n" }],
+      samples: 2,
+    });
+
+    coordinator.updateConfig(makeConfig(45)); // step 3: +55% → score 55
+    const step3 = await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 6;\n" }],
+      samples: 2,
+    });
+
+    expect(step1.accepted && step2.accepted && step3.accepted).toBe(true);
+
+    // Roll back step 3: survivors are {1: 60, 2: 50}. The most recent
+    // survivor is step 2 (50), but the BEST is step 1 (60) — the recomputation
+    // must scan all survivors, not just take the last one.
+    await coordinator.handleRollback({ stepNumber: 3 });
+    const status = await coordinator.handleStatus();
+
+    expect(status.stepHistory[0].status).toBe("ACCEPTED");
+    expect(status.stepHistory[1].status).toBe("ACCEPTED");
+    expect(status.stepHistory[2].status).toBe("ROLLED_BACK");
+    expect(status.bestFitnessScore).toBe(60);
+    expect(status.bestStep).toBe(1);
+    expect(status.currentStep).toBe(2); // pointer rewounds to the restored step 2
+    expect(status.currentValues.latency).toBe(50);
+  });
+
   // --- R8 (imports-free check lives in commands.test.ts) ---------------------
 });
 

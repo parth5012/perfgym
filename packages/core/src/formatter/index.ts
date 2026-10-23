@@ -60,7 +60,7 @@ export interface OutputFormatter {
   formatTest(result: InvariantResult): string;
 
   /** AST linter violations (empty array = clean). */
-  formatLint(violations: readonly LintViolation[]): string;
+  formatLint(violations: readonly LintViolation[], scanErrors?: readonly string[]): string;
 
   /** A benchmark distribution, optionally against a baseline. */
   formatBenchmark(distribution: BenchmarkDistribution, baseline?: BenchmarkDistribution): string;

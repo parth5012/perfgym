@@ -360,11 +360,16 @@ export const runLintCommand = async (
       ...(options.files !== undefined && options.files.length > 0 ? { files: options.files } : {}),
     });
 
-    const text = createFormatter(options.format).formatLint(outcome.violations);
+    const formatter = createFormatter(options.format);
+    const text = formatter.formatLint(outcome.violations, outcome.scanErrors);
     // Exit 1 on any error-severity or disqualifying violation; warnings-only
     // scans still succeed.
-    const exitCode = outcome.errorCount > 0 || outcome.disqualified ? 1 : 0;
-    return { text, exitCode, failed: false };
+    // B2: a rule/scan failure is an infrastructural failure the coordinator
+    // reports via scanErrors — the command must mark the scan failed (exit 1)
+    // and render the errors instead of printing a clean report.
+    const scanFailed = outcome.scanErrors.length > 0;
+    const exitCode = outcome.errorCount > 0 || outcome.disqualified || scanFailed ? 1 : 0;
+    return { text, exitCode, failed: scanFailed };
   } catch (error: unknown) {
     return failure(options.format, error);
   }
