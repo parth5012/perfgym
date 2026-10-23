@@ -563,6 +563,7 @@ memoryCommand
   });
 
 export { program };
+export * from "./coordinator/index.js";
 
 if (process.argv[1] && /\b(index\.[tj]s|perfgym(\.js)?)$/.test(process.argv[1])) {
   program.parse(process.argv);

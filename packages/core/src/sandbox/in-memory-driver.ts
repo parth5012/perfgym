@@ -219,6 +219,17 @@ export class InMemorySandboxDriver implements WorkspaceDriver {
   }
 
   /**
+   * Restores the FULL virtual state (current files AND last-committed snapshot)
+   * to the given map. Typed accessor (F8) for the coordinator's snapshot
+   * restore in Ticket #43 — replaces previous untyped field pokes.
+   */
+  public restoreFullSnapshot(files: ReadonlyMap<string, string>): void {
+    const copy = new Map(files);
+    this.files = new Map(copy);
+    this.lastCommittedFiles = new Map(copy);
+  }
+
+  /**
    * Restores virtual file state to the latest snapshot/checkpoint.
    */
   public rollback(): void {
