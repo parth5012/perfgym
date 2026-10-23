@@ -245,16 +245,39 @@ metrics:
     // only path that resets the root, for uninitialized workspaces.
     expect(fs.readFileSync(path.join(testDir, "initial.txt"), "utf8")).toBe("corrupted");
 
-    // The restore is durable: the sandbox worktree the rollback acquired is
-    // left on disk (git-backed driver) instead of a silent no-op.
-    const worktreesDir = path.join(testDir, ".perfgym", "worktrees");
-    expect(fs.existsSync(worktreesDir)).toBe(true);
-    expect(fs.readdirSync(worktreesDir).length).toBeGreaterThanOrEqual(1);
-
     // Session state is updated by the coordinator, not by a raw git reset.
     const state = readStateFile();
     expect(state.history[0].status).toBe("ROLLED_BACK");
     expect(state.totalStepCount).toBe(0);
+  });
+
+  // --- B1 --------------------------------------------------------------------
+  it("B1: stateless git calls tear down their worktree and eval branch (no leak)", async () => {
+    const baselineCommit = seedGitRepo();
+    writeState(
+      testDir,
+      stateWithHistory({ baselineCommit }) as Parameters<typeof writeState>[1]
+    );
+
+    // Two sequential stateless calls — the bug (B1) leaked one worktree dir +
+    // one `perfgym/eval-*` branch per call.
+    const rb1 = await call("perfgym_rollback");
+    expect(rb1.result.isError, "rollback 1 must succeed").toBeUndefined();
+    const rb2 = await call("perfgym_rollback");
+    expect(rb2.result.isError, "rollback 2 must succeed").toBeUndefined();
+
+    // No worktree directories left under .perfgym/worktrees.
+    const worktreesDir = path.join(testDir, ".perfgym", "worktrees");
+    const leftovers = fs.existsSync(worktreesDir) ? fs.readdirSync(worktreesDir) : [];
+    expect(leftovers.filter((d) => !d.startsWith("."))).toEqual([]);
+
+    // No perfgym/eval-* branches left in the repo.
+    const branches = execFileSync(
+      "git",
+      ["branch", "--list", "perfgym/eval-*"],
+      { cwd: testDir, encoding: "utf8" }
+    );
+    expect(branches.trim()).toBe("");
   });
 
   // --- R4 --------------------------------------------------------------------

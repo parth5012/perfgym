@@ -299,11 +299,20 @@ export class MarkdownFormatter {
     ].join("\n");
   }
 
-  formatLint(violations: readonly LintViolation[]): string {
+  formatLint(violations: readonly LintViolation[], scanErrors: readonly string[] = []): string {
     const astViolations = astViolationsOf(violations);
     const lines = ["### 🧹 AST Pattern Violations"];
 
-    if (astViolations.length === 0) {
+    if (scanErrors.length > 0) {
+      // B2: surface rule/scan failures — a broken rule must never render as a
+      // clean report.
+      lines.push("- Scan errors:");
+      for (const scanError of scanErrors) {
+        lines.push(`- ${scanError}`);
+      }
+    }
+
+    if (astViolations.length === 0 && scanErrors.length === 0) {
       lines.push("", "- No AST pattern violations detected.");
       return lines.join("\n");
     }

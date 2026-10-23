@@ -418,12 +418,49 @@ export class PerfGymMcpServer {
       const result = await run(coordinator);
       return result;
     } finally {
-      if (sandbox.isLocked()) {
-        try {
+      try {
+        if (sandbox.isLocked()) {
           await sandbox.release();
-        } catch {
-          // Best-effort cleanup: never mask the tool result with a release error.
         }
+      } catch {
+        // Best-effort cleanup: never mask the tool result with a release error.
+      }
+      // B1: teardown the worktree this stateless call created and delete its
+      // eval branch. `sandbox.release()` only removes the lock — without a
+      // teardown, every git-backed call leaked a `.perfgym/worktrees/` dir, a
+      // `perfgym/eval-*` branch, and git worktree metadata. Only the driver
+      // THIS call created is torn down (session flows go through
+      // promoteAndCleanup instead and are not routed here).
+      try {
+        await this.teardownCallDriver(driver);
+      } catch {
+        // Best-effort cleanup.
+      }
+    }
+  }
+
+  /**
+   * B1: removes the sandbox resources of one stateless tool call. No-op if
+   * the call never acquired a worktree (driver never initialized).
+   */
+  private async teardownCallDriver(driver: unknown): Promise<void> {
+    if (!(driver instanceof GitWorktreeDriver)) return;
+    const context = driver.getContext();
+    if (!context) return;
+
+    try {
+      await driver.teardown();
+    } finally {
+      // The eval branch outlives the worktree removal — drop it (force: the
+      // branch may hold step commits that rollback references by commit
+      // hash, which remain reachable git objects).
+      try {
+        execFileSync("git", ["branch", "-D", context.branchName], {
+          cwd: this.cwd,
+          stdio: "ignore",
+        });
+      } catch {
+        // Best-effort: don't mask the tool result with branch cleanup errors.
       }
     }
   }
