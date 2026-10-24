@@ -19,6 +19,7 @@ import {
   type BenchmarkOutcome,
   type RollbackOutcome,
 } from "../src/coordinator/index.js";
+import { liveSessionFor } from "../src/live-session.js";
 
 describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
   let testDir: string;
@@ -1185,6 +1186,7 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
     const before = fs.readFileSync(stateFile, "utf8");
     const status = await coordinator.handleStatus();
 
+    expect(status.sessionStatus).toBe("running");
     expect(status.lastUpdatedAt).toBeGreaterThan(0);
     expect(status.liveSession).not.toBeNull();
     expect(status.liveSession!.history).toHaveLength(1);
@@ -1193,8 +1195,28 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
     expect(status.liveSession!.lock).not.toBeNull();
     expect(status.liveSession!.lock!.runId).toBe((liveBlob(testDir).lock as { runId: string }).runId);
 
+    // After release, non-completed live session with no lock reports idle
+    await coordinator.getSandbox().release();
+    const idleStatus = await coordinator.handleStatus();
+    expect(idleStatus.sessionStatus).toBe("idle");
+
     // Read-only invariant of #48: status never writes the state file.
     expect(fs.readFileSync(stateFile, "utf8")).toBe(before);
+  });
+
+  it("handleStatus derives sessionStatus: completed from live status, running from active lock, idle otherwise", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+    await coordinator.getSandbox().release();
+
+    const live = liveSessionFor(testDir);
+    live.setStatus("completed");
+    let status = await coordinator.handleStatus();
+    expect(status.sessionStatus).toBe("completed");
+
+    // When mutating or evaluating but no lock held (e.g. crashed process), reports idle
+    live.setStatus("mutating");
+    status = await coordinator.handleStatus();
+    expect(status.sessionStatus).toBe("idle");
   });
 
   it("handleRollback marks the session steps rolled back from the target and reconciles the best", async () => {
