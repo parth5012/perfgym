@@ -1289,5 +1289,37 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
     expect((session.lock as { runId: string }).runId).toBe(metaRunId);
     expect(session.status).toBe("idle");
   });
+
+  it("a baseline-rewind rollback also rolls the live session back to a clean slate (F2)", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+    // Two genuine improvements so two live steps are recorded.
+    coordinator.updateConfig(makeConfig(50));
+    await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
+      samples: 2,
+    });
+    coordinator.updateConfig(makeConfig(30));
+    await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 3;\n" }],
+      samples: 2,
+    });
+
+    // Rewind ALL the way to baseline: roll the last step back, then again —
+    // the second rollback has no accepted legacy steps left, so `targetIndex`
+    // is undefined and the live blob mirror used to be skipped entirely.
+    await sandbox.release();
+    await coordinator.handleRollback();
+    await coordinator.handleRollback();
+
+    const blob = liveBlob(testDir);
+    expect(blob.status).toBe("rolled_back");
+    for (const entry of blob.history as Array<{ rolledBack?: boolean }>) {
+      expect(entry.rolledBack).toBe(true);
+    }
+    // The undone best must not survive: a later run must seed from the
+    // baseline, not Math.max(blob-best, legacy-best) of the dead session.
+    expect((blob as { bestScore: number | null }).bestScore).toBeNull();
+    expect((blob as { bestStep: number | null }).bestStep).toBeNull();
+  });
 });
 

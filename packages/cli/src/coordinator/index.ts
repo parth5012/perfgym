@@ -20,6 +20,7 @@ import {
   type SessionLockState,
   type NegativeMemoryEntry,
   deserializeSessionState,
+  serializeSessionState,
   EvaluationPipeline,
   GitSandboxCoordinator,
   InMemorySandboxDriver,
@@ -40,6 +41,7 @@ import {
 import {
   loadSession,
   saveSession,
+  saveLiveSession,
   legacyStateCopy,
   loadConfig,
   loadNegativeMemory,
@@ -499,13 +501,18 @@ export class McpServerCoordinator {
     }
 
     // #48: a live session drives the session status; the lock only shades it.
-    const sessionStatus = liveSession
-      ? liveSession.status === "completed"
-        ? "completed"
-        : "running"
-      : this.sandbox.isLocked()
-      ? "running"
-      : "idle";
+    let sessionStatus: "running" | "idle" | "completed";
+    if (liveSession) {
+      if (liveSession.status === "completed") {
+        sessionStatus = "completed";
+      } else if (liveSession.status === "idle" && !this.sandbox.isLocked()) {
+        sessionStatus = "idle";
+      } else {
+        sessionStatus = "running";
+      }
+    } else {
+      sessionStatus = this.sandbox.isLocked() ? "running" : "idle";
+    }
 
     return {
       initialized: true,
@@ -1266,21 +1273,30 @@ export class McpServerCoordinator {
       state.acceptedStepCount = remainingAccepted.length;
       state.history = updatedHistory;
       state.updatedAt = Date.now();
-      saveSession(this.rootDir, legacyStateCopy(state));
-      this.history = updatedHistory;
 
       // Ticket #48: mirror the cascade into the live session when the blob
       // actually recorded the rolled-back step (a `perfgym run` blob uses its
       // own iteration space and is left untouched otherwise), then recompute
       // the live best from what still applies.
-      const rollbackTargetStep = targetIndex !== undefined ? history[targetIndex].stepNumber : undefined;
+      // Obtain the live session handle before saveSession drops the unattached blob.
       const live = liveSessionFor(this.rootDir);
-      if (
-        rollbackTargetStep !== undefined &&
-        live.state.history.some((entry) => entry.iteration === rollbackTargetStep)
-      ) {
+      const rollbackTargetStep = targetIndex !== undefined ? history[targetIndex].stepNumber : undefined;
+      const willRollbackLive =
+        targetIndex === undefined ||
+        (rollbackTargetStep !== undefined &&
+          live.state.history.some((entry) => entry.iteration === rollbackTargetStep));
+
+      saveSession(this.rootDir, legacyStateCopy(state));
+      this.history = updatedHistory;
+
+      if (targetIndex === undefined) {
+        live.markStepsRolledBackFrom(0);
+        live.reconcileBest();
+      } else if (willRollbackLive && rollbackTargetStep !== undefined) {
         live.markStepsRolledBackFrom(rollbackTargetStep);
         live.reconcileBest();
+      } else {
+        saveLiveSession(this.rootDir, serializeSessionState(live.state));
       }
 
       return {

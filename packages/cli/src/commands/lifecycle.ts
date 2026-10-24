@@ -183,6 +183,25 @@ const statusJson = (report: StatusReport): Record<string, unknown> => ({
   },
 });
 
+/**
+ * Safely format a timestamp for markdown status output.
+ * Returns null if the timestamp is null, undefined, not finite, or an invalid date.
+ */
+function formatTimestampBullet(label: string, stamp: unknown): string | null {
+  if (typeof stamp !== "number" || !Number.isFinite(stamp)) {
+    return null;
+  }
+  try {
+    const date = new Date(stamp);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+    return `- **${label}:** \`${stamp}\` (${date.toISOString()})`;
+  } catch {
+    return null;
+  }
+}
+
 const renderStatusMarkdown = (report: StatusReport): string => {
   const lock = report.lockState;
   const lockText = lock.locked
@@ -207,14 +226,14 @@ const renderStatusMarkdown = (report: StatusReport): string => {
     // #48: a stale snapshot is visibly stale rather than silently wrong.
     // The live session's own stamp is the precise one; the file stamp is the
     // fallback when no live session is recorded.
-    report.liveSession !== null
-      ? `- **Last updated:** \`${report.liveSession.lastUpdatedAt}\` (${new Date(report.liveSession.lastUpdatedAt).toISOString()})`
-      : report.lastUpdatedAt === null
-      ? null
-      : `- **Last updated:** \`${report.lastUpdatedAt}\` (${new Date(report.lastUpdatedAt).toISOString()})`,
-    report.liveSession && report.liveSession.lock
-      ? `- **Session heartbeat:** \`${report.liveSession.lock.heartbeat}\` (${new Date(report.liveSession.lock.heartbeat).toISOString()})`
-      : null,
+    formatTimestampBullet(
+      "Last updated",
+      report.liveSession !== null ? report.liveSession.lastUpdatedAt : report.lastUpdatedAt,
+    ),
+    formatTimestampBullet(
+      "Session heartbeat",
+      report.liveSession && report.liveSession.lock ? report.liveSession.lock.heartbeat : null,
+    ),
   ].filter((line): line is string => line !== null);
 
   if (report.llmUsage !== undefined) {

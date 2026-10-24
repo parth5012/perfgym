@@ -462,6 +462,9 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
       // Update state — through the detached legacy snapshot (the `session`
       // blob is owned by the live-session path and must not regress).
       state.bestFitnessScore = bestFitness;
+      if (live.state.bestStep !== null) {
+        state.bestStep = live.state.bestStep;
+      }
       state.acceptedStepCount += acceptedCount;
       state.totalStepCount += evaluations.length;
       state.updatedAt = Date.now();

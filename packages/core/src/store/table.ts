@@ -11,7 +11,7 @@ export interface StepTableRow {
   readonly iteration: number;
   readonly score: string;
   readonly deltaPercent: string;
-  readonly status: "ACCEPTED" | "REJECTED" | "DISQUALIFIED";
+  readonly status: "ACCEPTED" | "REJECTED" | "DISQUALIFIED" | "ROLLED_BACK";
   readonly invariants: "PASS" | "FAIL";
   readonly typecheck: "PASS" | "FAIL";
   readonly penalty: number;
@@ -75,10 +75,17 @@ export function formatMetricToken(value: number, digits: number, prefix = ""): s
  * (accepted/rejected/rolled-back), collapses non-finite metrics to a bare
  * `-` token so they never leak into the rendered table.
  */
-export function mapEvaluationsToTableRows(evaluations: readonly StepEvaluation[]): StepTableRow[] {
+export function mapEvaluationsToTableRows(
+  evaluations: readonly (StepEvaluation & { rolledBack?: boolean })[],
+): StepTableRow[] {
   return evaluations.map((ev) => {
-    let status: StepTableRow["status"] = ev.accepted ? "ACCEPTED" : "REJECTED";
-    if (ev.violations?.some((v) => v.severity === "error" && v.penalty >= 100)) {
+    let status: StepTableRow["status"] =
+      ev.rolledBack === true
+        ? "ROLLED_BACK"
+        : ev.accepted
+        ? "ACCEPTED"
+        : "REJECTED";
+    if (status !== "ROLLED_BACK" && ev.violations?.some((v) => v.severity === "error" && v.penalty >= 100)) {
       status = "DISQUALIFIED";
     }
 

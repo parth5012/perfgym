@@ -124,4 +124,30 @@ describe("renderStepTable (Ticket #47 — dependency-free CLI table renderer)", 
     expect(dataLine).toContain("   99.10 ");
     expect(dataLine).toContain("      0 "); // Penalty (7 wide, right-aligned)
   });
+
+  it("renders a rolled-back step as ROLLED_BACK instead of its old decision (F5)", () => {
+    // A history entry after `markStepRolledBack`: the decision happened, but
+    // the step was undone — it must not render as ACCEPTED/REJECTED.
+    const acceptedThenUndone = baselineEval({ iteration: 2 }) as StepEvaluation & {
+      rolledBack?: boolean;
+    };
+    acceptedThenUndone.rolledBack = true;
+    const rejectedThenUndone = baselineEval({
+      iteration: 3,
+      accepted: false,
+    }) as StepEvaluation & { rolledBack?: boolean };
+    rejectedThenUndone.rolledBack = true;
+
+    const rows = mapEvaluationsToTableRows([
+      baselineEval(),
+      acceptedThenUndone,
+      rejectedThenUndone,
+    ]);
+    expect(rows[0]?.status).toBe("ACCEPTED");
+    expect(rows[1]?.status).toBe("ROLLED_BACK");
+    expect(rows[2]?.status).toBe("ROLLED_BACK");
+
+    const output = renderStepTable(createStepHistoryTable([baselineEval(), acceptedThenUndone]));
+    expect(output).toContain("ROLLED_BACK");
+  });
 });

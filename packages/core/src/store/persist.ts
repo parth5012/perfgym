@@ -217,19 +217,52 @@ export class SessionFileStore<S extends object> {
     const own: SessionFileState = {};
     const memoryRecord = memory as unknown as SessionFileState;
     const memoryKeys = Object.keys(memoryRecord);
-    for (const key of memoryKeys) {
-      // base === null means the clean-session reset (or a first write):
+    const baseRecord = this.base !== null ? (this.base as unknown as SessionFileState) : null;
+    const deletedKeys = new Set<string>();
+
+    if (baseRecord === null) {
+      // base === null means clean-session reset, first write, or an unseeded store:
       // everything in memory is ours and replaces whatever the file held.
-      if (this.base === null || !((key) in (this.base as unknown as SessionFileState)) || !deepEqualJson(memoryRecord[key], (this.base as unknown as SessionFileState)[key])) {
-        own[key] = memoryRecord[key];
+      for (const key of memoryKeys) {
+        if (memoryRecord[key] !== undefined) {
+          own[key] = memoryRecord[key];
+        }
+      }
+    } else {
+      for (const baseKey of Object.keys(baseRecord)) {
+        if (!(baseKey in memoryRecord) || memoryRecord[baseKey] === undefined) {
+          deletedKeys.add(baseKey);
+        }
+      }
+
+      for (const key of memoryKeys) {
+        if (memoryRecord[key] === undefined) {
+          deletedKeys.add(key);
+        } else if (!(key in baseRecord) || !deepEqualJson(memoryRecord[key], baseRecord[key])) {
+          own[key] = memoryRecord[key];
+        }
       }
     }
 
-    const merged: S = ({
-      ...(disk ?? {}),
-      ...own,
-      [LAST_UPDATED_KEY]: this.clock(),
-    } as unknown) as S;
+    const mergedRecord: SessionFileState =
+      baseRecord === null
+        ? { ...own }
+        : {
+            ...(disk as unknown as SessionFileState | null),
+          };
+
+    if (baseRecord !== null) {
+      for (const deletedKey of deletedKeys) {
+        delete mergedRecord[deletedKey];
+      }
+      for (const key of Object.keys(own)) {
+        mergedRecord[key] = own[key];
+      }
+    }
+
+    mergedRecord[LAST_UPDATED_KEY] = this.clock();
+
+    const merged = (mergedRecord as unknown) as S;
 
     this.writeFileAtomically(merged);
     // Re-base: the merged content (including the fields another writer kept)
