@@ -551,22 +551,17 @@ export class McpServerCoordinator {
       });
     }
 
+    // CR4 (CodeRabbit review of PR #83): the fallback runId is computed ONCE
+    // — two independent `baseline-${Date.now()}` evaluations could differ,
+    // mismatching the lock metadata's runId against the live session's.
+    const runId = options.runId ?? `baseline-${Date.now()}`;
     if (!this.sandbox.isLocked()) {
-      await this.sandbox.acquire(options.runId ?? `baseline-${Date.now()}`, "main");
+      await this.sandbox.acquire(runId, "main");
     }
-    // Ticket #48: a baseline measurement is itself a live-session transition.
-    // The lock below is ALREADY acquired (this handler's or a held one); the
-    // serialization is reflective (P2 of #46), never a new locking protocol.
-    // The baseline handler owns session creation, so its live flushes may
-    // fabricate the file on first initialization; the `setBaseline` call
-    // below then resets the hill-climb best to the fresh measurement.
-    liveSessionFor(this.rootDir)
-      .allowFileCreation()
-      .beginRun(
-        options.runId ?? `baseline-${Date.now()}`,
-        "main",
-        this.serializeLock()
-      );
+    // CR3: the live session does NOT begin here. A state file written before
+    // the invariant gate and benchmarks would survive their failure as a fake
+    // "initialized" session (undoing #46's B1 guarantee). The live run begins
+    // after `saveSession` has written the REAL baseline below.
 
     // F2: capture the baseline commit reference under lock, BEFORE any step
     // work. `handleRollback` with no accepted steps restores exactly this
@@ -635,14 +630,20 @@ export class McpServerCoordinator {
     // Capture baseline snapshot (step 0)
     await this.captureSnapshot(0);
 
-    // Ticket #48: complete the live session with the measured baseline, then
-    // write the legacy snapshot WITHOUT the `session` key — the blob is
-    // owned exclusively by the live-session path and must not regress.
+    // CR3 (review of PR #83): the REAL baseline is durably saved FIRST — only
+    // then does the live session begin, so a failed invariant gate or
+    // benchmark can never leave a fabricated "initialized" session behind
+    // (the B1 guarantee of #46). The legacy snapshot carries no `session`
+    // key: the blob is owned exclusively by the live-session path below.
+    // The lock snapshot is reflective of the ALREADY-ACQUIRED lock (P2).
+    // CR4: the same `runId` that acquired the lock backs the live session.
+    saveSession(this.rootDir, legacyStateCopy(state));
+    const live = liveSessionFor(this.rootDir);
+    live.beginRun(runId, "main", this.serializeLock());
     const primaryDistribution = baselineDistributions[this.config.metrics[0]?.name ?? ""];
     if (primaryDistribution) {
-      liveSessionFor(this.rootDir).setBaseline(primaryDistribution);
+      live.setBaseline(primaryDistribution);
     }
-    saveSession(this.rootDir, legacyStateCopy(state));
     this.history = [];
 
     return {

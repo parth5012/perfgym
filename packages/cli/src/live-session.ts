@@ -21,7 +21,12 @@
  *
  * One store instance per project root per process (`liveSessionFor`), so the
  * CLI run loop, the coordinator handlers, and tests all share the same live
- * state path.
+ * state path. The cache is drift-checked (CR5 of the #48 review): another
+ * process may flush a newer durable blob in between calls; a mismatch
+ * between the disk blob's `lastUpdatedAt` and the stamp this instance last
+ * observed discards the cache and re-reads the disk — the fresh instance
+ * never fabricates a state file (a live flush writes nothing into an absent
+ * store; the baseline's `saveSession` owns creation, CR3).
  */
 
 import {
@@ -72,16 +77,19 @@ export class LiveSession {
   public readonly store: SessionStore;
   public readonly rootDir: string;
   /**
-   * Whether this instance may fabricate a state file when the durable store
-   * was never loaded (a handler like `perfgym baseline` that CREATES the
-   * session). Off by default so a stray flush cannot write a file.
+   * CR5 (review of #48/PR83): the durable blob's `lastUpdatedAt` as this
+   * instance has OBSERVED it — the disk value read at construction, then the
+   * value of every blob this instance actually flushed. `liveSessionFor`
+   * compares it against the current disk value to detect another process's
+   * writes (drift, in both directions) and refreshes instead of clobbering.
    */
-  private allowFabrication = false;
+  private observedBlobStamp: number | null;
 
   constructor(rootDir: string) {
     this.rootDir = rootDir;
     const legacy = loadSession(rootDir);
     const blob = legacy?.session ? deserializeSessionState(legacy.session) : null;
+    this.observedBlobStamp = blob?.lastUpdatedAt ?? null;
 
     // The hill-climb best continues across runs: seed from the previous live
     // session when one exists, else (or as bound) from the legacy best.
@@ -105,12 +113,14 @@ export class LiveSession {
         // The write-through flush hook: EVERY transition lands in the
         // durable file (via the shared merge-on-flush store), which is what
         // makes `perfgym status` in another process see the run in progress.
+        // The observe-stamp advances ONLY when the blob was actually
+        // persisted — a skipped flush (absent store) leaves the disk blob
+        // (and the stamp) untouched.
         onTransition: (state) => {
-          saveLiveSession(
-            rootDir,
-            serializeSessionState(state),
-            { fabricate: this.allowFabrication },
-          );
+          const serialized = serializeSessionState(state);
+          if (saveLiveSession(rootDir, serialized)) {
+            this.observedBlobStamp = serialized.lastUpdatedAt;
+          }
         },
       },
     );
@@ -162,13 +172,9 @@ export class LiveSession {
     this.store.recordError(message);
   }
 
-  /**
-   * Allow this instance to create the durable file when it does not exist
-   * yet (used by the baseline handler, which owns session creation).
-   */
-  public allowFileCreation(): this {
-    this.allowFabrication = true;
-    return this;
+  /** The recorded durable blob stamp, for the drift check in `liveSessionFor`. */
+  public get syncedBlobStamp(): number | null {
+    return this.observedBlobStamp;
   }
 }
 
@@ -178,9 +184,30 @@ const liveSessions = new Map<string, LiveSession>();
 /** A FRESH instance that re-reads the durable file — the "other process". */
 export const createLiveSession = (rootDir: string): LiveSession => new LiveSession(rootDir);
 
+/**
+ * The durable blob's `lastUpdatedAt` on disk right now — `null` when no
+ * session blob exists (absent file or legacy-only state).
+ */
+const diskBlobStamp = (rootDir: string): number | null => {
+  const legacy = loadSession(rootDir);
+  const blob = legacy?.session ? deserializeSessionState(legacy.session) : null;
+  return blob?.lastUpdatedAt ?? null;
+};
+
 export const liveSessionFor = (rootDir: string): LiveSession => {
+  // CR5 (review of #48/PR83): a long-lived process (perfgym-mcp) may hold one
+  // cached LiveSession forever, while a CLI run in ANOTHER process flushes a
+  // newer durable blob in between calls; the cached instance's next flush
+  // would replace the whole `session` blob and lose that history. Drift is
+  // detected against the stamp this instance last observed (constructor read
+  // or its own flush): ANY mismatch — newer, older, or no blob at all —
+  // discards the cache and re-reads the disk. Equal stamps (including both
+  // sides absent) keep the cached instance. The replacement is a plain
+  // constructor read: it never fabricates a state file (CR3).
   const cached = liveSessions.get(rootDir);
-  if (cached) return cached;
+  if (cached && diskBlobStamp(rootDir) === cached.syncedBlobStamp) {
+    return cached;
+  }
   const created = new LiveSession(rootDir);
   liveSessions.set(rootDir, created);
   return created;

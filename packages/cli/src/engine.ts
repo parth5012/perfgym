@@ -420,19 +420,17 @@ export function legacyStateCopy(state: PerfGymState): PerfGymState {
  * ONE write path of the state file. Everything else on disk survives: the
  * shared `SessionFileStore` re-reads the file and merges only the fields
  * this call actually changed. A store without a real loaded session writes
- * nothing — a live flush must never fabricate a state file.
+ * nothing — a live flush must never fabricate a state file. The state file
+ * is created by the baseline's `saveSession` (CR3 of the #48 review), never
+ * by a live flush. Returns whether the blob was actually persisted.
  */
-export function saveLiveSession(
-  rootDir: string = process.cwd(),
-  session: SerializedSessionState | null,
-  options: { fabricate?: boolean } = {},
-): void {
+export function saveLiveSession(rootDir: string = process.cwd(), session: SerializedSessionState | null): boolean {
   const store = sessionStoreFor(rootDir);
-  // A live flush must never fabricate a state file out of an absent store —
-  // unless the caller explicitly owns creating the session (baseline flows).
-  if (store.loadOutcome !== "loaded" && options.fabricate !== true) return;
+  // A live flush must never fabricate a state file out of an absent store.
+  if (store.loadOutcome !== "loaded") return false;
   store.update((prev) => ({ ...prev, session }));
   store.flush();
+  return true;
 }
 
 export interface InitOptions {

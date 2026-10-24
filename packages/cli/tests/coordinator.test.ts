@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -1246,6 +1246,48 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
     await coordinator.handleRollback({ stepNumber: 1 });
 
     expect(liveBlob(testDir).lock).toBeNull();
+  });
+
+  it("a failed baseline leaves NO state file on disk — no fake initialized session (CR3)", async () => {
+    const stateFile = path.join(testDir, ".perfgym", "state.json");
+    expect(fs.existsSync(stateFile)).toBe(false);
+
+    coordinator.updateConfig({
+      ...config,
+      invariants: { command: "node -e 'process.exit(1)'", timeoutMs: 5000 },
+    });
+    await expect(coordinator.handleBaseline({ samples: 2 })).rejects.toThrow(
+      /Invariant gate failed during baseline/,
+    );
+
+    // Nothing was persisted: the disk must not impersonate an initialized
+    // session (the B1 guarantee of #46 holds even when the baseline fails).
+    expect(fs.existsSync(stateFile)).toBe(false);
+    expect(loadSession(testDir)).toBeNull();
+    const status = await coordinator.handleStatus();
+    expect(status.initialized).toBe(false);
+    expect(status.sessionStatus).toBe("not_initialized");
+  });
+
+  it("uses ONE fallback runId for the lock, the live session and its lock snapshot (CR4)", async () => {
+    // A ticking clock: every Date.now() call returns a value one second AFTER
+    // the previous one, so two independently evaluated fallback runIds differ.
+    const realNow = Date.now;
+    let ticks = 0;
+    const clockSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + ticks++ * 1000);
+    try {
+      await coordinator.handleBaseline({ samples: 2 });
+    } finally {
+      clockSpy.mockRestore();
+    }
+
+    const session = liveBlob(testDir);
+    const metaRunId = (
+      JSON.parse(fs.readFileSync(path.join(lockDir, "metadata.json"), "utf8")) as { runId: string }
+    ).runId;
+    expect(session.runId).toBe(metaRunId);
+    expect((session.lock as { runId: string }).runId).toBe(metaRunId);
+    expect(session.status).toBe("idle");
   });
 });
 
