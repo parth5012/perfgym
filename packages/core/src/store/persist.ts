@@ -178,7 +178,12 @@ export class SessionFileStore<S extends object> {
   /** Replace the in-memory state with `next` and flush it to disk. */
   public save(next: S): S {
     this.set(next);
-    return this.flush();
+    const saved = this.flush();
+    // The durable file now exists and reflects `next`: the store owns a real
+    // session file, so the load outcome is no longer "absent" (later
+    // write-through flushes must not be skipped for absence).
+    this.outcome = "loaded";
+    return saved;
   }
 
   public subscribe(listener: (state: S) => void): () => void {

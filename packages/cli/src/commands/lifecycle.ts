@@ -20,6 +20,8 @@ import * as path from "node:path";
 import {
   createFormatter,
   toDistributionJson,
+  createStepHistoryTable,
+  renderStepTable,
   type OutputFormat,
 } from "../../../core/src/index.js";
 import { GitWorktreeDriver } from "../../../core/src/sandbox/git-worktree-driver.js";
@@ -126,6 +128,8 @@ const statusJson = (report: StatusReport): Record<string, unknown> => ({
   currentStep: report.currentStep,
   bestScore: report.bestFitnessScore,
   bestStep: report.bestStep,
+  // #48: how stale this snapshot is — visibly stale beats silently wrong.
+  lastUpdatedAt: report.lastUpdatedAt ?? null,
   baseline: report.baselineMetrics,
   current: report.currentValues,
   metricDeltas: report.metricDeltas,
@@ -147,6 +151,28 @@ const statusJson = (report: StatusReport): Record<string, unknown> => ({
     timestamp: entry.timestamp,
   })),
   llmUsage: report.llmUsage ?? null,
+  // #48: the serialized live-session store view (the run in progress).
+  liveSession: report.liveSession
+    ? {
+        status: report.liveSession.status,
+        runId: report.liveSession.runId,
+        baseRef: report.liveSession.baseRef,
+        currentStep: report.liveSession.currentStep,
+        bestScore: report.liveSession.bestScore,
+        bestStep: report.liveSession.bestStep,
+        lastUpdatedAt: report.liveSession.lastUpdatedAt,
+        lastError: report.liveSession.lastError,
+        lock: report.liveSession.lock
+          ? {
+              pid: report.liveSession.lock.pid,
+              runId: report.liveSession.lock.runId,
+              startTime: report.liveSession.lock.startTime,
+              heartbeat: report.liveSession.lock.heartbeat,
+            }
+          : null,
+        history: report.liveSession.history,
+      }
+    : null,
   lock: {
     locked: report.lockState.locked,
     pid: report.lockState.pid,
@@ -178,7 +204,18 @@ const renderStatusMarkdown = (report: StatusReport): string => {
         : report.bestFitnessScore.toFixed(2)
     }${report.bestStep === null ? "" : ` (step ${report.bestStep})`}`,
     `- **Lock:** ${lockText}`,
-  ];
+    // #48: a stale snapshot is visibly stale rather than silently wrong.
+    // The live session's own stamp is the precise one; the file stamp is the
+    // fallback when no live session is recorded.
+    report.liveSession !== null
+      ? `- **Last updated:** \`${report.liveSession.lastUpdatedAt}\` (${new Date(report.liveSession.lastUpdatedAt).toISOString()})`
+      : report.lastUpdatedAt === null
+      ? null
+      : `- **Last updated:** \`${report.lastUpdatedAt}\` (${new Date(report.lastUpdatedAt).toISOString()})`,
+    report.liveSession && report.liveSession.lock
+      ? `- **Session heartbeat:** \`${report.liveSession.lock.heartbeat}\` (${new Date(report.liveSession.lock.heartbeat).toISOString()})`
+      : null,
+  ].filter((line): line is string => line !== null);
 
   if (report.llmUsage !== undefined) {
     lines.push(
@@ -201,7 +238,18 @@ const renderStatusMarkdown = (report: StatusReport): string => {
     }
   }
 
-  if (report.stepHistory.length > 0) {
+  if (report.liveSession !== null && report.liveSession.history.length > 0) {
+    // #48 + #47: the live session's recorded evaluations render as the
+    // dependency-free step-history table.
+    lines.push(
+      "",
+      "#### Step History",
+      "",
+      "```",
+      renderStepTable(createStepHistoryTable(report.liveSession.history)),
+      "```",
+    );
+  } else if (report.stepHistory.length > 0) {
     lines.push("", "#### Step History");
     for (const entry of report.stepHistory) {
       lines.push(

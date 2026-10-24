@@ -17,6 +17,7 @@ import {
   matchesGlob,
   SessionFileStore,
   type SessionLoadOutcome,
+  type SerializedSessionState,
 } from "../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../linter/src/index.js";
 
@@ -31,12 +32,23 @@ export interface PerfGymState {
   bestFitnessScore: number;
   acceptedStepCount: number;
   totalStepCount: number;
+  /** The step of the best accepted evaluation (additive, #48 status parity). */
+  bestStep?: number;
   lastCommitHash?: string;
   /**
    * Epoch milliseconds of the last write-through flush (Ticket #46). Additive:
    * older readers that ignore this field keep working.
    */
   lastUpdatedAt?: number;
+  /**
+   * The serialized live-session blob (Ticket #48): the bridge between the
+   * in-process TanStack `SessionStore` and this durable cross-process
+   * artifact. Written EXCLUSIVELY through `saveLiveSession` — the legacy
+   * detached-snapshot path (see `legacyStateCopy`) never carries the key, so
+   * a legacy writer cannot regress a live snapshot. `null` explicitly marks
+   * "no live session".
+   */
+  session?: SerializedSessionState | null;
 }
 
 export type SupportedLanguage = "typescript" | "javascript" | "python" | "go" | "kotlin" | "rust";
@@ -380,6 +392,49 @@ export function saveSession(rootDir: string = process.cwd(), state: PerfGymState
   return sessionStoreFor(rootDir).save(state);
 }
 
+// ============================================================================
+// Live-session bridge (Ticket #48)
+//
+// The TanStack `SessionStore` (packages/core/src/store/index.ts) is the live
+// session state; this file is the durable artifact. Everything a legacy
+// reader ("history", counters, metrics) is written through `saveSession`
+// (merge-on-flush), and the live-session blob is written EXCLUSIVELY through
+// `saveLiveSession`, so the two paths never clobber each other.
+// ============================================================================
+
+/**
+ * A detached, writable LEGACY snapshot of the session file for the
+ * load-mutate-`saveSession` pattern. The `session` key is physically deleted:
+ * a stale blob on an old snapshot must never be persisted over the live
+ * one — the live blob is owned solely by `saveLiveSession`.
+ */
+export function legacyStateCopy(state: PerfGymState): PerfGymState {
+  if (!("session" in state)) return { ...state };
+  const copy = { ...state } as PerfGymState & { session?: unknown };
+  delete (copy as { session?: unknown }).session;
+  return copy;
+}
+
+/**
+ * Persist (or explicitly clear) the serialized live-session blob through the
+ * ONE write path of the state file. Everything else on disk survives: the
+ * shared `SessionFileStore` re-reads the file and merges only the fields
+ * this call actually changed. A store without a real loaded session writes
+ * nothing — a live flush must never fabricate a state file.
+ */
+export function saveLiveSession(
+  rootDir: string = process.cwd(),
+  session: SerializedSessionState | null,
+  options: { fabricate?: boolean } = {},
+): void {
+  const store = sessionStoreFor(rootDir);
+  // A live flush must never fabricate a state file out of an absent store —
+  // unless the caller explicitly owns creating the session (baseline flows).
+  if (store.loadOutcome !== "loaded" && options.fabricate !== true) return;
+  store.update((prev) => ({ ...prev, session }));
+  store.flush();
+}
+
 export interface InitOptions {
   cwd?: string;
   force?: boolean;
@@ -602,7 +657,9 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
     state.bestFitnessScore = evaluation.fitnessScore;
     state.acceptedStepCount += 1;
   }
-  saveSession(cwd, state);
+  // The legacy snapshot never carries the `session` blob — the live-session
+  // path owns it (Ticket #48), so a stale blob must not regress the file.
+  saveSession(cwd, legacyStateCopy(state));
 
   // Negative memory — opt-in only, and only for a REJECTED step: the memory
   // holds failures, and an accepted step is not one. `perfgym step` discovers

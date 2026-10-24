@@ -32,6 +32,7 @@ import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../../linter/s
 import {
   loadConfig,
   loadSession,
+  legacyStateCopy,
   saveSession,
   runBaseline,
   loadNegativeMemory,
@@ -39,6 +40,7 @@ import {
   negativeMemoryFilePath,
   type PerfGymState,
 } from "../engine.js";
+import { liveSessionFor, reflectSessionLock } from "../live-session.js";
 
 export interface MutationContext {
   iteration: number;
@@ -157,7 +159,7 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     state = baseRes.state;
   }
 
-  // Worktree driver & sandbox coordinator
+  // The worktree driver & sandbox coordinator
   const worktreeDriver = new GitWorktreeDriver({
     repoRoot: cwd,
     allowedGlobs: config.target.files,
@@ -167,9 +169,24 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     repoRoot: cwd,
   });
 
+  // The live session of this run (Ticket #48): every transition below flows
+  // through the TanStack SessionStore and its write-through flush hook, so
+  // `perfgym status` in another terminal (or the MCP server) sees the run in
+  // progress from the shared durable state file.
+  const live = liveSessionFor(cwd);
+  // ONE reflective lock snapshot (Ticket #48 review S1/S2): the lock dir is
+  // the coordinator's own (S3) and the holder flag is the sandbox's REAL
+  // state — the snapshot can never claim a lock that is not held.
+  const serializeLock = (): Parameters<typeof live.setLock>[0] =>
+    reflectSessionLock(coordinator.lockDirectory, coordinator.isLocked());
+
   const runId = `run-${Date.now()}`;
   const workspaceContext = await coordinator.acquire(runId, targetBranch);
   const sandboxDir = workspaceContext.workingDir;
+
+  // P2 (#46): the ALREADY-ACQUIRED lock metadata is serialized reflectively
+  // — the lock file stays the single authority; this is only a snapshot.
+  live.beginRun(runId, targetBranch, serializeLock());
 
   const linter = new AstLinterEngine(DEFAULT_RULES, sandboxDir);
   const typechecker = new TypecheckGate(sandboxDir);
@@ -193,6 +210,11 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
   try {
     for (let i = 1; i <= maxIterations; i++) {
       log(chalk.bold.blue(`▶ Iteration ${i}/${maxIterations}:`));
+
+      // Per-iteration store contract (#48): the transition chain is
+      // mutating → evaluating → accepted/rejected (then the rollback marker
+      // for a rejected step), flushed to disk at every transition.
+      live.setStatus("mutating");
 
       let mutatedFiles: MutationFile[] = [];
 
@@ -345,6 +367,8 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
 
       const modifiedRelativePaths = mutatedFiles.map((m) => m.relPath);
 
+      live.setStatus("evaluating");
+
       // Evaluate step
       const stepEval = await pipeline.evaluateStep(workspaceContext, modifiedRelativePaths, {
         baselineMetrics: state.baselineMetrics,
@@ -365,12 +389,17 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
         consecutiveRejections = 0;
 
         await coordinator.acceptStep(i, bestFitness);
+        live.recordStep(stepEval);
         const deltaStr = stepEval.deltaPercent >= 0 ? `+${stepEval.deltaPercent.toFixed(1)}%` : `${stepEval.deltaPercent.toFixed(1)}%`;
         log(chalk.green(`  ✔ Accepted! New best score: +${bestFitness.toFixed(2)} (Delta: ${deltaStr})`));
       } else {
         rolledBack = true;
         consecutiveRejections++;
         await coordinator.rejectStep();
+        // The store records the verdict FIRST (accepted/rejected + history),
+        // then the rollback marker marks the undone step in the history.
+        live.recordStep(stepEval);
+        live.markStepRolledBack(i);
 
         // Remember the failure — the bounded negative memory is what stops
         // the optimizer from retrying a mutation that already failed. Only a
@@ -430,17 +459,23 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
       await coordinator.promoteAndCleanup(targetBranch);
       promoted = true;
 
-      // Update state
+      // Update state — through the detached legacy snapshot (the `session`
+      // blob is owned by the live-session path and must not regress).
       state.bestFitnessScore = bestFitness;
       state.acceptedStepCount += acceptedCount;
       state.totalStepCount += evaluations.length;
       state.updatedAt = Date.now();
-      saveSession(cwd, state);
+      saveSession(cwd, legacyStateCopy(state));
     } else {
       log(chalk.yellow("\n⚠ No mutations improved fitness. Worktree torn down cleanly without changes."));
       await coordinator.release();
       await worktreeDriver.teardown();
     }
+
+    // The run's final transitions: completed, and the lock snapshot resolved
+    // against the (now released) session lock.
+    live.setStatus("completed");
+    live.setLock(serializeLock());
 
     // Print summary table
     if (!options.quiet) {
@@ -470,6 +505,12 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     } catch {
       // ignore
     }
+    // The session must reflect the failed run honestly: keep the error
+    // visible for the next `perfgym status`, and the blob mirrors the REAL
+    // lock — if the release above failed the lockfile is still held, and the
+    // reflective snapshot says so instead of a hardcoded null (S2/S4).
+    live.recordError(err instanceof Error ? err.message : String(err));
+    live.setLock(serializeLock());
     throw err;
   } finally {
     // The negative memory must survive EVERY exit path — the normal end, the

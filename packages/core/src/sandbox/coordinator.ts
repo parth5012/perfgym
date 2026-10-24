@@ -362,6 +362,15 @@ export class GitSandboxCoordinator {
     return this.locked;
   }
 
+  /**
+   * The lock directory this coordinator OWNS (Ticket #48 review S3): reflective
+   * readers (the lock snapshot in the live session) reuse it instead of
+   * re-deriving the `.perfgym/.lock.d` location a second time.
+   */
+  public get lockDirectory(): string {
+    return this.lockDir;
+  }
+
   public getContext(): WorkspaceContext | null {
     return this.context;
   }

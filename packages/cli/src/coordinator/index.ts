@@ -17,7 +17,9 @@ import {
   type StepEvaluation,
   type WorkspaceContext,
   type WorkspaceDriver,
+  type SessionLockState,
   type NegativeMemoryEntry,
+  deserializeSessionState,
   EvaluationPipeline,
   GitSandboxCoordinator,
   InMemorySandboxDriver,
@@ -38,17 +40,20 @@ import {
 import {
   loadSession,
   saveSession,
+  legacyStateCopy,
   loadConfig,
   loadNegativeMemory,
   negativeMemoryFilePath,
   recordNegativeMemory,
 } from "../engine.js";
+import { liveSessionFor, reflectSessionLock } from "../live-session.js";
 import {
   type BaselineOutcome,
   type LintOutcome,
   type BenchmarkOutcome,
   type RollbackOutcome,
   type StatusReport,
+  type LiveSessionReport,
   type StepHistoryEntry,
   type LockStateReport,
   type BaselineHandlerOptions,
@@ -347,6 +352,16 @@ export class McpServerCoordinator {
     return undefined;
   }
 
+  /**
+   * The serialized snapshot of the sandbox lock AS IT ACTUALLY IS (Ticket #48
+   * review S1/S2): one reflective helper (`reflectSessionLock` in
+   * live-session) fed this coordinator's REAL holder state — no site-local
+   * duplication, no guessed `locked=true`.
+   */
+  private serializeLock(): SessionLockState | null {
+    return reflectSessionLock(this.lockDir, this.sandbox.isLocked(), this.staleThresholdMs);
+  }
+
   private async restoreSnapshot(
     stepNumber: number,
     targetCommit?: string,
@@ -404,6 +419,11 @@ export class McpServerCoordinator {
    * Reports session status, runId, baseRef, current step, best fitness score,
    * baseline metrics, current values, metric deltas, step history, negative memory,
    * and lock state. NEVER mutates state or writes to state file.
+   *
+   * Ticket #48: additionally reports the serialized live-session store view
+   * (the run in progress), whose `history` feeds the status step table, plus
+   * the state file's `lastUpdatedAt` stamp so a stale snapshot is visibly
+   * stale instead of silently wrong.
    */
   public async handleStatus(_options: StatusHandlerOptions = {}): Promise<StatusReport> {
     const state = (loadSession(this.rootDir) as CoordinatorState) ?? null;
@@ -429,10 +449,30 @@ export class McpServerCoordinator {
         negativeMemory: [],
         lockState: lockReport,
         targetName: this.config?.target?.name,
+        lastUpdatedAt: null,
+        liveSession: null,
       };
     }
 
+    const blob = state.session ? deserializeSessionState(state.session) : null;
+    const liveSession: LiveSessionReport | null = blob
+      ? {
+          status: blob.status,
+          runId: blob.runId,
+          baseRef: blob.baseRef,
+          currentStep: blob.currentStep,
+          bestScore: Number.isFinite(blob.bestScore) ? blob.bestScore : null,
+          bestStep: blob.bestStep,
+          lastUpdatedAt: blob.lastUpdatedAt,
+          lock: blob.lock,
+          lastError: blob.lastError,
+          history: blob.history,
+        }
+      : null;
+
     const history = state.history ?? this.history ?? [];
+    // The rewind-aware pointer stays legacy-owned (a rollback rewinds it);
+    // the live blob's own pointer is reported inside `liveSession`.
     const currentStep = state.totalStepCount ?? 0;
     const bestFitnessScore = Number.isFinite(state.bestFitnessScore)
       ? state.bestFitnessScore
@@ -458,10 +498,13 @@ export class McpServerCoordinator {
       negativeMemoryEntries = [];
     }
 
-    const sessionStatus = this.sandbox.isLocked()
+    // #48: a live session drives the session status; the lock only shades it.
+    const sessionStatus = liveSession
+      ? liveSession.status === "completed"
+        ? "completed"
+        : "running"
+      : this.sandbox.isLocked()
       ? "running"
-      : currentStep > 0
-      ? "idle"
       : "idle";
 
     return {
@@ -479,6 +522,8 @@ export class McpServerCoordinator {
       negativeMemory: negativeMemoryEntries,
       lockState: lockReport,
       targetName: state.targetName,
+      lastUpdatedAt: state.lastUpdatedAt ?? null,
+      liveSession,
     };
   }
 
@@ -509,6 +554,19 @@ export class McpServerCoordinator {
     if (!this.sandbox.isLocked()) {
       await this.sandbox.acquire(options.runId ?? `baseline-${Date.now()}`, "main");
     }
+    // Ticket #48: a baseline measurement is itself a live-session transition.
+    // The lock below is ALREADY acquired (this handler's or a held one); the
+    // serialization is reflective (P2 of #46), never a new locking protocol.
+    // The baseline handler owns session creation, so its live flushes may
+    // fabricate the file on first initialization; the `setBaseline` call
+    // below then resets the hill-climb best to the fresh measurement.
+    liveSessionFor(this.rootDir)
+      .allowFileCreation()
+      .beginRun(
+        options.runId ?? `baseline-${Date.now()}`,
+        "main",
+        this.serializeLock()
+      );
 
     // F2: capture the baseline commit reference under lock, BEFORE any step
     // work. `handleRollback` with no accepted steps restores exactly this
@@ -577,7 +635,14 @@ export class McpServerCoordinator {
     // Capture baseline snapshot (step 0)
     await this.captureSnapshot(0);
 
-    saveSession(this.rootDir, state);
+    // Ticket #48: complete the live session with the measured baseline, then
+    // write the legacy snapshot WITHOUT the `session` key — the blob is
+    // owned exclusively by the live-session path and must not regress.
+    const primaryDistribution = baselineDistributions[this.config.metrics[0]?.name ?? ""];
+    if (primaryDistribution) {
+      liveSessionFor(this.rootDir).setBaseline(primaryDistribution);
+    }
+    saveSession(this.rootDir, legacyStateCopy(state));
     this.history = [];
 
     return {
@@ -619,7 +684,12 @@ export class McpServerCoordinator {
 
     if (!this.sandbox.isLocked()) {
       await this.sandbox.acquire(`step-${Date.now()}`, "main");
+      // P2 (#46): serialize the metadata of the ALREADY-ACQUIRED lock —
+      // reflective, no new locking protocol.
+      liveSessionFor(this.rootDir).setLock(this.serializeLock());
     }
+    const live = liveSessionFor(this.rootDir);
+    live.setStatus("mutating");
 
     let modifiedFiles: string[] = [];
     if (options.mutations && options.mutations.length > 0) {
@@ -648,20 +718,26 @@ export class McpServerCoordinator {
 
     const history = state.history ?? this.history ?? [];
 
+    // Ticket #48: the live-session history participates in the monotonic
+    // numbering — a previous run's live steps are never re-issued.
+    const blobRows = deserializeSessionState(state.session)?.history ?? [];
+    const maxBlobStep = blobRows.reduce((max, entry) => Math.max(max, entry.iteration), 0);
+
     // R2: step numbers are MONOTONIC — derived from the highest stepNumber
     // ever recorded in history, never from the (rewound) totalStepCount
     // pointer. Otherwise a rollback to the baseline would re-issue step
     // number 1 and break stepNumber-based lookups across the codebase.
     const nextIteration =
       history.length > 0
-        ? Math.max(...history.map((h) => h.stepNumber)) + 1
-        : 1;
+        ? Math.max(...history.map((h) => h.stepNumber), maxBlobStep) + 1
+        : maxBlobStep + 1;
 
     const primaryMetricName = this.config.metrics[0]?.name;
     const primaryBaselineDist = primaryMetricName
       ? state.baselineDistributions?.[primaryMetricName]
       : undefined;
 
+    live.setStatus("evaluating");
     const evaluation = await this.pipeline.evaluateStep(context, modifiedFiles, {
       baseline: primaryBaselineDist,
       baselineMetrics: state.baselineMetrics,
@@ -721,7 +797,10 @@ export class McpServerCoordinator {
         state.bestStep = evaluation.iteration;
       }
 
-      saveSession(this.rootDir, state);
+      saveSession(this.rootDir, legacyStateCopy(state));
+      // Ticket #48: record the verdict through the store (accepted/rejected
+      // status, history entry, bestScore/bestStep maintenance) — flushed.
+      live.recordStep(evaluation);
       this.history = history;
       // F8: the mutation was accepted — the disk keeps it; drop the backup.
       this.pendingDiskBackup = null;
@@ -744,7 +823,12 @@ export class McpServerCoordinator {
       state.totalStepCount = evaluation.iteration;
       state.updatedAt = Date.now();
       state.history = history;
-      saveSession(this.rootDir, state);
+      saveSession(this.rootDir, legacyStateCopy(state));
+      // Ticket #48: the rejected mutation was ROLLED BACK by rejectStep()
+      // above — the history keeps the step but is marked so it no longer
+      // claims the mutation is applied.
+      live.recordStep(evaluation);
+      live.markStepRolledBack(evaluation.iteration);
       this.history = history;
 
       if (options.recordNegativeMemory) {
@@ -1127,6 +1211,9 @@ export class McpServerCoordinator {
     if (!lockHeldBefore) {
       try {
         await this.sandbox.acquire(`rollback-${Date.now()}`, "main");
+        // P2 (#46): serialize the metadata of the lock this rollback JUST
+        // acquired (reflective; the lock file stays the authority).
+        liveSessionFor(this.rootDir).setLock(this.serializeLock());
       } catch (err: unknown) {
         if (err instanceof SandboxLockBusyError || (err as any)?._tag === "SandboxLockBusyError") {
           throw new SandboxLockBusyError({
@@ -1178,8 +1265,22 @@ export class McpServerCoordinator {
       state.acceptedStepCount = remainingAccepted.length;
       state.history = updatedHistory;
       state.updatedAt = Date.now();
-      saveSession(this.rootDir, state);
+      saveSession(this.rootDir, legacyStateCopy(state));
       this.history = updatedHistory;
+
+      // Ticket #48: mirror the cascade into the live session when the blob
+      // actually recorded the rolled-back step (a `perfgym run` blob uses its
+      // own iteration space and is left untouched otherwise), then recompute
+      // the live best from what still applies.
+      const rollbackTargetStep = targetIndex !== undefined ? history[targetIndex].stepNumber : undefined;
+      const live = liveSessionFor(this.rootDir);
+      if (
+        rollbackTargetStep !== undefined &&
+        live.state.history.some((entry) => entry.iteration === rollbackTargetStep)
+      ) {
+        live.markStepsRolledBackFrom(rollbackTargetStep);
+        live.reconcileBest();
+      }
 
       return {
         success: true,
@@ -1196,6 +1297,10 @@ export class McpServerCoordinator {
       // failure alike; a lock held by the surrounding session stays held.
       if (!lockHeldBefore && this.sandbox.isLocked()) {
         await this.sandbox.release();
+      }
+      // The serialized lock snapshot follows the real one either way.
+      if (!lockHeldBefore) {
+        liveSessionFor(this.rootDir).setLock(this.serializeLock());
       }
     }
   }

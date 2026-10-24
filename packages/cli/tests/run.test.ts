@@ -1,10 +1,176 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { runOptimizationLoop, type MutationContext, type MutationGenerator } from "../src/commands/run.js";
 import { saveSession } from "../src/engine.js";
+import { liveSessionFor } from "../src/live-session.js";
+import { GitSandboxCoordinator } from "../../core/src/index.js";
+
+/**
+ * The live-session store assertions of Ticket #48: the run loop updates the
+ * SessionStore on every iteration (status mutating → evaluating →
+ * accepted/rejected, recordStep, bestScore/bestStep) and the flush hook
+ * persists each transition to the durable state file, so `perfgym status` in
+ * another process reflects a run in progress.
+ */
+describe("Session store wiring in the run loop (Ticket #48)", () => {
+  const configYaml = `
+version: "1.0"
+target:
+  name: "session-loop"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "instructions"
+    command: "node -e 'const fs = require(\\\"fs\\\"); const txt = fs.readFileSync(\\\"src/index.ts\\\", \\\"utf8\\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
+    goal: "minimize"
+    weight: 1
+    unit: "count"
+`;
+
+  let testDir: string;
+  const statePath = path.join(".perfgym", "state.json");
+  const readState = (dir: string): Record<string, unknown> =>
+    JSON.parse(fs.readFileSync(path.join(dir, statePath), "utf8")) as Record<string, unknown>;
+
+  beforeEach(() => {
+    testDir = path.join(
+      tmpdir(),
+      `perfgym-run-session-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    );
+    fs.mkdirSync(testDir, { recursive: true });
+
+    try {
+      execFileSync("git", ["init", "-b", "main"], { cwd: testDir, stdio: "ignore" });
+    } catch {
+      execFileSync("git", ["init"], { cwd: testDir, stdio: "ignore" });
+    }
+    execFileSync("git", ["config", "user.name", "Test Sentinel"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "sentinel@test.com"], { cwd: testDir, stdio: "ignore" });
+
+    fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(testDir, "src", "index.ts"), "// value: 100\nexport let count = 0;\n", "utf8");
+    fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), configYaml, "utf8");
+    execFileSync("git", ["add", "-A"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: testDir, stdio: "ignore" });
+
+    // Established baseline (the "second process" story: the state file exists
+    // before the run starts, exactly like `perfgym baseline` would leave it).
+    saveSession(testDir, {
+      version: "1.0",
+      initializedAt: Date.now(),
+      updatedAt: Date.now(),
+      targetName: "session-loop",
+      baselineMetrics: { instructions: 100 },
+      invariantsPassed: true,
+      bestFitnessScore: 0,
+      acceptedStepCount: 0,
+      totalStepCount: 0,
+    });
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it("updates the store's history, bestScore, bestStep and status per iteration", async () => {
+    // Step 1 improves (accepted, +15%), step 2 regresses (rejected).
+    const mutations = [
+      "// value: 85\nexport let count = 1;\n",
+      "// value: 150\nexport let count = 2;\n",
+    ];
+    let iteration = 0;
+    const observed: Array<{ history: unknown[]; status: string; bestScore: number; bestStep: number | null; onDiskStatus: string }> = [];
+
+    const generator: MutationGenerator = async () => {
+      // The generator runs at the START of iteration i+1, so it observes the
+      // store exactly as `status` in another terminal would.
+      const store = liveSessionFor(testDir);
+      const s = store.store.getState();
+      observed.push({
+        history: [...s.history],
+        status: s.status,
+        bestScore: s.bestScore,
+        bestStep: s.bestStep,
+        onDiskStatus: String(((readState(testDir).session as Record<string, unknown> | undefined)?.status) ?? ""),
+      });
+      const code = mutations[iteration++] ?? mutations[0]!;
+      return [{ relPath: "src/index.ts", content: code }];
+    };
+
+    const res = await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 2,
+      generator,
+      samples: 1,
+    });
+
+    expect(res.acceptedCount).toBe(1);
+    // Iteration 1 observer: no steps yet, mid-mutation status... already
+    // stamped, lock acquired.
+    expect(observed).toHaveLength(2);
+    expect(observed[0].history).toHaveLength(0);
+    expect(observed[0].onDiskStatus).toBe("mutating");
+
+    // The accepted step of iteration 1 is visible from iteration 2.
+    expect(observed[1].history).toHaveLength(1);
+    expect(observed[1].bestScore).toBe(res.evaluations[0]!.fitnessScore);
+    expect(observed[1].bestStep).toBe(1);
+
+    const finalDoc = readState(testDir);
+    const session = finalDoc.session as Record<string, unknown>;
+    expect(session.status).toBe("completed");
+    expect((session.history as unknown[]).length).toBe(2);
+    expect((session.history as Array<Record<string, unknown>>)[1].rolledBack).toBe(true);
+    expect(session.bestScore).toBe(res.evaluations[0]!.fitnessScore);
+    expect(session.bestStep).toBe(1);
+    expect(finalDoc.lastUpdatedAt).toBeGreaterThan(0);
+
+    // The serialized lock of the run was released with the run.
+    expect(session.lock).toBeNull();
+  });
+
+  it("mirrors the REAL lockfile in a failed run's blob when the release fails", async () => {
+    // The release fails AFTER the mutation blew up: the lock directory stays
+    // on disk and still belongs to this process. The blob must say the same
+    // thing the lockfile says — a hardcoded null here would claim "unlocked"
+    // while the lock is held, so a second `perfgym status` would be lied to.
+    const failingRelease = vi
+      .spyOn(GitSandboxCoordinator.prototype, "release")
+      .mockRejectedValue(new Error("release broke"));
+    const generator: MutationGenerator = async () => {
+      throw new Error("mutation blew up");
+    };
+
+    try {
+      await expect(
+        runOptimizationLoop({
+          cwd: testDir,
+          maxIterations: 1,
+          generator,
+          samples: 1,
+        }),
+      ).rejects.toThrow("mutation blew up");
+    } finally {
+      failingRelease.mockRestore();
+    }
+
+    const session = readState(testDir).session as Record<string, unknown>;
+    const lock = session.lock as { pid: number; runId: string } | null;
+    // The snapshot reflects the still-held lock: this process's pid and a runId.
+    expect(lock).not.toBeNull();
+    expect(lock!.pid).toBe(process.pid);
+    expect(typeof lock!.runId).toBe("string");
+  });
+});
 
 describe("Autonomous Hill-Climbing Loop (perfgym run - Ticket #20)", () => {
   let testDir: string;
