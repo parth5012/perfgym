@@ -20,6 +20,7 @@ import {
   type SerializedSessionState,
 } from "../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../linter/src/index.js";
+import { liveSessionFor } from "./live-session.js";
 
 export interface PerfGymState {
   version: string;
@@ -653,11 +654,17 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
   state.updatedAt = Date.now();
   if (evaluation.accepted && evaluation.fitnessScore > state.bestFitnessScore) {
     state.bestFitnessScore = evaluation.fitnessScore;
+    state.bestStep = evaluation.iteration;
     state.acceptedStepCount += 1;
   }
   // The legacy snapshot never carries the `session` blob — the live-session
   // path owns it (Ticket #48), so a stale blob must not regress the file.
   saveSession(cwd, legacyStateCopy(state));
+  const live = liveSessionFor(cwd);
+  live.recordStep(evaluation);
+  if (!evaluation.accepted) {
+    live.markStepRolledBack(evaluation.iteration);
+  }
 
   // Negative memory — opt-in only, and only for a REJECTED step: the memory
   // holds failures, and an accepted step is not one. `perfgym step` discovers

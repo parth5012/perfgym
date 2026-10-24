@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   STATE_PATH,
   loadSession,
+  runBaseline,
   runStep,
   saveSession,
   sessionFileOutcome,
@@ -86,6 +87,52 @@ describe("engine session accessors (Ticket #46 — loadSession/saveSession)", ()
     ).rejects.toThrow(/No baseline found in \.perfgym\/state\.json/);
   });
 
+  it("runStep persists bestStep on improvement and mirrors the step into the live blob (F3/F4)", async () => {
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, ".perfgym.yaml"),
+      `
+version: "1.0"
+target:
+  name: "step-mirror"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "instructions"
+    command: "node -e 'const fs = require(\\"fs\\"); const txt = fs.readFileSync(\\"src/index.ts\\", \\"utf8\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
+    goal: "minimize"
+    weight: 1
+    unit: "count"
+`,
+      "utf8",
+    );
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "src", "index.ts"), "// value: 100\nexport let count = 0;\n", "utf8");
+
+    const baseRes = await runBaseline({ cwd: dir, samples: 1 });
+    expect(baseRes.success).toBe(true);
+
+    // The improvement: 100 → 50 (minimize) — an accepted, better step.
+    fs.writeFileSync(path.join(dir, "src", "index.ts"), "// value: 50\nexport let count = 1;\n", "utf8");
+    const res = await runStep({ cwd: dir, files: ["src/index.ts"], samples: 1 });
+    expect(res.success).toBe(true);
+    expect(res.evaluation.accepted).toBe(true);
+
+    // F3: the winning iteration is recorded — parity with the coordinator's
+    // handleStep path. F4: the step is mirrored into the live blob (the same
+    // live-session machinery the coordinator uses), legacy save first, live
+    // flush last.
+    const state = loadSession(dir);
+    expect(state?.bestStep).toBe(1);
+    const doc = JSON.parse(fs.readFileSync(stateFilePath(dir), "utf8")) as {
+      session?: { history?: Array<{ iteration: number }>; bestStep?: number | null };
+    };
+    expect(doc.session?.history?.map((entry) => entry.iteration)).toEqual([1]);
+    expect(doc.session?.bestStep).toBe(1);
+  });
+
   it("overwrites a corrupt state file with a parseable session on the next save", () => {
     const dir = makeDir();
     fs.mkdirSync(path.dirname(stateFilePath(dir)), { recursive: true });
@@ -102,7 +149,7 @@ describe("engine session accessors (Ticket #46 — loadSession/saveSession)", ()
     const dir = makeDir();
     saveSession(dir, fixture({ totalStepCount: 1 }));
 
-    // A concurrent writer adds a field between this process's load and save.
+    // A concurrent writer adds a field between this process's load or save.
     const diskNow = JSON.parse(fs.readFileSync(stateFilePath(dir), "utf8")) as Record<string, unknown>;
     fs.writeFileSync(
       stateFilePath(dir),
@@ -115,5 +162,58 @@ describe("engine session accessors (Ticket #46 — loadSession/saveSession)", ()
     const disk = JSON.parse(fs.readFileSync(stateFilePath(dir), "utf8")) as Record<string, unknown>;
     expect(disk.totalStepCount).toBe(5);
     expect(disk.rival).toBe("other-process");
+  });
+
+  it("a fresh-session save drops the previous session's heritage from disk (F1)", () => {
+    const dir = makeDir();
+    fs.mkdirSync(path.dirname(stateFilePath(dir)), { recursive: true });
+    fs.writeFileSync(
+      stateFilePath(dir),
+      JSON.stringify(
+        {
+          ...fixture({ totalStepCount: 9, bestFitnessScore: 40, acceptedStepCount: 4 }),
+          history: [
+            {
+              stepNumber: 2,
+              score: 40,
+              status: "ACCEPTED",
+              commitHash: "abc123",
+              deltaPercent: 25,
+              timestamp: 5,
+            },
+          ],
+          bestStep: 2,
+          lastCommitHash: "abc123",
+          session: {
+            runId: "run-old",
+            baseRef: "main",
+            status: "accepted",
+            currentStep: 2,
+            baseline: null,
+            bestScore: 40,
+            bestStep: 2,
+            history: [],
+            lock: null,
+            lastError: null,
+            lastUpdatedAt: 9,
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    // A re-baseline (runBaseline) writes a FULLY fresh PerfGymState: the
+    // heritage fields and the old blob are absent from memory and must be
+    // gone from disk — a dead session must not leak through merge-on-flush.
+    saveSession(dir, fixture({ bestFitnessScore: 0, acceptedStepCount: 0, totalStepCount: 0 }));
+
+    const disk = JSON.parse(fs.readFileSync(stateFilePath(dir), "utf8")) as Record<string, unknown>;
+    expect(disk.history).toBeUndefined();
+    expect(disk.bestStep).toBeUndefined();
+    expect(disk.lastCommitHash).toBeUndefined();
+    expect(disk.session).toBeUndefined();
+    expect(disk.totalStepCount).toBe(0);
   });
 });

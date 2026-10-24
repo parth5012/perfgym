@@ -722,6 +722,28 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
     expect(md.text).toContain("1700000000500");
   });
 
+  it("status renders without crashing when a persisted timestamp is corrupted (F6)", async () => {
+    const dir = track(setupGymDir());
+    seedLiveSession(dir, {
+      lock: { pid: 4321, runId: "run-live", startTime: 99, heartbeat: 1700000000500 },
+      lastUpdatedAt: 1700000000100,
+    });
+
+    // Corrupt the stamps on disk (a raw write — beyond what the types admit,
+    // exactly what a hand-edited or third-party-corrupted file looks like).
+    const stateFilePath = path.join(dir, ".perfgym", "state.json");
+    const raw = JSON.parse(fs.readFileSync(stateFilePath, "utf8")) as Record<string, unknown>;
+    raw.lastUpdatedAt = "garbage";
+    const rawSession = raw.session as Record<string, unknown> | undefined;
+    if (rawSession) rawSession.lastUpdatedAt = "garbage";
+    fs.writeFileSync(stateFilePath, JSON.stringify(raw), "utf8");
+
+    const md = await runStatusCommand({ cwd: dir, format: "markdown" });
+    expect(md.failed).toBe(false);
+    // The invalid date is DROPPED from the markdown, not a RangeError.
+    expect(md.text).not.toContain("Invalid time value");
+  });
+
   it("status falls back to legacy rendering when no live session is present", async () => {
     const dir = track(setupGymDir());
     saveSession(dir, {

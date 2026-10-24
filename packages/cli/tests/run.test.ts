@@ -26,7 +26,7 @@ invariants:
   command: "node -e 'process.exit(0)'"
 metrics:
   - name: "instructions"
-    command: "node -e 'const fs = require(\\\"fs\\\"); const txt = fs.readFileSync(\\\"src/index.ts\\\", \\\"utf8\\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
+    command: "node -e 'const fs = require(\\"fs\\"); const txt = fs.readFileSync(\\"src/index.ts\\", \\"utf8\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
     goal: "minimize"
     weight: 1
     unit: "count"
@@ -244,7 +244,7 @@ invariants:
   command: "node -e 'process.exit(0)'"
 metrics:
   - name: "instructions"
-    command: "node -e 'const fs = require(\\\"fs\\\"); const txt = fs.readFileSync(\\\"src/index.ts\\\", \\\"utf8\\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
+    command: "node -e 'const fs = require(\\"fs\\"); const txt = fs.readFileSync(\\"src/index.ts\\", \\"utf8\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
     goal: "minimize"
     weight: 1
     unit: "count"
@@ -304,6 +304,68 @@ metrics:
     // Verify file content in target branch/cwd has the winning mutation
     const finalContent = fs.readFileSync(path.join(testDir, "src", "index.ts"), "utf8");
     expect(finalContent).toContain("value: 70");
+  });
+
+  it("records the winning iteration as state.bestStep at promotion (F3)", async () => {
+    const configYaml = `
+version: "1.0"
+target:
+  name: "promotion-test"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "instructions"
+    command: "node -e 'const fs = require(\\"fs\\"); const txt = fs.readFileSync(\\"src/index.ts\\", \\"utf8\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
+    goal: "minimize"
+    weight: 1
+    unit: "count"
+`;
+    fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), configYaml, "utf8");
+    fs.writeFileSync(path.join(testDir, "src", "index.ts"), "// value: 100\nexport let count = 0;\n", "utf8");
+    execFileSync("git", ["add", "-A"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "add config"], { cwd: testDir, stdio: "ignore" });
+
+    saveSession(testDir, {
+      version: "1.0",
+      initializedAt: Date.now(),
+      updatedAt: Date.now(),
+      targetName: "session-loop",
+      baselineMetrics: { instructions: 100 },
+      invariantsPassed: true,
+      bestFitnessScore: 0,
+      acceptedStepCount: 0,
+      totalStepCount: 0,
+    });
+
+    // Step 1 improves to 85 (accepted); step 2 regresses. The best is
+    // achieved at iteration 1 — promotion must persist bestStep, not just
+    // bestFitnessScore.
+    let currentStep = 0;
+    const mutations = [
+      "// value: 85\nexport let count = 1;\n",
+      "// value: 95\nexport let count = 2;\n",
+    ];
+    const generator: MutationGenerator = async () => {
+      const code = mutations[currentStep] ?? mutations[mutations.length - 1];
+      currentStep++;
+      return [{ relPath: "src/index.ts", content: code }];
+    };
+
+    const res = await runOptimizationLoop({
+      cwd: testDir,
+      maxIterations: 2,
+      generator,
+      samples: 2,
+    });
+    expect(res.acceptedCount).toBe(1);
+    expect(res.promoted).toBe(true);
+
+    const state = JSON.parse(
+      fs.readFileSync(path.join(testDir, ".perfgym", "state.json"), "utf8"),
+    ) as { bestStep?: number };
+    expect(state.bestStep).toBe(1);
   });
 
   it("auto-terminates when plateauing over 3 consecutive steps", async () => {

@@ -13,6 +13,8 @@ interface FixtureState {
   version: string;
   totalStepCount: number;
   history: string[];
+  bestStep?: number | null;
+  lastCommitHash?: string;
   rival?: string;
   lastUpdatedAt?: number;
 }
@@ -168,5 +170,59 @@ describe("SessionFileStore (Ticket #46 — write-through session state)", () => 
 
     const reader = SessionFileStore.load<FixtureState>({ filePath, initial, now: () => clock });
     expect(reader.getState().lastUpdatedAt).toBe(1500);
+  });
+
+  it("deletes tracked keys the memory dropped; a late-arriving foreign key survives (F1)", () => {
+    const { filePath } = makeDir();
+    writeDisk(filePath, {
+      version: "1.0",
+      totalStepCount: 9,
+      history: ["s1", "s2", "s3"],
+      bestStep: 2,
+      lastCommitHash: "abc123",
+      session: { runId: "run-old", status: "accepted" },
+    });
+
+    const store = SessionFileStore.load<FixtureState>({ filePath, initial });
+    expect(store.getState().bestStep).toBe(2);
+
+    // A concurrent writer adds a field AFTER our load — a key this store
+    // never saw in its own memory. It must survive the merge untouched.
+    const diskNow = readDisk(filePath);
+    writeDisk(filePath, { ...diskNow, rival: "other-process" });
+
+    // A re-baseline: a wholesale save of a fully fresh legacy session. The
+    // heritage fields and the old `session` blob are deliberately GONE from
+    // memory (a fresh `PerfGymState` / `legacyStateCopy`) — they must die on
+    // disk too, not survive via the disk spread.
+    store.save({ version: "1.0", totalStepCount: 0, history: [] });
+
+    const disk = readDisk(filePath);
+    expect(disk.totalStepCount).toBe(0);
+    expect(disk.history).toEqual([]);
+    expect(disk.bestStep).toBeUndefined();
+    expect(disk.lastCommitHash).toBeUndefined();
+    expect(disk.session).toBeUndefined();
+    expect(disk.rival).toBe("other-process");
+  });
+
+  it("a key set to undefined in memory is deleted from the merged disk state (F1)", () => {
+    const { filePath } = makeDir();
+    writeDisk(filePath, {
+      version: "1.0",
+      totalStepCount: 9,
+      history: ["s1"],
+      lastCommitHash: "abc123",
+    });
+
+    const store = SessionFileStore.load<FixtureState>({ filePath, initial });
+    store.update((prev) => ({ ...prev, lastCommitHash: undefined }));
+    store.flush();
+
+    const disk = readDisk(filePath);
+    // `JSON.stringify` strips undefined — the merge must not resurrect the
+    // disk value from the previous flush.
+    expect(disk.lastCommitHash).toBeUndefined();
+    expect(disk.totalStepCount).toBe(9);
   });
 });
