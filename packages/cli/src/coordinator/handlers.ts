@@ -6,7 +6,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { BenchmarkDistribution, LintViolation, MetricResult, MutationFile, NegativeMemoryEntry, LlmUsage } from "../../../core/src/index.js";
+import type { BenchmarkDistribution, LintViolation, MetricResult, MutationFile, NegativeMemoryEntry, LlmUsage, StepEvaluation, SessionLockState, SessionStatus } from "../../../core/src/index.js";
 import type { AstRule } from "../../../linter/src/index.js";
 import type { PerfGymState } from "../engine.js";
 
@@ -52,6 +52,35 @@ export interface StatusReport {
   readonly llmUsage?: LlmUsage;
   readonly lockState: LockStateReport;
   readonly targetName?: string;
+  /**
+   * The `lastUpdatedAt` stamp of the state file (#46/#48): a reader can tell
+   * HOW stale this snapshot is instead of trusting a silent one.
+   */
+  readonly lastUpdatedAt: number | null;
+  /**
+   * The serialized live-session report (#48): the run in progress (or the
+   * last completed/completed-with-error run) as recorded by the live
+   * SessionStore — `null` when the state file carries no live session.
+   */
+  readonly liveSession: LiveSessionReport | null;
+}
+
+/**
+ * The live-session surface of a status report (#48): the TanStack
+ * SessionStore view serialized into the state file's `session` blob.
+ */
+export interface LiveSessionReport {
+  readonly status: SessionStatus;
+  readonly runId: string;
+  readonly baseRef: string;
+  readonly currentStep: number;
+  readonly bestScore: number | null;
+  readonly bestStep: number | null;
+  readonly lastUpdatedAt: number;
+  readonly lock: SessionLockState | null;
+  readonly lastError: string | null;
+  /** The recorded step evaluations in order — the status-table source. */
+  readonly history: readonly StepEvaluation[];
 }
 
 export interface BaselineOutcome {
@@ -154,7 +183,6 @@ export interface CoordinatorState extends PerfGymState {
   history?: StepHistoryEntry[];
   currentMetrics?: Record<string, number>;
   metricDeltas?: Record<string, number>;
-  bestStep?: number;
   baselineCommit?: string;
 }
 

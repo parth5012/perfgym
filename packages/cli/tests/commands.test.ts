@@ -13,7 +13,8 @@ import {
   parseStepNumber,
   resolveTargetGlobs,
 } from "../src/commands/lifecycle.js";
-import { saveSession } from "../src/engine.js";
+import { saveSession, saveLiveSession } from "../src/engine.js";
+import { initialSessionState, serializeSessionState } from "../../core/src/index.js";
 
 const STATE_FILE = path.join(".perfgym", "state.json");
 
@@ -623,6 +624,141 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
   });
 
   // --- F3 --------------------------------------------------------------------
+  // --- Ticket #48: live-session status surface -------------------------------
+  /** A full evaluation fixture with the -Infinity score of a rejected step. */
+  const liveEvaluation = (iteration: number, accepted: boolean) => ({
+    iteration,
+    fitnessScore: accepted ? 22 : -Infinity,
+    accepted,
+    isSignificant: accepted,
+    deltaPercent: accepted ? 10 : -2,
+    invariants: { passed: true, output: "ok", durationMs: 40 },
+    violations: [],
+    metrics: [
+      { name: "instructions", value: accepted ? 90 : 105, unit: "count", improved: accepted, deltaPercent: accepted ? 10 : -2 },
+    ],
+    executionTimeMs: 120,
+  });
+
+  const seedLiveSession = (
+    dir: string,
+    overrides: Record<string, unknown> = {},
+  ): void => {
+    saveSession(dir, {
+      version: "1.0",
+      initializedAt: 1,
+      updatedAt: 2,
+      targetName: "commands-test",
+      baselineMetrics: { instructions: 100 },
+      invariantsPassed: true,
+      bestFitnessScore: 22,
+      bestStep: 1,
+      acceptedStepCount: 1,
+      totalStepCount: 2,
+      currentMetrics: { instructions: 90 },
+      metricDeltas: { instructions: -10 },
+      history: [],
+    } as unknown as Parameters<typeof saveSession>[1]);
+
+    const live = {
+      ...initialSessionState,
+      runId: "run-live",
+      baseRef: "main",
+      status: "completed" as const,
+      currentStep: 2,
+      bestScore: 22,
+      bestStep: 1,
+      history: [liveEvaluation(1, true), liveEvaluation(2, false)],
+      lock: { pid: 4321, runId: "run-live", startTime: 100, heartbeat: 1700000000500 },
+      lastError: null,
+      lastUpdatedAt: 1700000000100,
+      ...overrides,
+    };
+    saveLiveSession(dir, serializeSessionState(live as Parameters<typeof serializeSessionState>[0]));
+  };
+
+  it("status markdown renders the step-history table from the live session", async () => {
+    const dir = track(setupGymDir());
+    seedLiveSession(dir);
+
+    const stateBefore = readStateBytes(dir);
+    const res = await runStatusCommand({ cwd: dir, format: "markdown" });
+    expect(res.failed).toBe(false);
+    expect(res.exitCode).toBe(0);
+
+    // The #47 renderer output: box-drawn table with its headers.
+    expect(res.text).toContain("Iter");
+    expect(res.text).toContain("Fitness");
+    expect(res.text).toContain("ACCEPTED");
+    expect(res.text).toContain("┌");
+
+    // Criterion 3: status NEVER writes the state file.
+    expect(readStateBytes(dir)).toBe(stateBefore);
+  });
+
+  it("status surfaces the last-updated timestamp and the serialized lock heartbeat", async () => {
+    const dir = track(setupGymDir());
+    seedLiveSession(dir, {
+      lock: { pid: 4321, runId: "run-live", startTime: 99, heartbeat: 1700000000500 },
+      lastUpdatedAt: 1700000000100,
+    });
+
+    const doc = JSON.parse((await runStatusCommand({ cwd: dir, format: "json" })).text) as {
+      lastUpdatedAt?: unknown;
+      liveSession?: {
+        lastUpdatedAt: number;
+        lock: { heartbeat: number; runId: string } | null;
+      } | null;
+    };
+
+    // Criterion 4: a stale snapshot is visibly stale.
+    expect(doc.liveSession?.lastUpdatedAt).toBe(1700000000100);
+    expect(doc.liveSession?.lock?.heartbeat).toBe(1700000000500);
+    expect(doc.liveSession?.lock?.runId).toBe("run-live");
+
+    const md = await runStatusCommand({ cwd: dir, format: "markdown" });
+    expect(md.text).toMatch(/Last updated/i);
+    expect(md.text).toContain("1700000000100");
+    expect(md.text).toContain("1700000000500");
+  });
+
+  it("status falls back to legacy rendering when no live session is present", async () => {
+    const dir = track(setupGymDir());
+    saveSession(dir, {
+      version: "1.0",
+      initializedAt: 1,
+      updatedAt: 2,
+      targetName: "commands-test",
+      baselineMetrics: { instructions: 100 },
+      invariantsPassed: true,
+      bestFitnessScore: 22,
+      acceptedStepCount: 1,
+      totalStepCount: 2,
+      currentMetrics: { instructions: 90 },
+      metricDeltas: { instructions: -10 },
+      history: [
+        {
+          stepNumber: 1,
+          score: 22,
+          status: "ACCEPTED",
+          commitHash: "abc123",
+          deltaPercent: 10,
+          timestamp: 3,
+        },
+      ],
+    } as unknown as Parameters<typeof saveSession>[1]);
+
+    const res = await runStatusCommand({ cwd: dir, format: "markdown" });
+    expect(res.failed).toBe(false);
+    // The legacy bullet list still drives the history rendering.
+    expect(res.text).toContain("Step 1 — ACCEPTED");
+    // The live-session block stays honestly null.
+    const doc = JSON.parse((await runStatusCommand({ cwd: dir, format: "json" })).text) as {
+      liveSession?: unknown;
+    };
+    expect(doc.liveSession ?? null).toBeNull();
+  });
+
   it("the sandbox driver boundary follows the configured target.files", () => {
     const configuredDir = track(setupGymDir());
     // Patch the config to a non-src target so the fallback would be wrong.

@@ -1071,3 +1071,181 @@ describe("McpServerCoordinator round-3 fixes (R1–R8)", () => {
   // --- R8 (imports-free check lives in commands.test.ts) ---------------------
 });
 
+describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
+  let testDir: string;
+  let lockDir: string;
+  let driver: InMemorySandboxDriver;
+  let sandbox: GitSandboxCoordinator;
+  let coordinator: McpServerCoordinator;
+  let config: PerfGymConfig;
+  let makeConfig: (value: number) => PerfGymConfig;
+
+  beforeEach(() => {
+    testDir = path.join(
+      tmpdir(),
+      `perfgym-coord-live-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    );
+    fs.mkdirSync(testDir, { recursive: true });
+    lockDir = path.join(testDir, ".perfgym", ".lock.d");
+
+    makeConfig = (value: number): PerfGymConfig => ({
+      version: "1.0",
+      target: { name: "live-target", language: "typescript", files: ["src/**/*.ts"] },
+      invariants: { command: "node -e 'process.exit(0)'", timeoutMs: 5000 },
+      metrics: [
+        {
+          name: "latency",
+          command: `node -e 'console.log(JSON.stringify({ value: ${value} }))'`,
+          goal: "minimize",
+          weight: 1,
+          unit: "ms",
+        },
+      ],
+    });
+    config = makeConfig(100);
+
+    fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), stringifyYaml(config), "utf8");
+
+    driver = new InMemorySandboxDriver({
+      allowedGlobs: ["src/**/*.ts"],
+      initialFiles: { "src/index.ts": "export const value = 1;\n" },
+    });
+    sandbox = new GitSandboxCoordinator(driver, { lockDir, repoRoot: testDir });
+    coordinator = new McpServerCoordinator({ rootDir: testDir, sandbox, driver, config });
+  });
+
+  afterEach(async () => {
+    if (sandbox.isLocked()) await sandbox.release();
+    try {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  const liveBlob = (dir: string): Record<string, unknown> => {
+    const doc = JSON.parse(
+      fs.readFileSync(path.join(dir, ".perfgym", "state.json"), "utf8"),
+    ) as Record<string, unknown>;
+    return (doc.session as Record<string, unknown>) ?? {};
+  };
+
+  it("handleStep records the session store transitions and serializes the acquired lock (P2)", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+    expect(liveBlob(testDir).status).toBe("idle"); // baseline completed
+    // Release the baseline's lock so handleStep has to acquire FRESH — that
+    // is the acquire whose metadata must be serialized (P2).
+    await sandbox.release();
+
+    coordinator.updateConfig(makeConfig(50));
+    await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
+      samples: 2,
+    });
+
+    const session = liveBlob(testDir);
+    expect(session.status).toBe("accepted");
+    expect(session.bestScore).toBe(50); // +50% delta from a 100 baseline
+    expect(session.bestStep).toBe(1);
+    expect((session.history as unknown[]).length).toBe(1);
+
+    // P2 + S2: the lock metadata of the ALREADY-ACQUIRED sandbox lock is
+    // serialized into the state file — and the snapshot mirrors the REAL
+    // lockfile metadata, it never guesses.
+    const realMeta = JSON.parse(
+      fs.readFileSync(path.join(lockDir, "metadata.json"), "utf8"),
+    ) as { pid: number; runId: string };
+    expect(session.lock).not.toBeNull();
+    expect((session.lock as { pid: number }).pid).toBe(realMeta.pid);
+    expect((session.lock as { runId: string }).runId).toBe(realMeta.runId);
+  });
+
+  it("handleStep marks a rejected step rolled back in the live history", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+    coordinator.updateConfig(makeConfig(150)); // regression → rejected
+
+    await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 3;\n" }],
+      samples: 2,
+    });
+
+    const session = liveBlob(testDir);
+    expect((session.history as Array<Record<string, unknown>>)[0].rolledBack).toBe(true);
+  });
+
+  it("handleStatus reports the live session, last-updated timestamp and lock heartbeat", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+    coordinator.updateConfig(makeConfig(50));
+    await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
+      samples: 2,
+    });
+
+    const stateFile = path.join(testDir, ".perfgym", "state.json");
+    const before = fs.readFileSync(stateFile, "utf8");
+    const status = await coordinator.handleStatus();
+
+    expect(status.lastUpdatedAt).toBeGreaterThan(0);
+    expect(status.liveSession).not.toBeNull();
+    expect(status.liveSession!.history).toHaveLength(1);
+    expect(status.liveSession!.history[0].accepted).toBe(true);
+    expect(status.liveSession!.lastUpdatedAt).toBeGreaterThan(0);
+    expect(status.liveSession!.lock).not.toBeNull();
+    expect(status.liveSession!.lock!.runId).toBe((liveBlob(testDir).lock as { runId: string }).runId);
+
+    // Read-only invariant of #48: status never writes the state file.
+    expect(fs.readFileSync(stateFile, "utf8")).toBe(before);
+  });
+
+  it("handleRollback marks the session steps rolled back from the target and reconciles the best", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+
+    coordinator.updateConfig(makeConfig(40)); // step 1: +60% → 60
+    await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
+      samples: 2,
+    });
+    coordinator.updateConfig(makeConfig(50)); // step 2: +50% → 50
+    await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 5;\n" }],
+      samples: 2,
+    });
+
+    // Release the surrounding session lock: the rollback then performs its
+    // own acquire/release cycle, which the serialized snapshot must follow.
+    await sandbox.release();
+
+    await coordinator.handleRollback({ stepNumber: 2 });
+
+    const session = liveBlob(testDir);
+    const history = session.history as Array<Record<string, unknown>>;
+    expect(history[0].rolledBack).toBeUndefined();
+    expect(history[1].rolledBack).toBe(true);
+    // Reconciled best: the surviving accepted step, not the rolled-back one.
+    expect(session.bestStep).toBe(1);
+    expect(session.bestScore).toBe(60);
+
+    // The rollback acquired AND released the lock: the serialized lock clears.
+    expect(session.lock).toBeNull();
+  });
+
+  it("handleRollback clears the serialized lock when IT acquired and released it", async () => {
+    await coordinator.handleBaseline({ samples: 2 });
+    // A genuine improvement so the rollback target is an ACCEPTED step.
+    coordinator.updateConfig(makeConfig(50));
+    await coordinator.handleStep({
+      mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
+      samples: 2,
+    });
+
+    // Release the surrounding session lock first, so the rollback performs
+    // its own acquire/release cycle (F5) — the serialized snapshot must
+    // follow the real lock, i.e. end up cleared.
+    await sandbox.release();
+
+    await coordinator.handleRollback({ stepNumber: 1 });
+
+    expect(liveBlob(testDir).lock).toBeNull();
+  });
+});
+

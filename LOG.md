@@ -251,3 +251,14 @@ TECH_DEBT: stateless MCP shim now tears down its per-call GitWorktreeDriver + ev
 - Tests: new `packages/core/src/store/persist.test.ts`, `session.test.ts`, `packages/cli/tests/engine.test.ts`; migrated `tests/cli/engine.test.ts` + cli/mcp test fixtures to the new accessors.
 - Verification: `npx tsc --noEmit` clean; `npx vitest run` 37 files / 488 tests green. Affk engine.test.ts note: the "packages/cli/tests/engine.test.ts still passes" criterion file actually lives at `tests/cli/engine.test.ts` (both now pass).
 - Review init #46 to fix: B1 corrupt-file reset no longer fabricates a session — loadSession returns null for corrupt/absent (guards fire; store still resets cleanly, `sessionFileOutcome` exposes the signal, version aligned to "1.0"); B2 flush failures now surface as `SessionFlushError` (`Data.TaggedError`, ADR-018) with cause preserved. npx tsc --noEmit 0 errors; npx vitest run 37 files / 490 tests green.
+
+## Ticket #48 (#48) — 2026-10-24 — Done (uncommitted; orchestrator commits)
+- Status: Impl + review-fix pass on the 6 named smells (S1–S6); parked #7 (handleStatus non-completed → "running") untouched.
+- S1/S2: ONE reflective helper `reflectSessionLock(lockDir, isHeld, staleThresholdMs?)` in `packages/cli/src/live-session.ts` (wraps `toSessionLock(inspectLockState(...))`); all 4 snapshot sites (handleBaseline, handleStep, handleRollback acquire + release) route through it — coordinator via new private `serializeLock()` fed `this.sandbox.isLocked()`, no more guessed `locked=true`.
+- S3: `GitSandboxCoordinator.lockDirectory` getter added (core sandbox); run.ts dropped its second `.perfgym/.lock.d` literal.
+- S4: run-loop catch path now `live.setLock(serializeLock())` — blob mirrors the real lock when release fails instead of a lying null.
+- S5: `LiveSession.setBaseline()` added; handleBaseline calls through it (no `.store` chain).
+- S6: core serialize validator local `const status` renamed `asStatus` (param `raw`→`value`).
+- Tests (TDD): red first — run.test.ts "mirrors the REAL lockfile in a failed run's blob when the release fails" (vi.spyOn release → blob lock = process.pid + real runId); live-session.test.ts "reflects the REAL lockfile: holder metadata when held, never a guessed lock". Coordinator P2 test deepened: blob lock pid AND runId must equal disk metadata.json (S2 guard, green-under-refactor — hardcoded-true sites are only reached when the lock is genuinely held, so red was impossible there; noted honestly).
+- Verification: `npx tsc --noEmit` clean (0 errors); `npx vitest run` 40 files / 519 tests green (was 517, +2 new).
+- Not committed — orchestrator handles commit/close per workflow.
