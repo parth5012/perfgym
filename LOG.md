@@ -262,3 +262,16 @@ TECH_DEBT: stateless MCP shim now tears down its per-call GitWorktreeDriver + ev
 - Tests (TDD): red first — run.test.ts "mirrors the REAL lockfile in a failed run's blob when the release fails" (vi.spyOn release → blob lock = process.pid + real runId); live-session.test.ts "reflects the REAL lockfile: holder metadata when held, never a guessed lock". Coordinator P2 test deepened: blob lock pid AND runId must equal disk metadata.json (S2 guard, green-under-refactor — hardcoded-true sites are only reached when the lock is genuinely held, so red was impossible there; noted honestly).
 - Verification: `npx tsc --noEmit` clean (0 errors); `npx vitest run` 40 files / 519 tests green (was 517, +2 new).
 - Not committed — orchestrator handles commit/close per workflow.
+
+## Map 9 (#47) — 2026-10-24 — Done (commit dc3c914)
+- Status: `renderStepTable` in `packages/core/src/store/render.ts` draws box-drawing tables from the headless TanStack `Table<StepTableRow>` — no new dependency. Headers from `stepTableColumns` (exact-match assertion), computed widths, numeric columns right-aligned, empty history → "No steps recorded yet.".
+- Mapping layer: `formatMetricToken` collapses `±Infinity`/`NaN` to a bare `-` BEFORE rendering (toFixed(-Infinity) would leak "-Infinity"); non-finite deltas render a bare `-` (not `-%`). `createStepHistoryTable` seeds `columnPinning`/`columnVisibility` defaults so TanStack's header-group memo survives (pre-existing crash on `{}` state).
+- Tests: `render.test.ts` — 3-step + empty inline snapshots, header match, Infinity/NaN leak, mapping-layer token, right-alignment.
+- Verification: tsc clean; full suite 38 files / 496 green after the two review nits (fixture/snapshot delta mismatch fixed: eval 3 now carries `metrics[0].deltaPercent: 5.3` → snapshot `+5.3%`; %-suffix token fix above).
+- Self-review: 1 iteration, zero blockers (standards + spec axes); OCR unavailable this run.
+
+## Map 9 (#69) ship — 2026-10-24 — PR #83 filed (branch wf/9-live-session-state)
+- Phase 2 AFK: all 3 tickets done in frontier order (#46 e5e5190 → #47 dc3c914 → #48 b363cd9). Single-PR mode (3 < 5 code-changing tickets).
+- Self-review totals: iterations used 1/1/2 (#46/#47/#48) of the 3-cap; blocker findings 4, all fixed; parked verbatim → in ticket comments: #46 "TanStack SessionStore→engine fusion + flush-on-lock" (fused by #48), #48 "handleStatus crashed-run → 'running'" (follow-up ticket needed). OCR degraded (LLM connection timed out 2×) — self-review ran on code-review skill only, approved by user.
+- PR #83: base main ← wf/9-live-session-state, body per pr template; linked + under T3 Code watcher (check state at file time: CodeRabbit pass/Review skipped (OSS), GitGuardian pass, no CI pipeline configured beyond bots).
+- Map #69 updated (Decisions so far), all tickets closed `completed`. NOT MERGED — handoff to merge-pr / human.
