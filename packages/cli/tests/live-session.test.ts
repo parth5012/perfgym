@@ -173,4 +173,48 @@ describe("LiveSession wiring (Ticket #48)", () => {
     // to null: a snapshot must never claim a lock that does not exist.
     expect(reflectSessionLock(path.join(dir, "no-such-lock-dir"), false, 30_000)).toBeNull();
   });
+
+  it("keeps the cached instance while the durable blob is unchanged (CR5a)", () => {
+    seedLegacy();
+    const first = liveSessionFor(dir);
+    expect(liveSessionFor(dir)).toBe(first);
+    // This instance's OWN flushes must not trigger a spurious refresh.
+    first.setLock(null);
+    expect(liveSessionFor(dir)).toBe(first);
+  });
+
+  it("re-reads from disk when another process wrote a newer blob — its history survives (CR5b)", () => {
+    seedLegacy();
+    const cached = liveSessionFor(dir);
+    cached.recordStep(stepEvaluation(1, true, 10)); // history H1, flushed
+    expect(liveSessionFor(dir)).toBe(cached);
+
+    // Simulate a SECOND process (a CLI `perfgym run`): it writes its own newer
+    // blob (history H2) straight into the durable file, outside this
+    // process's live-session module (acceptance-criteria-2 pattern).
+    const doc = JSON.parse(fs.readFileSync(statePath(dir), "utf8")) as Record<string, unknown>;
+    const outsider = serializeSessionState({
+      ...initialSessionState,
+      runId: "run-x",
+      status: "accepted",
+      currentStep: 2,
+      history: [stepEvaluation(2, true, 6)],
+      bestScore: 6,
+      bestStep: 2,
+    }) as unknown as Record<string, unknown>;
+    doc.session = { ...outsider, lastUpdatedAt: Date.now() + 5_000 };
+    fs.writeFileSync(statePath(dir), JSON.stringify(doc), "utf8");
+
+    // The cache is now stale: liveSessionFor must discard it and re-read.
+    const refreshed = liveSessionFor(dir);
+    expect(refreshed).not.toBe(cached);
+    expect(refreshed.state.history.map((entry) => entry.iteration)).toEqual([2]);
+
+    // The NEXT flush persists H2 (plus the new step) — never a reset to H1.
+    refreshed.recordStep(stepEvaluation(3, true, 8));
+    const flushedSession = (readFileState(dir).session ?? {}) as {
+      history?: Array<{ iteration: number }>;
+    };
+    expect(flushedSession.history?.map((entry) => entry.iteration)).toEqual([2, 3]);
+  });
 });

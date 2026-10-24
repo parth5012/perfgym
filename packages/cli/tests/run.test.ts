@@ -170,6 +170,36 @@ metrics:
     expect(lock!.pid).toBe(process.pid);
     expect(typeof lock!.runId).toBe("string");
   });
+
+  it("a live-session flush failure in the error path never replaces the real run error", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const generator: MutationGenerator = async () => {
+      // The sabotage replaces the durable state file with a DIRECTORY: the
+      // write-through flush's atomic rename then fails on every subsequent
+      // persistence — including the one the error handler performs.
+      const stateFilePath = path.join(testDir, ".perfgym", "state.json");
+      fs.rmSync(stateFilePath);
+      fs.mkdirSync(stateFilePath);
+      throw new Error("mutation blew up");
+    };
+
+    try {
+      await expect(
+        runOptimizationLoop({
+          cwd: testDir,
+          maxIterations: 1,
+          generator,
+          samples: 1,
+        }),
+      ).rejects.toThrow("mutation blew up");
+      // The flush failure was surfaced as a warning, not swallowed silently.
+      expect(
+        consoleSpy.mock.calls.some((call) => String(call[0]).includes("Could not persist the live session")),
+      ).toBe(true);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
 });
 
 describe("Autonomous Hill-Climbing Loop (perfgym run - Ticket #20)", () => {

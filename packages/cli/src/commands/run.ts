@@ -509,8 +509,16 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     // visible for the next `perfgym status`, and the blob mirrors the REAL
     // lock — if the release above failed the lockfile is still held, and the
     // reflective snapshot says so instead of a hardcoded null (S2/S4).
-    live.recordError(err instanceof Error ? err.message : String(err));
-    live.setLock(serializeLock());
+    // The persistence itself must never REPLACE a failed run's own error
+    // (CR2): a flush failure (e.g. ENOSPC/EPERM) is reported like the
+    // negative-memory save below, and the original `err` is still thrown.
+    try {
+      live.recordError(err instanceof Error ? err.message : String(err));
+      live.setLock(serializeLock());
+    } catch (flushErr: unknown) {
+      const message = flushErr instanceof Error ? flushErr.message : String(flushErr);
+      console.error(chalk.yellow(`⚠ Could not persist the live session: ${message}`));
+    }
     throw err;
   } finally {
     // The negative memory must survive EVERY exit path — the normal end, the
