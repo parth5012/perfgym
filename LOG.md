@@ -238,3 +238,8 @@
 - [Ticket #44 review] Fixed F1-F4 (strict --to-step parsing, full benchmark markdown distribution, config-driven driver globs, awaited async lifecycle actions) + F5 status side-effect assertions; 465/465 green, tsc clean, unstaged.
 
 TECH_DEBT: stateless MCP shim now tears down its per-call GitWorktreeDriver + eval branch (B1); CLI lifecycle commands keep their worktrees by design (persisted session state; restore-content contract test pins one remaining worktree) — if a future map wants CLI teardown, extend teardownCallDriver.
+
+## Map 8 (#68) — 2026-10-24 — Done
+- Status: PR #82 filed (t3/03508b09 → main, 6 commits incl. 2 review-fix batches), all checks green, review bots reported (CodeRabbit 8 findings + parthpr 1 → all fixed; 2 regressions in fix batch self-caught → fixed in d0333e7).
+- Babysit ended on user request: watch removed. NOT MERGED — hand off to merge-pr (single PR, no stack).
+- Parked: CLI lifecycle commands intentionally keep sandbox worktrees (persisted session state; pinned by restore-content test).
