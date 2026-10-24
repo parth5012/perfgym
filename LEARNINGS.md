@@ -118,3 +118,13 @@
 * **Problem**: Windows backslashes (`\`) cause POSIX-style glob matchers to fail when matching discovered candidate files against `config.target.files`.
 * **Solution**: Normalize all relative paths with `relPath.split(path.sep).join("/")` before evaluating against target globs.
 
+
+## TanStack Table Headless Model Edge Case (Map 9, #47)
+
+### 5. `createTable` Crashes on Empty `state: {}`
+* **Problem**: TanStack Table's headless `createTable` dereferences `columnPinning.left/right` inside the header-group memo — passing `time: {} as TableState` (as the pre-#47 code did) threw when deriving headers, surface the crash the first time the renderer actually consumed the model.
+* **Solution**: Seed only the defaults the headless model needs: `columnOrder: [], columnPinning: { left: [], right: [] }, columnVisibility: {}`. A double-cast (`as unknown as TableState`) is unavoidable today and is comment-anchored to the ticket.
+
+### 6. Writing `-Infinity` with `toFixed` Leaks into UI Strings
+* **Problem**: `(-Infinity).toFixed(2)` returns the string `"-Infinity"`, and appending a suffix map (e.g. `%`) after a substitution token produces half-substituted tokens like `-%`.
+* **Solution**: Normalize non-finite metrics to a bare `-` token at the *mapping layer* (before rendering — never let a rendered suffix follow a substitution token), and assert with UI-level leak tests (`output not.toContain("Infinity"|"NaN"|"-%")`), not just mapping assertions.
