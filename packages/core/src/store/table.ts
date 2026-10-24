@@ -55,6 +55,17 @@ export const stepTableColumns = [
   }),
 ];
 
+/**
+ * Dependency-free numeric display token (Ticket #47): non-finite numbers
+ * (±Infinity, NaN) collapse to "-" so they never leak into the CLI/report.
+ */
+export function formatMetricToken(value: number, digits: number, prefix = ""): string {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+  return `${prefix}${value.toFixed(digits)}`;
+}
+
 export function mapEvaluationsToTableRows(evaluations: readonly StepEvaluation[]): StepTableRow[] {
   return evaluations.map((ev) => {
     let status: StepTableRow["status"] = ev.accepted ? "ACCEPTED" : "REJECTED";
@@ -64,11 +75,14 @@ export function mapEvaluationsToTableRows(evaluations: readonly StepEvaluation[]
 
     const firstMetric = ev.metrics[0];
     const deltaVal = firstMetric?.deltaPercent ?? 0;
-    const deltaStr = `${deltaVal >= 0 ? "+" : ""}${deltaVal.toFixed(1)}%`;
+    // A non-finite metric renders as a bare "-" token — appending the percent
+    // suffix to a substitution token would leak "-%" into the UI.
+    const deltaToken = formatMetricToken(deltaVal, 1, deltaVal >= 0 ? "+" : "");
+    const deltaStr = deltaToken === "-" ? "-" : `${deltaToken}%`;
 
     return {
       iteration: ev.iteration,
-      score: ev.fitnessScore.toFixed(2),
+      score: formatMetricToken(ev.fitnessScore, 2),
       deltaPercent: deltaStr,
       status,
       invariants: ev.invariants?.passed ? "PASS" : "FAIL",
@@ -81,7 +95,14 @@ export function mapEvaluationsToTableRows(evaluations: readonly StepEvaluation[]
 
 export function createStepHistoryTable(evaluations: readonly StepEvaluation[]): Table<StepTableRow> {
   const data = mapEvaluationsToTableRows(evaluations);
-  let state = {} as TableState;
+  // TanStack's header-group derivation dereferences columnPinning.left/right
+  // unguarded, so the headless table must start with the visibility/pinning
+  // defaults for a flat, unpinned column model (Ticket #47).
+  let state = {
+    columnOrder: [],
+    columnPinning: { left: [], right: [] },
+    columnVisibility: {},
+  } as unknown as TableState;
 
   return createTable({
     data,
