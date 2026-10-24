@@ -126,11 +126,23 @@ metrics:
     // flush last.
     const state = loadSession(dir);
     expect(state?.bestStep).toBe(1);
-    const doc = JSON.parse(fs.readFileSync(stateFilePath(dir), "utf8")) as {
+    let doc = JSON.parse(fs.readFileSync(stateFilePath(dir), "utf8")) as {
       session?: { history?: Array<{ iteration: number }>; bestStep?: number | null };
     };
     expect(doc.session?.history?.map((entry) => entry.iteration)).toEqual([1]);
     expect(doc.session?.bestStep).toBe(1);
+
+    // Step 2: 50 → 40 (minimize) — accepted step 2. Both iterations must survive in history.
+    fs.writeFileSync(path.join(dir, "src", "index.ts"), "// value: 40\nexport let count = 2;\n", "utf8");
+    const res2 = await runStep({ cwd: dir, files: ["src/index.ts"], samples: 1 });
+    expect(res2.success).toBe(true);
+    expect(res2.evaluation.accepted).toBe(true);
+
+    doc = JSON.parse(fs.readFileSync(stateFilePath(dir), "utf8")) as {
+      session?: { history?: Array<{ iteration: number }>; bestStep?: number | null };
+    };
+    expect(doc.session?.history?.map((entry) => entry.iteration)).toEqual([1, 2]);
+    expect(doc.session?.bestStep).toBe(2);
   });
 
   it("overwrites a corrupt state file with a parseable session on the next save", () => {

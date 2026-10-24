@@ -220,8 +220,13 @@ export class SessionFileStore<S extends object> {
     const baseRecord = this.base !== null ? (this.base as unknown as SessionFileState) : null;
     const deletedKeys = new Set<string>();
 
-    if (baseRecord === null) {
-      // base === null means clean-session reset, first write, or an unseeded store:
+    // Without a readable disk document there is nothing to merge into.
+    const writeAll = baseRecord === null || disk === null;
+
+    if (writeAll) {
+      // base === null or disk === null means clean-session reset, first write,
+      // unseeded store, or the on-disk file was deleted/unreadable:
+      // without a readable disk document there is nothing to merge into, so
       // everything in memory is ours and replaces whatever the file held.
       for (const key of memoryKeys) {
         if (memoryRecord[key] !== undefined) {
@@ -244,14 +249,13 @@ export class SessionFileStore<S extends object> {
       }
     }
 
-    const mergedRecord: SessionFileState =
-      baseRecord === null
-        ? { ...own }
-        : {
-            ...(disk as unknown as SessionFileState | null),
-          };
+    const mergedRecord: SessionFileState = writeAll
+      ? { ...own }
+      : {
+          ...(disk as unknown as SessionFileState),
+        };
 
-    if (baseRecord !== null) {
+    if (!writeAll) {
       for (const deletedKey of deletedKeys) {
         delete mergedRecord[deletedKey];
       }
