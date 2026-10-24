@@ -6,6 +6,7 @@
 export * from "./errors.js";
 export * from "./store/index.js";
 export * from "./store/table.js";
+export * from "./store/persist.js";
 export * from "./sandbox/driver.js";
 export * from "./sandbox/in-memory-driver.js";
 export * from "./sandbox/git-worktree-driver.js";

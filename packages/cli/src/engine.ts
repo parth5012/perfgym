@@ -15,6 +15,8 @@ import {
   type BenchmarkDistribution,
   type NegativeMemoryEntry,
   matchesGlob,
+  SessionFileStore,
+  type SessionLoadOutcome,
 } from "../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../linter/src/index.js";
 
@@ -30,6 +32,11 @@ export interface PerfGymState {
   acceptedStepCount: number;
   totalStepCount: number;
   lastCommitHash?: string;
+  /**
+   * Epoch milliseconds of the last write-through flush (Ticket #46). Additive:
+   * older readers that ignore this field keep working.
+   */
+  lastUpdatedAt?: number;
 }
 
 export type SupportedLanguage = "typescript" | "javascript" | "python" | "go" | "kotlin" | "rust";
@@ -284,21 +291,93 @@ const readFileIfPresent = (absolutePath: string): string | null => {
   }
 };
 
-export function readState(rootDir: string = process.cwd()): PerfGymState | null {
-  const stateFile = path.join(rootDir, STATE_PATH);
-  if (!fs.existsSync(stateFile)) return null;
-  try {
-    const raw = fs.readFileSync(stateFile, "utf8");
-    return JSON.parse(raw) as PerfGymState;
-  } catch {
-    return null;
-  }
+// ============================================================================
+// Session state accessors (Ticket #46)
+//
+// The SessionFileStore is the live state of a session and
+// `.perfgym/state.json` is the durable cross-process artifact. Every state
+// read/write goes through a store-backed accessor: reads construct (or reuse)
+// the store built from the file, writes mutate in memory and are flushed
+// atomically (temp file + rename) with a merge-on-write, so a field a
+// concurrent process has updated is never clobbered.
+// ============================================================================
+
+/** The absolute path of the durable session state file of a project root. */
+export const stateFilePath = (rootDir: string): string => path.join(rootDir, STATE_PATH);
+
+/**
+ * A clean, fresh session — the reset target when the durable file is corrupt
+ * (Ticket #46: a corrupt state file is handled, never fatal). This shape is
+ * what the STORE falls back to internally; the engine accessors never leak it
+ * to a caller as an initialized session (see `loadSession`).
+ */
+export const cleanPerfGymSession = (): PerfGymState => ({
+  version: "1.0",
+  initializedAt: Date.now(),
+  updatedAt: Date.now(),
+  targetName: "",
+  baselineMetrics: {},
+  invariantsPassed: false,
+  bestFitnessScore: 0,
+  acceptedStepCount: 0,
+  totalStepCount: 0,
+});
+
+/**
+ * One SessionFileStore per project root for the lifetime of the process: the
+ * live session state. The store is created WITHOUT reading the file — the
+ * first `loadSession` call does the durable read — so a `saveSession`
+ * without a prior load (e.g. `runBaseline` seeding a fresh session) performs
+ * a full overwrite.
+ */
+const sessionStores = new Map<string, SessionFileStore<PerfGymState>>();
+
+const sessionStoreFor = (rootDir: string): SessionFileStore<PerfGymState> => {
+  const filePath = stateFilePath(rootDir);
+  const cached = sessionStores.get(filePath);
+  if (cached) return cached;
+  const created = new SessionFileStore<PerfGymState>({
+    filePath,
+    initial: cleanPerfGymSession(),
+  });
+  sessionStores.set(filePath, created);
+  return created;
+};
+
+/**
+ * Load the session state of a project root.
+ *
+ * Returns null when the session was never initialized (no state file) AND
+ * when the durable file is corrupt: a corrupt file resets the underlying
+ * store to a clean session without crashing (#46), but it must never
+ * impersonate an initialized session — every "No baseline found" guard keeps
+ * firing, so `runStep` / the coordinator refuse to evaluate against a
+ * nonexistent baseline instead of silently overwriting the file.
+ */
+export function loadSession(rootDir: string = process.cwd()): PerfGymState | null {
+  const store = sessionStoreFor(rootDir);
+  const outcome = store.reload();
+  return outcome === "loaded" ? store.snapshot() : null;
 }
 
-export function writeState(rootDir: string = process.cwd(), state: PerfGymState): void {
-  const stateFile = path.join(rootDir, STATE_PATH);
-  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), "utf8");
+/**
+ * The corrupt-file signal of the durable session file (#46): observable
+ * without crashing. `"reset-corrupt"` means the file was unparseable and was
+ * handled by resetting the store to a clean session; `"absent"` means the
+ * session was never initialized; `"loaded"` means a real session exists.
+ */
+export function sessionFileOutcome(rootDir: string = process.cwd()): SessionLoadOutcome {
+  return sessionStoreFor(rootDir).reload();
+}
+
+/**
+ * Save session state (write-through): mutates the in-memory store and flushes
+ * atomically. The flush re-reads the durable file, merges the fields this
+ * process actually changed, stamps `lastUpdatedAt`, and renames a temp file
+ * over the target — a torn write is impossible.
+ */
+export function saveSession(rootDir: string = process.cwd(), state: PerfGymState): PerfGymState {
+  return sessionStoreFor(rootDir).save(state);
 }
 
 export interface InitOptions {
@@ -421,11 +500,11 @@ export async function runBaseline(options: BaselineOptions = {}): Promise<Baseli
     totalStepCount: 0,
   };
 
-  writeState(cwd, state);
+  const saved = saveSession(cwd, state);
 
   return {
     success: true,
-    state,
+    state: saved,
   };
 }
 
@@ -451,7 +530,7 @@ export interface StepResult {
 export async function runStep(options: StepOptions = {}): Promise<StepResult> {
   const cwd = options.cwd ?? process.cwd();
   const config = loadConfig(cwd);
-  const state = readState(cwd);
+  const state = loadSession(cwd);
 
   if (!state) {
     throw new Error("No baseline found in .perfgym/state.json. Run 'perfgym baseline' first.");
@@ -523,7 +602,7 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
     state.bestFitnessScore = evaluation.fitnessScore;
     state.acceptedStepCount += 1;
   }
-  writeState(cwd, state);
+  saveSession(cwd, state);
 
   // Negative memory — opt-in only, and only for a REJECTED step: the memory
   // holds failures, and an accepted step is not one. `perfgym step` discovers

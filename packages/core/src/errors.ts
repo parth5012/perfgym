@@ -137,6 +137,22 @@ export class LlmFatalError extends Data.TaggedError("LlmFatalError")<{
 }> {}
 
 /**
+ * ============================================================================
+ * Session State Errors
+ * ============================================================================
+ */
+
+export const ERR_SESSION_FLUSH = "ERR_SESSION_FLUSH";
+
+/** A durable session-state flush failed (ADR-018: typed error channels). */
+export class SessionFlushError extends Data.TaggedError("SessionFlushError")<{
+  readonly code: typeof ERR_SESSION_FLUSH;
+  readonly filePath: string;
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+/**
  * Union of all PerfGym domain errors
  */
 export type PerfGymDomainError =
@@ -155,4 +171,5 @@ export type PerfGymDomainError =
   | InsignificantDeltaError
   | UnknownDriverError
   | MissingApiKeyError
-  | LlmFatalError;
+  | LlmFatalError
+  | SessionFlushError;

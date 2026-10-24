@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { runOptimizationLoop } from "../src/commands/run.js";
-import { writeState } from "../src/engine.js";
+import { saveSession } from "../src/engine.js";
 import type { LlmDriver, LlmResult } from "../../core/src/index.js";
 import { MissingApiKeyError } from "../../core/src/index.js";
 
@@ -47,7 +47,7 @@ metrics:
     execFileSync("git", ["add", "-A"], { cwd: testDir, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "config"], { cwd: testDir, stdio: "ignore" });
 
-    writeState(testDir, {
+    saveSession(testDir, {
       version: "1.0",
       initializedAt: Date.now(),
       updatedAt: Date.now(),

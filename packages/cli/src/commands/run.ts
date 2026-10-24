@@ -31,8 +31,8 @@ import {
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../../linter/src/index.js";
 import {
   loadConfig,
-  readState,
-  writeState,
+  loadSession,
+  saveSession,
   runBaseline,
   loadNegativeMemory,
   recordNegativeMemory,
@@ -106,7 +106,7 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
   };
 
   const config = loadConfig(cwd);
-  let state = readState(cwd);
+  let state = loadSession(cwd);
 
   // Resolve driver configuration with precedence: CLI flag > .perfgym.yaml > default
   const resolvedDriverName = options.driver ?? config.llm?.driver ?? "api";
@@ -435,7 +435,7 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
       state.acceptedStepCount += acceptedCount;
       state.totalStepCount += evaluations.length;
       state.updatedAt = Date.now();
-      writeState(cwd, state);
+      saveSession(cwd, state);
     } else {
       log(chalk.yellow("\n⚠ No mutations improved fitness. Worktree torn down cleanly without changes."));
       await coordinator.release();

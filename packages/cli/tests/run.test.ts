@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { runOptimizationLoop, type MutationContext, type MutationGenerator } from "../src/commands/run.js";
-import { writeState } from "../src/engine.js";
+import { saveSession } from "../src/engine.js";
 
 describe("Autonomous Hill-Climbing Loop (perfgym run - Ticket #20)", () => {
   let testDir: string;
@@ -59,7 +59,7 @@ metrics:
     execFileSync("git", ["commit", "-m", "add config"], { cwd: testDir, stdio: "ignore" });
 
     // Establish baseline
-    writeState(testDir, {
+    saveSession(testDir, {
       version: "1.0",
       initializedAt: Date.now(),
       updatedAt: Date.now(),
@@ -131,7 +131,7 @@ metrics:
     execFileSync("git", ["add", "-A"], { cwd: testDir, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "add config"], { cwd: testDir, stdio: "ignore" });
 
-    writeState(testDir, {
+    saveSession(testDir, {
       version: "1.0",
       initializedAt: Date.now(),
       updatedAt: Date.now(),
@@ -217,7 +217,7 @@ metrics:
     execFileSync("git", ["add", "-A"], { cwd: testDir, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "initial commit"], { cwd: testDir, stdio: "ignore" });
 
-    writeState(testDir, {
+    saveSession(testDir, {
       version: "1.0",
       initializedAt: Date.now(),
       updatedAt: Date.now(),
