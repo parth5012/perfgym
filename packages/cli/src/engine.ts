@@ -659,8 +659,10 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
   }
   // The legacy snapshot never carries the `session` blob — the live-session
   // path owns it (Ticket #48), so a stale blob must not regress the file.
-  saveSession(cwd, legacyStateCopy(state));
+  // Take the handle first: saveSession drops the on-disk blob, and a later
+  // liveSessionFor would then re-read a blob-less file.
   const live = liveSessionFor(cwd);
+  saveSession(cwd, legacyStateCopy(state));
   live.recordStep(evaluation);
   if (!evaluation.accepted) {
     live.markStepRolledBack(evaluation.iteration);

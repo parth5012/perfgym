@@ -225,4 +225,31 @@ describe("SessionFileStore (Ticket #46 — write-through session state)", () => 
     expect(disk.lastCommitHash).toBeUndefined();
     expect(disk.totalStepCount).toBe(9);
   });
+
+  it("writes the full in-memory state when the disk document is missing or unreadable at flush", () => {
+    const { filePath } = makeDir();
+    writeDisk(filePath, {
+      version: "1.0",
+      totalStepCount: 5,
+      history: ["s1", "s2"],
+      baselineMetrics: { instr: 100 },
+    });
+
+    const store = SessionFileStore.load<FixtureState>({ filePath, initial });
+    expect(store.getState().totalStepCount).toBe(5);
+
+    // The disk document is removed (or corrupted) AFTER store loaded it:
+    fs.unlinkSync(filePath);
+
+    // Now an update occurs and flush runs:
+    store.update((prev) => ({ ...prev, totalStepCount: 6 }));
+    store.flush();
+
+    const disk = readDisk(filePath);
+    // Unchanged fields from memory MUST NOT be lost!
+    expect(disk.version).toBe("1.0");
+    expect(disk.totalStepCount).toBe(6);
+    expect(disk.history).toEqual(["s1", "s2"]);
+    expect(disk.baselineMetrics).toEqual({ instr: 100 });
+  });
 });

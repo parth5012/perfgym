@@ -305,8 +305,14 @@ Status: Done. Red→green TDD for the 4 testable CRs; 4 red tests confirmed fail
 - F10 (Scanner c3): removed redundant spread fallback in `persist.ts`.
 - Verification: `npx tsc --noEmit` clean (0 errors); `npx vitest run` 40 files / 532 tests green (was 524, +8 tests). Pushed to `origin/wf/9-live-session-state` (commit 51c7c6c). Checks green on PR #83.
 
-## PR #83 CodeRabbit outside-diff review fix — 2026-10-24 — Done
+## PR #83 CodeRabbit outside-diff review fix — 2026-10-24 — Done (commit cdbc311)
 - Status: Done. Addressed CodeRabbit finding on `sessionStatus` derivation in `packages/cli/src/coordinator/index.ts`.
 - Fix: only `completed` is derived directly from `liveSession.status`; all other live statuses (accepted, rejected, idle, or a crashed mutating/evaluating step) map to `running` only if `this.sandbox.isLocked()` or `(lockReport.locked && !lockReport.isStale)` (active lock held), and `idle` when no active lock is held.
 - Tests: updated `coordinator.test.ts` to assert `running` while lock is held, `idle` once lock is released, and added test asserting `completed` when liveSession is completed and `idle` when mutating with no lock held.
-- Verification: `npx tsc --noEmit` clean (0 errors); vitest coordinator test suite passes (35/35).
+- Verification: `npx tsc --noEmit` clean (0 errors); vitest coordinator test suite passes (35/35). Pushed to `origin/wf/9-live-session-state` (commit cdbc311). All PR checks passed green.
+
+## PR #83 CodeRabbit review fixes (r4367203307 & r4367203315) — 2026-10-24 — Done
+- Status: Done. Red→green TDD for both findings; full test suite 40 files / 534 tests green (+2 new tests).
+- Finding 1 (r4367203307, `engine.ts` runStep live-session ordering): Obtain `liveSessionFor(cwd)` before `saveSession(cwd, legacyStateCopy(state))`. Since `saveSession` strips the `session` blob, an after-the-save `liveSessionFor` in a fresh process would re-read a blob-less file and drop previous step history. Now the live session handle is captured first so subsequent steps retain all prior history entries in `session.history`. Test: `packages/cli/tests/engine.test.ts` runs 2 sequential `runStep` calls and verifies `[1, 2]` are preserved in `session.history`.
+- Finding 2 (r4367203315, `persist.ts` missing/unreadable disk document on flush): In `SessionFileStore.flush()`, when `disk === null` (file missing or corrupted after initial load/seed), selective diffing against disk is skipped and the full in-memory state is written atomically (`writeAll = baseRecord === null || disk === null`). Prevents loss of unchanged fields (e.g. `version`, `history`, `baselineMetrics`) when flushing to a newly missing or corrupt file. Test: `packages/core/src/store/persist.test.ts` unlinks disk file after initial load, mutates state, flushes, and verifies all fields are preserved.
+- Verification: `npx tsc --noEmit` clean (0 errors); `npx vitest run` 40 files / 534 tests passed.
