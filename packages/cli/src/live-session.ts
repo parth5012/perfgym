@@ -194,6 +194,13 @@ const diskBlobStamp = (rootDir: string): number | null => {
   return blob?.lastUpdatedAt ?? null;
 };
 
+/**
+ * The process-wide live session for a project root. Returns the cached
+ * instance while its durable-blob stamp is in sync with the disk (including
+ * when both are absent); on ANY drift — another process flushed a newer
+ * blob, an older one, or removed it — discards the cache and returns a
+ * fresh instance re-read from disk (which never fabricates a file).
+ */
 export const liveSessionFor = (rootDir: string): LiveSession => {
   // CR5 (review of #48/PR83): a long-lived process (perfgym-mcp) may hold one
   // cached LiveSession forever, while a CLI run in ANOTHER process flushes a

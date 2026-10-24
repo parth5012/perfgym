@@ -97,6 +97,10 @@ const finiteOrNull = (value: number): number | null =>
 const finiteOrNegativeInfinity = (raw: unknown): number =>
   typeof raw === "number" && Number.isFinite(raw) ? raw : -Infinity;
 
+/**
+ * Serializes the live session state into the durable `session` blob stored
+ * inside `.perfgym/state.json` (legacy shape preserved, additive fields).
+ */
 export function serializeSessionState(
   state: PerfGymSessionState,
 ): SerializedSessionState {
@@ -118,6 +122,11 @@ export function serializeSessionState(
   };
 }
 
+/**
+ * Rebuilds a `PerfGymSessionState` from a persisted `session` blob. Returns
+ * `null` for anything that is not a well-formed record (defensive: corrupt
+ * live blobs never crash readers).
+ */
 export function deserializeSessionState(
   raw: unknown,
 ): PerfGymSessionState | null {

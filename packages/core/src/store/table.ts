@@ -20,6 +20,10 @@ export interface StepTableRow {
 
 const columnHelper = createColumnHelper<StepTableRow>();
 
+/**
+ * Headless TanStack column model of the step history. The renderer only
+ * draws these columns — no new table dependency.
+ */
 export const stepTableColumns = [
   columnHelper.accessor("iteration", {
     id: "iteration",
@@ -66,6 +70,11 @@ export function formatMetricToken(value: number, digits: number, prefix = ""): s
   return `${prefix}${value.toFixed(digits)}`;
 }
 
+/**
+ * Projects `StepEvaluation`s into table rows: preserves every step in order
+ * (accepted/rejected/rolled-back), collapses non-finite metrics to a bare
+ * `-` token so they never leak into the rendered table.
+ */
 export function mapEvaluationsToTableRows(evaluations: readonly StepEvaluation[]): StepTableRow[] {
   return evaluations.map((ev) => {
     let status: StepTableRow["status"] = ev.accepted ? "ACCEPTED" : "REJECTED";
@@ -93,6 +102,12 @@ export function mapEvaluationsToTableRows(evaluations: readonly StepEvaluation[]
   });
 }
 
+/**
+ * Builds the headless TanStack `Table` over the step history for the CLI
+ * renderer. Data survives the empty case (the renderer prints a "no steps
+ * yet" line). Note: the seeded column state is required — TanStack's
+ * header-group derivation dereferences `columnPinning` unguarded.
+ */
 export function createStepHistoryTable(evaluations: readonly StepEvaluation[]): Table<StepTableRow> {
   const data = mapEvaluationsToTableRows(evaluations);
   // TanStack's header-group derivation dereferences columnPinning.left/right
