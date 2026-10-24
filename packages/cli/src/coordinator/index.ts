@@ -500,19 +500,17 @@ export class McpServerCoordinator {
       negativeMemoryEntries = [];
     }
 
-    // #48: a live session drives the session status; the lock only shades it.
-    let sessionStatus: "running" | "idle" | "completed";
-    if (liveSession) {
-      if (liveSession.status === "completed") {
-        sessionStatus = "completed";
-      } else if (liveSession.status === "idle" && !this.sandbox.isLocked()) {
-        sessionStatus = "idle";
-      } else {
-        sessionStatus = "running";
-      }
-    } else {
-      sessionStatus = this.sandbox.isLocked() ? "running" : "idle";
-    }
+    // #48 / CR (review of PR #83): only 'completed' comes directly from the
+    // live session state; any other live status (accepted, rejected, idle, or a
+    // crashed mutating/evaluating run) represents active work ONLY when the
+    // sandbox lock is currently held and non-stale.
+    const lockHeld = this.sandbox.isLocked() || (lockReport.locked && !lockReport.isStale);
+    const sessionStatus: "running" | "idle" | "completed" =
+      liveSession?.status === "completed"
+        ? "completed"
+        : lockHeld
+        ? "running"
+        : "idle";
 
     return {
       initialized: true,
