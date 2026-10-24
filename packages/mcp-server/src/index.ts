@@ -22,7 +22,7 @@ import {
   InMemorySandboxDriver,
 } from "../../core/src/index.js";
 import {
-  readState,
+  loadSession,
   loadConfig,
   type PerfGymState,
 } from "../../cli/src/engine.js";
@@ -492,7 +492,7 @@ export class PerfGymMcpServer {
         // Reports the stored record when one exists and no re-run is requested;
         // otherwise records a fresh baseline through the coordinator (which
         // also owns the sandbox lock and writes the state record).
-        const stored = samples === undefined ? readState(this.cwd) : null;
+        const stored = samples === undefined ? loadSession(this.cwd) : null;
 
         return this.withCoordinator(async (coordinator) => {
           try {

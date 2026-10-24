@@ -36,8 +36,8 @@ import {
   type AstRule,
 } from "../../../linter/src/index.js";
 import {
-  readState,
-  writeState,
+  loadSession,
+  saveSession,
   loadConfig,
   loadNegativeMemory,
   negativeMemoryFilePath,
@@ -406,7 +406,7 @@ export class McpServerCoordinator {
    * and lock state. NEVER mutates state or writes to state file.
    */
   public async handleStatus(_options: StatusHandlerOptions = {}): Promise<StatusReport> {
-    const state = (readState(this.rootDir) as CoordinatorState) ?? null;
+    const state = (loadSession(this.rootDir) as CoordinatorState) ?? null;
     const lockReport = inspectLockState(
       this.lockDir,
       this.sandbox.isLocked(),
@@ -577,7 +577,7 @@ export class McpServerCoordinator {
     // Capture baseline snapshot (step 0)
     await this.captureSnapshot(0);
 
-    writeState(this.rootDir, state);
+    saveSession(this.rootDir, state);
     this.history = [];
 
     return {
@@ -597,7 +597,7 @@ export class McpServerCoordinator {
    */
   public async handleStep(options: StepHandlerOptions = {}): Promise<StepEvaluation> {
     const cwd = options.cwd ?? this.getWorkingDir();
-    const state = (readState(this.rootDir) as CoordinatorState) ?? null;
+    const state = (loadSession(this.rootDir) as CoordinatorState) ?? null;
     if (!state) {
       throw new Error("No baseline found in .perfgym/state.json. Run 'perfgym baseline' first.");
     }
@@ -721,7 +721,7 @@ export class McpServerCoordinator {
         state.bestStep = evaluation.iteration;
       }
 
-      writeState(this.rootDir, state);
+      saveSession(this.rootDir, state);
       this.history = history;
       // F8: the mutation was accepted — the disk keeps it; drop the backup.
       this.pendingDiskBackup = null;
@@ -744,7 +744,7 @@ export class McpServerCoordinator {
       state.totalStepCount = evaluation.iteration;
       state.updatedAt = Date.now();
       state.history = history;
-      writeState(this.rootDir, state);
+      saveSession(this.rootDir, state);
       this.history = history;
 
       if (options.recordNegativeMemory) {
@@ -969,7 +969,7 @@ export class McpServerCoordinator {
     }
 
     const dist = benchExit.value;
-    const state = readState(this.rootDir);
+    const state = loadSession(this.rootDir);
     const baselineValue = state?.baselineMetrics?.[metricConfig.name];
     const goal = metricConfig.goal ?? "minimize";
 
@@ -1032,7 +1032,7 @@ export class McpServerCoordinator {
 
     // 2. Pre-validate BEFORE acquiring (F5): every early return here happens
     //    without ever touching the lock.
-    const state = (readState(this.rootDir) as CoordinatorState) ?? null;
+    const state = (loadSession(this.rootDir) as CoordinatorState) ?? null;
     if (!state) {
       throw new Error("No baseline found in .perfgym/state.json. Cannot rollback uninitialized session.");
     }
@@ -1178,7 +1178,7 @@ export class McpServerCoordinator {
       state.acceptedStepCount = remainingAccepted.length;
       state.history = updatedHistory;
       state.updatedAt = Date.now();
-      writeState(this.rootDir, state);
+      saveSession(this.rootDir, state);
       this.history = updatedHistory;
 
       return {

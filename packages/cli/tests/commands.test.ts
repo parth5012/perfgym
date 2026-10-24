@@ -13,7 +13,7 @@ import {
   parseStepNumber,
   resolveTargetGlobs,
 } from "../src/commands/lifecycle.js";
-import { writeState } from "../src/engine.js";
+import { saveSession } from "../src/engine.js";
 
 const STATE_FILE = path.join(".perfgym", "state.json");
 
@@ -187,7 +187,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
 
   it("status --format json reports best score/step, per-metric deltas, history and lock state", async () => {
     const dir = track(setupGymDir());
-    writeState(dir, {
+    saveSession(dir, {
       version: "1.0",
       initializedAt: 1,
       updatedAt: 2,
@@ -217,7 +217,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
           timestamp: 4,
         },
       ],
-    } as unknown as Parameters<typeof writeState>[1]);
+    } as unknown as Parameters<typeof saveSession>[1]);
     craftForeignLock(dir);
 
     const stateBefore = readStateBytes(dir);
@@ -281,7 +281,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
     const step1 = writeStep(2);
     const step2 = writeStep(3);
 
-    writeState(dir, {
+    saveSession(dir, {
       version: "1.0",
       initializedAt: 1,
       updatedAt: 2,
@@ -318,7 +318,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
           timestamp: 4,
         },
       ],
-    } as unknown as Parameters<typeof writeState>[1]);
+    } as unknown as Parameters<typeof saveSession>[1]);
 
     const res = await runRollbackCommand({ cwd: dir, format: "json" });
     expect(res.failed).toBe(false);
@@ -354,7 +354,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
 
   it("rollback refuses a non-ACCEPTED target step with exit 1", async () => {
     const dir = track(setupGymDir());
-    writeState(dir, {
+    saveSession(dir, {
       version: "1.0",
       initializedAt: 1,
       updatedAt: 2,
@@ -384,7 +384,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
           timestamp: 4,
         },
       ],
-    } as unknown as Parameters<typeof writeState>[1]);
+    } as unknown as Parameters<typeof saveSession>[1]);
 
     const res = await runRollbackCommand({ cwd: dir, format: "json", toStep: 2 });
     expect(res.exitCode).toBe(1);
@@ -405,7 +405,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
     execFileSync("git", ["commit", "-m", "step"], { cwd: dir, stdio: "ignore" });
     const beforeCommit = head(dir);
 
-    writeState(dir, {
+    saveSession(dir, {
       version: "1.0",
       initializedAt: 1,
       updatedAt: 2,
@@ -428,7 +428,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
           timestamp: 3,
         },
       ],
-    } as unknown as Parameters<typeof writeState>[1]);
+    } as unknown as Parameters<typeof saveSession>[1]);
 
     const stateBefore = readStateBytes(dir);
     const fileBefore = readFile(dir);
@@ -446,7 +446,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
 
   it("test reports the invariant outcome and modifies neither state nor worktree", async () => {
     const dir = track(setupGymDir());
-    writeState(dir, {
+    saveSession(dir, {
       version: "1.0",
       initializedAt: 1,
       updatedAt: 2,
@@ -482,7 +482,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
 
   it("lint exits 0 on a clean scan and modifies neither state nor worktree", async () => {
     const dir = track(setupGymDir());
-    writeState(dir, {
+    saveSession(dir, {
       version: "1.0",
       initializedAt: 1,
       updatedAt: 2,
@@ -542,7 +542,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
 
   it("benchmark reports the distribution without updating state or touching the worktree", async () => {
     const dir = track(setupGymDir());
-    writeState(dir, {
+    saveSession(dir, {
       version: "1.0",
       initializedAt: 1,
       updatedAt: 2,
@@ -597,7 +597,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
   // --- F2 --------------------------------------------------------------------
   it("benchmark markdown reports p90, MAD, IQR and the delta vs baseline", async () => {
     const dir = track(setupGymDir());
-    writeState(dir, {
+    saveSession(dir, {
       version: "1.0",
       initializedAt: 1,
       updatedAt: 2,

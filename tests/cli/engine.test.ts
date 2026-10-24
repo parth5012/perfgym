@@ -7,8 +7,8 @@ import {
   detectProjectLanguage,
   generateStarterConfig,
   loadConfig,
-  readState,
-  writeState,
+  loadSession,
+  saveSession,
   runInit,
   runBaseline,
   runStep,
@@ -85,7 +85,7 @@ describe("CLI Engine Unit & TDD Suite", () => {
   });
 
   describe("State Management", () => {
-    it("writes and reads .perfgym/state.json correctly", () => {
+    it("writes and reads .perfgym/state.json through the session accessors", () => {
       const state: PerfGymState = {
         version: "0.1.0",
         initializedAt: Date.now(),
@@ -98,13 +98,15 @@ describe("CLI Engine Unit & TDD Suite", () => {
         totalStepCount: 0,
       };
 
-      writeState(testDir, state);
-      const readBack = readState(testDir);
-      expect(readBack).toEqual(state);
+      saveSession(testDir, state);
+      const readBack = loadSession(testDir);
+      // The store stamps `lastUpdatedAt` additively (#46); every declared
+      // field round-trips exactly.
+      expect(readBack).toEqual({ ...state, lastUpdatedAt: expect.any(Number) });
     });
 
     it("returns null when state.json does not exist", () => {
-      expect(readState(testDir)).toBeNull();
+      expect(loadSession(testDir)).toBeNull();
     });
   });
 
@@ -310,7 +312,7 @@ metrics:
         expect(res.state.invariantsPassed).toBe(true);
       }
 
-      const savedState = readState(testDir);
+      const savedState = loadSession(testDir);
       expect(savedState).not.toBeNull();
       expect(savedState?.baselineMetrics["instructions"]).toBe(100);
     });
@@ -373,7 +375,7 @@ metrics:
         acceptedStepCount: 0,
         totalStepCount: 0,
       };
-      writeState(testDir, state);
+      saveSession(testDir, state);
 
       const res = await runStep({ cwd: testDir, files: ["src/index.ts"], samples: 2 });
       expect(res.evaluation.accepted).toBe(true);
@@ -403,7 +405,7 @@ metrics:
       // case where every modified path yields `null`.
       fs.mkdirSync(path.join(testDir, "src", "unreadable"), { recursive: true });
 
-      writeState(testDir, {
+      saveSession(testDir, {
         version: "0.1.0",
         initializedAt: Date.now(),
         updatedAt: Date.now(),
@@ -474,7 +476,7 @@ metrics:
         acceptedStepCount: 0,
         totalStepCount: 0,
       };
-      writeState(testDir, state);
+      saveSession(testDir, state);
 
       const res = await runStep({ cwd: testDir, files: ["src/index.ts"], samples: 1 });
       expect(res.evaluation.accepted).toBe(false);

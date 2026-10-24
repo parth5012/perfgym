@@ -141,6 +141,7 @@ export const sessionState: PerfGymSessionState = {
   history: [acceptedStep],
   lock: null,
   lastError: null,
+  lastUpdatedAt: 1717171717,
 };
 
 /** Minimal config used to exercise config-derived fields (goal, command, target). */

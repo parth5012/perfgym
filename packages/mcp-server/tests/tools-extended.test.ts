@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { PerfGymMcpServer } from "../src/index.js";
-import { writeState } from "../../cli/src/engine.js";
+import { saveSession } from "../../cli/src/engine.js";
 
 const TOOL_NAMES = [
   "perfgym_baseline",
@@ -142,7 +142,7 @@ metrics:
 
   it("all seven tools are callable and return parseable JSON by default", async () => {
     seedWorkspace();
-    writeState(testDir, stateWithHistory() as Parameters<typeof writeState>[1]);
+    saveSession(testDir, stateWithHistory() as Parameters<typeof saveSession>[1]);
 
     const calls: Array<[string, Record<string, unknown>]> = [
       ["perfgym_baseline", { samples: 2 }],
@@ -198,7 +198,7 @@ metrics:
   it("perfgym_rollback refuses while another holder owns the lock (lock busy)", async () => {
     seedGitRepo();
     fs.writeFileSync(path.join(testDir, "initial.txt"), "corrupted", "utf8");
-    writeState(testDir, stateWithHistory() as Parameters<typeof writeState>[1]);
+    saveSession(testDir, stateWithHistory() as Parameters<typeof saveSession>[1]);
 
     // Craft a foreign live lock exactly like the coordinator tests do.
     const lockDir = path.join(testDir, ".perfgym", ".lock.d");
@@ -227,9 +227,9 @@ metrics:
   it("perfgym_rollback routes through the coordinator, restores the sandbox worktree from git, and marks history ROLLED_BACK", async () => {
     const baselineCommit = seedGitRepo();
     fs.writeFileSync(path.join(testDir, "initial.txt"), "corrupted", "utf8");
-    writeState(
+    saveSession(
       testDir,
-      stateWithHistory({ baselineCommit }) as Parameters<typeof writeState>[1]
+      stateWithHistory({ baselineCommit }) as Parameters<typeof saveSession>[1]
     );
 
     const res = await call("perfgym_rollback");
@@ -254,9 +254,9 @@ metrics:
   // --- B1 --------------------------------------------------------------------
   it("B1: stateless git calls tear down their worktree and eval branch (no leak)", async () => {
     const baselineCommit = seedGitRepo();
-    writeState(
+    saveSession(
       testDir,
-      stateWithHistory({ baselineCommit }) as Parameters<typeof writeState>[1]
+      stateWithHistory({ baselineCommit }) as Parameters<typeof saveSession>[1]
     );
 
     // Two sequential stateless calls — the bug (B1) leaked one worktree dir +
@@ -286,7 +286,7 @@ metrics:
     // Seeded history WITHOUT baselineCommit and WITHOUT commitHash — a fresh
     // coordinator has nothing to restore from. The old shim reported success
     // while restoring nothing; it must now surface a real failure.
-    writeState(testDir, stateWithHistory() as Parameters<typeof writeState>[1]);
+    saveSession(testDir, stateWithHistory() as Parameters<typeof saveSession>[1]);
 
     const res = await call("perfgym_rollback");
 
@@ -299,9 +299,9 @@ metrics:
     // R4: rollback on a git-backed workspace with commit material — the
     // coordinator restores via the baselineCommit recorded in state.
     const baselineCommit = seedGitRepo();
-    writeState(
+    saveSession(
       testDir,
-      stateWithHistory({ baselineCommit }) as Parameters<typeof writeState>[1]
+      stateWithHistory({ baselineCommit }) as Parameters<typeof saveSession>[1]
     );
 
     const newTools: Array<[string, Record<string, unknown>]> = [

@@ -19,6 +19,7 @@ const ALL_OUTPUTS = (format: ReturnType<typeof createFormatter>): string[] => [
     history: [],
     lock: null,
     lastError: null,
+    lastUpdatedAt: 0,
   }),
   format.formatTest({ passed: true, output: "ok", durationMs: 1 }),
   format.formatLint([]),

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { PerfGymMcpServer } from "../src/index.js";
-import { writeState } from "../../cli/src/engine.js";
+import { saveSession } from "../../cli/src/engine.js";
 
 describe("PerfGym MCP Server (Ticket #18)", () => {
   let testDir: string;
@@ -149,7 +149,7 @@ metrics:
     fs.writeFileSync(path.join(testDir, "src", "index.ts"), "export const x = 2;", "utf8");
 
     // Establish baseline
-    writeState(testDir, {
+    saveSession(testDir, {
       version: "1.0",
       initializedAt: Date.now(),
       updatedAt: Date.now(),
@@ -205,7 +205,7 @@ metrics:
       "utf8"
     );
 
-    writeState(testDir, {
+    saveSession(testDir, {
       version: "1.0",
       initializedAt: Date.now(),
       updatedAt: Date.now(),
@@ -255,7 +255,7 @@ metrics:
     fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), STEP_CONFIG, "utf8");
     fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
     fs.writeFileSync(path.join(testDir, "src", "index.ts"), "export const x = 1;\n", "utf8");
-    writeState(testDir, stateFixture("mcp-format"));
+    saveSession(testDir, stateFixture("mcp-format"));
 
     const ok = await server.handleJsonRpcRequest({
       jsonrpc: "2.0",
@@ -293,7 +293,7 @@ metrics:
     fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), STEP_CONFIG, "utf8");
     fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
     fs.writeFileSync(path.join(testDir, "src", "index.ts"), "export const x = 2;", "utf8");
-    writeState(testDir, stateFixture("mcp-format"));
+    saveSession(testDir, stateFixture("mcp-format"));
 
     const defaultRes = await server.handleJsonRpcRequest({
       jsonrpc: "2.0",
@@ -336,7 +336,7 @@ metrics:
     fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), STEP_CONFIG, "utf8");
     fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
     fs.writeFileSync(path.join(testDir, "src", "index.ts"), "export const x = 2;", "utf8");
-    writeState(testDir, stateFixture("mcp-markdown"));
+    saveSession(testDir, stateFixture("mcp-markdown"));
 
     const baselineRes = await server.handleJsonRpcRequest({
       jsonrpc: "2.0",
@@ -392,7 +392,7 @@ metrics:
       return false;
     };
 
-    writeState(testDir, stateFixture("mcp-ansi"));
+    saveSession(testDir, stateFixture("mcp-ansi"));
     for (const format of ["markdown", "json"] as const) {
       const res = await server.handleJsonRpcRequest({
         jsonrpc: "2.0",

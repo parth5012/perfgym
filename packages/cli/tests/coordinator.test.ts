@@ -343,8 +343,8 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
 import { hashMutatedFiles } from "../../core/src/index.js";
 import {
   loadNegativeMemory,
-  readState,
-  writeState,
+  loadSession,
+  saveSession,
 } from "../src/engine.js";
 import { inspectLockState } from "../src/coordinator/handlers.js";
 import { GitWorktreeDriver } from "../../core/src/sandbox/git-worktree-driver.js";
@@ -433,7 +433,7 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
     expect(outcome.commitHash!.length).toBeGreaterThan(0);
 
     // State file carries it too
-    const state = readState(testDir) as { baselineCommit?: string };
+    const state = loadSession(testDir) as { baselineCommit?: string };
     expect(state.baselineCommit).toBe(outcome.commitHash);
 
     // All-rejected history: rollback rewinds to baseline targeting baselineCommit,
@@ -538,7 +538,7 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
     expect(fs.existsSync(lockDir)).toBe(false);
 
     // Initialized but empty history. The lock must still not leak.
-    writeState(
+    saveSession(
       testDir,
       {
         version: "1.0",
@@ -940,9 +940,9 @@ describe("McpServerCoordinator round-3 fixes (R1–R8)", () => {
     });
 
     // Strip commit material so nothing can be restored.
-    const state = readState(testDir) as { history?: Array<{ commitHash?: string }> };
+    const state = loadSession(testDir) as { history?: Array<{ commitHash?: string }> };
     for (const h of state.history ?? []) delete h.commitHash;
-    writeState(testDir, state as never);
+    saveSession(testDir, state as never);
 
     // The seeding session holds the sandbox lock (baseline acquired it);
     // release it so the FRESH coordinator is not refused with "lock busy"
@@ -955,7 +955,7 @@ describe("McpServerCoordinator round-3 fixes (R1–R8)", () => {
 
     // The lie must not be able to happen: the state file still marks the
     // steps ACCEPTED (the failed rollback must not have mutated history).
-    const after = readState(testDir) as {
+    const after = loadSession(testDir) as {
       history?: Array<{ stepNumber: number; status: string }>;
     };
     expect(after.history?.every((h) => h.status === "ACCEPTED")).toBe(true);
