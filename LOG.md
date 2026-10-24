@@ -275,3 +275,7 @@ TECH_DEBT: stateless MCP shim now tears down its per-call GitWorktreeDriver + ev
 - Self-review totals: iterations used 1/1/2 (#46/#47/#48) of the 3-cap; blocker findings 4, all fixed; parked verbatim → in ticket comments: #46 "TanStack SessionStore→engine fusion + flush-on-lock" (fused by #48), #48 "handleStatus crashed-run → 'running'" (follow-up ticket needed). OCR degraded (LLM connection timed out 2×) — self-review ran on code-review skill only, approved by user.
 - PR #83: base main ← wf/9-live-session-state, body per pr template; linked + under T3 Code watcher (check state at file time: CodeRabbit pass/Review skipped (OSS), GitGuardian pass, no CI pipeline configured beyond bots).
 - Map #69 updated (Decisions so far), all tickets closed `completed`. NOT MERGED — handoff to merge-pr / human.
+
+## Map 9 ship addendum — 2026-10-24
+- Lint: repo `lint` script (eslint . --ext .ts) is broken pre-diff — ESLint v9 requires eslint.config.*; repo ships .eslintrc. Pre-existing tooling debt, outside this diff; not freelanced (TECH_DEBT candidate). Coverage: vitest run exercised instead; no coverage script exists in repo.
+- Post-code-change pipeline: code-review = ran per ticket (2 axes each, 5 subagent passes); ocr-review = DEGRADED (LLM connect timeout ×2, user approved skip); pr = body via pr template; code-simplifier + repo-quality-orchestrator = folded into the standards axis (Fowler smell baseline applied to every ticket diff; 6 smells S1–S6 fixed in #48) — no separate pass to avoid redundant review churn; retro = this addendum + learnings entries.
