@@ -1,9 +1,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { Effect } from "effect";
 import type { WorkspaceDriver, WorkspaceContext } from "./driver.js";
 import { GitWorktreeDriver } from "./git-worktree-driver.js";
-import { SandboxLockBusyError } from "../errors.js";
+import {
+  SandboxLockBusyError,
+  SandboxLockNotHeldError,
+  ERR_SANDBOX_LOCK_NOT_HELD,
+  type PerfGymDomainError,
+} from "../errors.js";
 
 export interface MutationFile {
   relPath: string;
@@ -168,174 +174,231 @@ export class GitSandboxCoordinator {
     }
   }
 
-  public async acquire(runId: string, baseRef = "main"): Promise<WorkspaceContext> {
-    const parentDir = path.dirname(this.lockDir);
-    fs.mkdirSync(parentDir, { recursive: true });
+  /**
+   * ADR-018: the lock-not-held contract violation that used to be a plain
+   * Error is now a tagged SandboxLockNotHeldError on the failure channel.
+   */
+  private lockGuard(
+    operation: string,
+    message: string
+  ): Effect.Effect<void, SandboxLockNotHeldError, never> {
+    if (this.locked && this.context) {
+      return Effect.succeed(undefined);
+    }
+    return Effect.fail(
+      new SandboxLockNotHeldError({
+        code: ERR_SANDBOX_LOCK_NOT_HELD,
+        operation,
+        message,
+      })
+    );
+  }
 
-    let acquired = false;
-    try {
-      fs.mkdirSync(this.lockDir);
-      acquired = true;
-    } catch (err: unknown) {
-      const e = err as { code?: string };
-      if (e.code === "EEXIST") {
-        const meta = this.readMetadata();
+  public acquire(
+    runId: string,
+    baseRef = "main"
+  ): Effect.Effect<WorkspaceContext, PerfGymDomainError, never> {
+    const self = this;
+    return Effect.gen(function* () {
+      const parentDir = path.dirname(self.lockDir);
+      fs.mkdirSync(parentDir, { recursive: true });
+
+      let acquired = false;
+      try {
+        fs.mkdirSync(self.lockDir);
+        acquired = true;
+      } catch (err: unknown) {
+        const e = err as { code?: string };
+        if (e.code !== "EEXIST") {
+          // OS-level failure: previously rethrown raw — kept on the defect channel.
+          return yield* Effect.die(err);
+        }
+        const meta = self.readMetadata();
         const now = Date.now();
 
         if (meta) {
-          const isAlive = this.isProcessAlive(meta.pid);
-          const isStale = now - meta.heartbeat > this.staleThresholdMs;
+          const isAlive = self.isProcessAlive(meta.pid);
+          const isStale = now - meta.heartbeat > self.staleThresholdMs;
 
           if (!isAlive && isStale) {
             // Stale lock recovery via atomic tombstone rename:
             // Moving the stale directory atomically guarantees only one process can claim ownership
             // of the recovery and prevents clobbering a newly initialized lock from a racing process.
-            const tombstone = `${this.lockDir}.tombstone.${process.pid}.${Date.now()}`;
+            const tombstone = `${self.lockDir}.tombstone.${process.pid}.${Date.now()}`;
             try {
-              fs.renameSync(this.lockDir, tombstone);
-              this.pruneOrphanedWorktrees();
+              fs.renameSync(self.lockDir, tombstone);
+              self.pruneOrphanedWorktrees();
               try {
                 fs.rmSync(tombstone, { recursive: true, force: true });
               } catch {
                 // Ignore tombstone cleanup error
               }
-              fs.mkdirSync(this.lockDir);
+              fs.mkdirSync(self.lockDir);
               acquired = true;
             } catch {
               // Another process won the atomic rename race or directory already moved
             }
           } else {
-            throw new SandboxLockBusyError({
-              lockDir: this.lockDir,
-              holderPid: meta.pid,
-              startTime: meta.startTime,
-              message: `PerfGym sandbox lock is currently held by PID ${meta.pid} (started at ${new Date(
-                meta.startTime
-              ).toISOString()}).`,
-            });
+            return yield* Effect.fail(
+              new SandboxLockBusyError({
+                lockDir: self.lockDir,
+                holderPid: meta.pid,
+                startTime: meta.startTime,
+                message: `PerfGym sandbox lock is currently held by PID ${meta.pid} (started at ${new Date(
+                  meta.startTime
+                ).toISOString()}).`,
+              })
+            );
           }
         } else {
           // Lock dir exists without metadata. Check modification time to avoid racing freshly created locks
+          let stat: fs.Stats | null = null;
           try {
-            const stat = fs.statSync(this.lockDir);
-            if (now - stat.mtimeMs > this.staleThresholdMs) {
-              const tombstone = `${this.lockDir}.tombstone.${process.pid}.${Date.now()}`;
+            stat = fs.statSync(self.lockDir);
+          } catch {
+            // A stat failure used to be swallowed here; it falls through to
+            // the generic acquisition failure below.
+            stat = null;
+          }
+          if (stat && now - stat.mtimeMs > self.staleThresholdMs) {
+            const tombstone = `${self.lockDir}.tombstone.${process.pid}.${Date.now()}`;
+            try {
+              fs.renameSync(self.lockDir, tombstone);
+              self.pruneOrphanedWorktrees();
               try {
-                fs.renameSync(this.lockDir, tombstone);
-                this.pruneOrphanedWorktrees();
-                try {
-                  fs.rmSync(tombstone, { recursive: true, force: true });
-                } catch {
-                  // Ignore tombstone cleanup error
-                }
-                fs.mkdirSync(this.lockDir);
-                acquired = true;
+                fs.rmSync(tombstone, { recursive: true, force: true });
               } catch {
-                // Another process won race
+                // Ignore tombstone cleanup error
               }
-            } else {
-              throw new SandboxLockBusyError({
-                lockDir: this.lockDir,
+              fs.mkdirSync(self.lockDir);
+              acquired = true;
+            } catch {
+              // Another process won race
+            }
+          } else if (stat) {
+            return yield* Effect.fail(
+              new SandboxLockBusyError({
+                lockDir: self.lockDir,
                 holderPid: 0,
                 startTime: stat.mtimeMs,
                 message: `PerfGym sandbox lock was recently acquired without metadata.`,
-              });
-            }
-          } catch (statErr) {
-            if (statErr instanceof SandboxLockBusyError) throw statErr;
+              })
+            );
           }
         }
-      } else {
-        throw err;
       }
-    }
 
-    if (!acquired) {
-      throw new SandboxLockBusyError({
-        lockDir: this.lockDir,
-        holderPid: 0,
-        startTime: Date.now(),
-        message: `Failed to acquire atomic sandbox lock at '${this.lockDir}'.`,
+      if (!acquired) {
+        return yield* Effect.fail(
+          new SandboxLockBusyError({
+            lockDir: self.lockDir,
+            holderPid: 0,
+            startTime: Date.now(),
+            message: `Failed to acquire atomic sandbox lock at '${self.lockDir}'.`,
+          })
+        );
+      }
+
+      const startTime = Date.now();
+      self.currentRunId = runId;
+      self.writeMetadata({
+        pid: process.pid,
+        runId,
+        startTime,
+        heartbeat: startTime,
       });
-    }
 
-    const startTime = Date.now();
-    this.currentRunId = runId;
-    this.writeMetadata({
-      pid: process.pid,
-      runId,
-      startTime,
-      heartbeat: startTime,
+      self.locked = true;
+      self.startHeartbeat(runId, startTime);
+      self.registerHooks();
+
+      // If driver initialization fails, the lock acquired above is released
+      // before the typed failure propagates (parity with catch/rethrow).
+      const context = yield* Effect.tapCause(
+        self.driver.initialize(runId, baseRef),
+        () => Effect.sync(() => self.syncRelease())
+      );
+      self.context = context;
+      return context;
     });
-
-    this.locked = true;
-    this.startHeartbeat(runId, startTime);
-    this.registerHooks();
-
-    try {
-      this.context = await this.driver.initialize(runId, baseRef);
-    } catch (driverErr) {
-      this.syncRelease();
-      throw driverErr;
-    }
-
-    return this.context;
   }
 
-  public async applyMutation(files: MutationFile[]): Promise<void> {
-    if (!this.locked || !this.context) {
-      throw new Error("Cannot apply mutation without holding the sandbox lock.");
-    }
-    for (const file of files) {
-      await this.driver.writeFile(file.relPath, file.content);
-    }
-  }
-
-  public async verifyBlastRadius(): Promise<void> {
-    if (!this.locked || !this.context) {
-      throw new Error("Cannot verify blast radius without holding the sandbox lock.");
-    }
-    await this.driver.verifyBlastRadius();
-  }
-
-  public async acceptStep(stepNumber: number, score: number): Promise<StepReceipt> {
-    if (!this.locked || !this.context) {
-      throw new Error("Cannot accept step without holding the sandbox lock.");
-    }
-    await this.driver.verifyBlastRadius();
-    const commitHash = await this.driver.commitStep(stepNumber, score);
-    return {
-      stepNumber,
-      commitHash,
-      score,
-      timestamp: Date.now(),
-    };
-  }
-
-  public async rejectStep(): Promise<void> {
-    if (!this.locked || !this.context) {
-      throw new Error("Cannot reject step without holding the sandbox lock.");
-    }
-    await this.driver.rollbackStep();
-  }
-
-  public async promoteAndCleanup(targetBranch: string): Promise<void> {
-    if (!this.locked || !this.context) {
-      throw new Error("Cannot promote without holding the sandbox lock.");
-    }
-    try {
-      await this.driver.promote(targetBranch);
-    } finally {
-      try {
-        await this.driver.teardown();
-      } finally {
-        await this.release();
+  public applyMutation(files: MutationFile[]): Effect.Effect<void, PerfGymDomainError, never> {
+    const self = this;
+    return Effect.gen(function* () {
+      yield* self.lockGuard(
+        "applyMutation",
+        "Cannot apply mutation without holding the sandbox lock."
+      );
+      for (const file of files) {
+        yield* self.driver.writeFile(file.relPath, file.content);
       }
-    }
+    });
   }
 
-  public async release(): Promise<void> {
-    this.syncRelease();
+  public verifyBlastRadius(): Effect.Effect<void, PerfGymDomainError, never> {
+    const self = this;
+    return Effect.gen(function* () {
+      yield* self.lockGuard(
+        "verifyBlastRadius",
+        "Cannot verify blast radius without holding the sandbox lock."
+      );
+      yield* self.driver.verifyBlastRadius();
+    });
+  }
+
+  public acceptStep(
+    stepNumber: number,
+    score: number
+  ): Effect.Effect<StepReceipt, PerfGymDomainError, never> {
+    const self = this;
+    return Effect.gen(function* () {
+      yield* self.lockGuard(
+        "acceptStep",
+        "Cannot accept step without holding the sandbox lock."
+      );
+      yield* self.driver.verifyBlastRadius();
+      const commitHash = yield* self.driver.commitStep(stepNumber, score);
+      return {
+        stepNumber,
+        commitHash,
+        score,
+        timestamp: Date.now(),
+      };
+    });
+  }
+
+  public rejectStep(): Effect.Effect<void, PerfGymDomainError, never> {
+    const self = this;
+    return Effect.gen(function* () {
+      yield* self.lockGuard(
+        "rejectStep",
+        "Cannot reject step without holding the sandbox lock."
+      );
+      yield* self.driver.rollbackStep();
+    });
+  }
+
+  public promoteAndCleanup(targetBranch: string): Effect.Effect<void, PerfGymDomainError, never> {
+    const self = this;
+    return Effect.gen(function* () {
+      yield* self.lockGuard(
+        "promoteAndCleanup",
+        "Cannot promote without holding the sandbox lock."
+      );
+      // promote → teardown → release; the lock is ALWAYS released, even when
+      // promote or teardown fails (try/finally parity with the previous code).
+      yield* Effect.onExit(
+        Effect.onExit(self.driver.promote(targetBranch), () => self.driver.teardown()),
+        () => self.release()
+      );
+    });
+  }
+
+  public release(): Effect.Effect<void, never, never> {
+    return Effect.sync(() => {
+      this.syncRelease();
+    });
   }
 
   private syncRelease(): void {

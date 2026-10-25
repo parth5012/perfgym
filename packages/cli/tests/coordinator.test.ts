@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { Effect } from "effect";
 import { stringify as stringifyYaml } from "yaml";
 import {
   InMemorySandboxDriver,
@@ -93,7 +94,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
 
   afterEach(async () => {
     if (sandbox.isLocked()) {
-      await sandbox.release();
+      await Effect.runPromise(sandbox.release());
     }
     try {
       fs.rmSync(testDir, { recursive: true, force: true });
@@ -161,7 +162,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
     expect(step.accepted).toBe(true);
     expect(step.fitnessScore).toBeGreaterThan(0);
     expect(step.deltaPercent).toBe(50);
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 2;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 2;\n");
 
     const status = await coordinator.handleStatus();
     expect(status.currentStep).toBe(1);
@@ -175,7 +176,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
     await coordinator.handleBaseline({ samples: 2 });
     const stateFile = path.join(testDir, ".perfgym", "state.json");
     const stateBefore = fs.readFileSync(stateFile, "utf8");
-    const fileBefore = await driver.readFile("src/index.ts");
+    const fileBefore = await Effect.runPromise(driver.readFile("src/index.ts"));
 
     const testRes = await coordinator.handleTest();
     expect(testRes.passed).toBe(true);
@@ -183,7 +184,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
 
     // State and worktree are untouched
     expect(fs.readFileSync(stateFile, "utf8")).toBe(stateBefore);
-    expect(await driver.readFile("src/index.ts")).toBe(fileBefore);
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe(fileBefore);
   });
 
   it("handles lint without side-effects (leaves worktree and state untouched)", async () => {
@@ -192,8 +193,8 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
     const stateBefore = fs.readFileSync(stateFile, "utf8");
 
     // Write a violation into the driver
-    await driver.writeFile("src/index.ts", "let x: any = 10;\n");
-    const fileBefore = await driver.readFile("src/index.ts");
+    await Effect.runPromise(driver.writeFile("src/index.ts", "let x: any = 10;\n"));
+    const fileBefore = await Effect.runPromise(driver.readFile("src/index.ts"));
 
     const lintOutcome = await coordinator.handleLint({
       files: ["src/index.ts"],
@@ -205,14 +206,14 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
 
     // State and worktree are untouched
     expect(fs.readFileSync(stateFile, "utf8")).toBe(stateBefore);
-    expect(await driver.readFile("src/index.ts")).toBe(fileBefore);
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe(fileBefore);
   });
 
   it("handles benchmark without side-effects (leaves worktree and state untouched)", async () => {
     await coordinator.handleBaseline({ samples: 2 });
     const stateFile = path.join(testDir, ".perfgym", "state.json");
     const stateBefore = fs.readFileSync(stateFile, "utf8");
-    const fileBefore = await driver.readFile("src/index.ts");
+    const fileBefore = await Effect.runPromise(driver.readFile("src/index.ts"));
 
     const benchOutcome = await coordinator.handleBenchmark({
       samples: 2,
@@ -225,7 +226,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
 
     // State and worktree are untouched
     expect(fs.readFileSync(stateFile, "utf8")).toBe(stateBefore);
-    expect(await driver.readFile("src/index.ts")).toBe(fileBefore);
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe(fileBefore);
   });
 
   it("handles rollback restoring worktree to last approved state and rewinds pointer", async () => {
@@ -250,7 +251,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
       mutations: [{ relPath: "src/index.ts", content: "export const value = 2;\n" }],
       samples: 2,
     });
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 2;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 2;\n");
 
     // Step 2: Another mutation accepted
     const evenFasterConfig = {
@@ -271,7 +272,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
       mutations: [{ relPath: "src/index.ts", content: "export const value = 3;\n" }],
       samples: 2,
     });
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 3;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 3;\n");
 
     // Rollback step 2 -> should rewind to step 1
     const rollbackRes = await coordinator.handleRollback();
@@ -281,7 +282,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
     expect(rollbackRes.restoredStep).toBe(1);
 
     // Worktree restored to step 1 state
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 2;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 2;\n");
 
     // Status shows history kept, step 2 marked ROLLED_BACK, pointer rewound
     const status = await coordinator.handleStatus();
@@ -297,7 +298,7 @@ describe("McpServerCoordinator Deep Module (Ticket #43)", () => {
     expect(rollbackRes2.restoredStep).toBe(0);
 
     // Worktree restored to initial baseline state
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 1;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 1;\n");
 
     const status2 = await coordinator.handleStatus();
     expect(status2.currentStep).toBe(0);
@@ -395,7 +396,7 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
   });
 
   afterEach(async () => {
-    if (sandbox.isLocked()) await sandbox.release();
+    if (sandbox.isLocked()) await Effect.runPromise(sandbox.release());
     try {
       fs.rmSync(testDir, { recursive: true, force: true });
     } catch {
@@ -451,7 +452,7 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
     expect(rollbackRes.restoredStep).toBe(0);
     expect(rollbackRes.targetCommit).toBe(outcome.commitHash);
     expect(rollbackRes.targetCommit).not.toBe("HEAD");
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 1;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 1;\n");
   });
 
   // --- F3 -------------------------------------------------------------------
@@ -515,7 +516,7 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
     // "restored" step 3 — step 2's mutation stayed in the worktree.
     await coordinator.handleRollback({ stepNumber: 2 });
 
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 2;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 2;\n");
     const status = await coordinator.handleStatus();
     expect(status.stepHistory[0].status).toBe("ACCEPTED");
     expect(status.stepHistory[1].status).toBe("ROLLED_BACK");
@@ -583,7 +584,7 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
     const rollbackRes = await coordinator.handleRollback();
     expect(rollbackRes.rolledBackStep).toBe(1);
     expect(rollbackRes.restoredStep).toBe(0);
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 1;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 1;\n");
 
     const status = await coordinator.handleStatus();
     expect(status.stepHistory[0].status).toBe("ROLLED_BACK");
@@ -605,8 +606,8 @@ describe("McpServerCoordinator review fixes (F1–F10)", () => {
     expect(step.accepted).toBe(false);
 
     // In-memory driver state reverted...
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 1;\n");
-    await expect(driver.readFile("src/extra.ts")).rejects.toThrow();
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 1;\n");
+    await expect(Effect.runPromise(driver.readFile("src/extra.ts"))).rejects.toThrow();
 
     // ...and the HOST DISK is clean too: mutated file restored, created file gone.
     const diskIndex = fs.readFileSync(path.join(testDir, "src", "index.ts"), "utf8");
@@ -760,7 +761,7 @@ describe("handleRollback git restore failure surfaces (F7)", () => {
       // F7: the failure must SURFACE, not be swallowed into a success report.
       await expect(coordinator.handleRollback()).rejects.toThrow(/git|rollback failed/i);
     } finally {
-      if (sandbox.isLocked()) await sandbox.release();
+      if (sandbox.isLocked()) await Effect.runPromise(sandbox.release());
     }
   });
 });
@@ -813,7 +814,7 @@ describe("McpServerCoordinator round-3 fixes (R1–R8)", () => {
   });
 
   afterEach(async () => {
-    if (sandbox.isLocked()) await sandbox.release();
+    if (sandbox.isLocked()) await Effect.runPromise(sandbox.release());
     try {
       fs.rmSync(testDir, { recursive: true, force: true });
     } catch {
@@ -866,7 +867,7 @@ describe("McpServerCoordinator round-3 fixes (R1–R8)", () => {
     await coordinator.handleRollback();
 
     expect(fs.existsSync(path.join(testDir, "src", "extra.ts"))).toBe(false);
-    expect(await driver.readFile("src/index.ts")).toBe("export const value = 1;\n");
+    expect(await Effect.runPromise(driver.readFile("src/index.ts"))).toBe("export const value = 1;\n");
 
     // The bug: removeDiskFilesNotInSnapshot deleted keep.ts just because the
     // baseline in-memory snapshot never contained it. It must survive.
@@ -948,7 +949,7 @@ describe("McpServerCoordinator round-3 fixes (R1–R8)", () => {
     // The seeding session holds the sandbox lock (baseline acquired it);
     // release it so the FRESH coordinator is not refused with "lock busy"
     // (the simulated MCP call happens in another process / later session).
-    await sandbox.release();
+    await Effect.runPromise(sandbox.release());
 
     await expect(fresh.handleRollback()).rejects.toThrow(
       /no .*snapshot|restore material|Rollback failed/i
@@ -1116,7 +1117,7 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
   });
 
   afterEach(async () => {
-    if (sandbox.isLocked()) await sandbox.release();
+    if (sandbox.isLocked()) await Effect.runPromise(sandbox.release());
     try {
       fs.rmSync(testDir, { recursive: true, force: true });
     } catch {
@@ -1136,7 +1137,7 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
     expect(liveBlob(testDir).status).toBe("idle"); // baseline completed
     // Release the baseline's lock so handleStep has to acquire FRESH — that
     // is the acquire whose metadata must be serialized (P2).
-    await sandbox.release();
+    await Effect.runPromise(sandbox.release());
 
     coordinator.updateConfig(makeConfig(50));
     await coordinator.handleStep({
@@ -1196,7 +1197,7 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
     expect(status.liveSession!.lock!.runId).toBe((liveBlob(testDir).lock as { runId: string }).runId);
 
     // After release, non-completed live session with no lock reports idle
-    await coordinator.getSandbox().release();
+    await Effect.runPromise(coordinator.getSandbox().release());
     const idleStatus = await coordinator.handleStatus();
     expect(idleStatus.sessionStatus).toBe("idle");
 
@@ -1206,7 +1207,7 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
 
   it("handleStatus derives sessionStatus: completed from live status, running from active lock, idle otherwise", async () => {
     await coordinator.handleBaseline({ samples: 2 });
-    await coordinator.getSandbox().release();
+    await Effect.runPromise(coordinator.getSandbox().release());
 
     const live = liveSessionFor(testDir);
     live.setStatus("completed");
@@ -1235,7 +1236,7 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
 
     // Release the surrounding session lock: the rollback then performs its
     // own acquire/release cycle, which the serialized snapshot must follow.
-    await sandbox.release();
+    await Effect.runPromise(sandbox.release());
 
     await coordinator.handleRollback({ stepNumber: 2 });
 
@@ -1263,7 +1264,7 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
     // Release the surrounding session lock first, so the rollback performs
     // its own acquire/release cycle (F5) — the serialized snapshot must
     // follow the real lock, i.e. end up cleared.
-    await sandbox.release();
+    await Effect.runPromise(sandbox.release());
 
     await coordinator.handleRollback({ stepNumber: 1 });
 
@@ -1329,7 +1330,7 @@ describe("McpServerCoordinator live-session wiring (Ticket #48)", () => {
     // Rewind ALL the way to baseline: roll the last step back, then again —
     // the second rollback has no accepted legacy steps left, so `targetIndex`
     // is undefined and the live blob mirror used to be skipped entirely.
-    await sandbox.release();
+    await Effect.runPromise(sandbox.release());
     await coordinator.handleRollback();
     await coordinator.handleRollback();
 

@@ -6,6 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
+import { Effect } from "effect";
 import { GitWorktreeDriver } from "../packages/core/src/sandbox/git-worktree-driver.js";
 import { GitSandboxCoordinator } from "../packages/core/src/sandbox/coordinator.js";
 
@@ -31,23 +32,23 @@ async function main() {
   const coordinator = new GitSandboxCoordinator(driver, { repoRoot });
 
   console.log(`\n[3] Acquiring atomic sandbox lock & isolated worktree for run '${runId}'...`);
-  const ctx = await coordinator.acquire(runId, "HEAD");
+  const ctx = await Effect.runPromise(coordinator.acquire(runId, "HEAD"));
   console.log(`    - Isolated Working Dir: ${ctx.workingDir}`);
   console.log(`    - Isolated Branch:      ${ctx.branchName}`);
   console.log(`    - Base Ref:             ${ctx.baseRef}`);
 
   const targetRelPath = "packages/core/src/errors.ts";
-  const originalContent = await driver.readFile(targetRelPath);
+  const originalContent = await Effect.runPromise(driver.readFile(targetRelPath));
   console.log(`\n[4] Read baseline file: '${targetRelPath}' (${originalContent.length} bytes)`);
 
   // Step A: Apply simulated broken agent mutation
   console.log("\n[5] Simulating broken agent mutation...");
   const brokenContent = `// BROKEN AGENT MUTATION INJECTED AT ${Date.now()}\n` + originalContent;
-  await coordinator.applyMutation([
+  await Effect.runPromise(coordinator.applyMutation([
     { relPath: targetRelPath, content: brokenContent },
-  ]);
+  ]));
   // Also create an untracked file inside worktree
-  await driver.writeFile("packages/core/src/untracked-garbage.ts", "export const trash = 1;\n");
+  await Effect.runPromise(driver.writeFile("packages/core/src/untracked-garbage.ts", "export const trash = 1;\n"));
   console.log("    - Injected broken mutation into target file");
   console.log("    - Injected untracked garbage file: packages/core/src/untracked-garbage.ts");
 
@@ -65,13 +66,13 @@ async function main() {
   // Step B: Trigger Sentinel Rollback
   console.log("\n[7] Sentinel detecting regression -> Triggering rollbackStep()...");
   const t0 = performance.now();
-  await coordinator.rejectStep();
+  await Effect.runPromise(coordinator.rejectStep());
   const rollbackDuration = (performance.now() - t0).toFixed(2);
   console.log(`    - Rollback completed in ${rollbackDuration} ms!`);
 
   // Verify worktree state after rollback
-  const contentAfterRevert = await driver.readFile(targetRelPath);
-  const untrackedExists = await driver.fileExists("packages/core/src/untracked-garbage.ts");
+  const contentAfterRevert = await Effect.runPromise(driver.readFile(targetRelPath));
+  const untrackedExists = await Effect.runPromise(driver.fileExists("packages/core/src/untracked-garbage.ts"));
   const isTargetIdentical = contentAfterRevert === originalContent;
 
   console.log("\n[8] Rollback Verification Results:");
@@ -80,8 +81,8 @@ async function main() {
 
   // Step C: Cleanup
   console.log("\n[9] Tearing down isolated worktree and releasing lock...");
-  await coordinator.release();
-  await driver.teardown();
+  await Effect.runPromise(coordinator.release());
+  await Effect.runPromise(driver.teardown());
   console.log(`    - Lock released and worktree safely removed.`);
 
   console.log("\n============================================================");

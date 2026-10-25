@@ -13,6 +13,7 @@
 import chalk from "chalk";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { Effect } from "effect";
 import {
   EvaluationPipeline,
   GitSandboxCoordinator,
@@ -181,7 +182,7 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     reflectSessionLock(coordinator.lockDirectory, coordinator.isLocked());
 
   const runId = `run-${Date.now()}`;
-  const workspaceContext = await coordinator.acquire(runId, targetBranch);
+  const workspaceContext = await Effect.runPromise(coordinator.acquire(runId, targetBranch));
   const sandboxDir = workspaceContext.workingDir;
 
   // P2 (#46): the ALREADY-ACQUIRED lock metadata is serialized reflectively
@@ -363,7 +364,7 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
       }
 
       // Apply mutations through coordinator
-      await coordinator.applyMutation(mutatedFiles);
+      await Effect.runPromise(coordinator.applyMutation(mutatedFiles));
 
       const modifiedRelativePaths = mutatedFiles.map((m) => m.relPath);
 
@@ -388,14 +389,14 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
         acceptedCount++;
         consecutiveRejections = 0;
 
-        await coordinator.acceptStep(i, bestFitness);
+        await Effect.runPromise(coordinator.acceptStep(i, bestFitness));
         live.recordStep(stepEval);
         const deltaStr = stepEval.deltaPercent >= 0 ? `+${stepEval.deltaPercent.toFixed(1)}%` : `${stepEval.deltaPercent.toFixed(1)}%`;
         log(chalk.green(`  ✔ Accepted! New best score: +${bestFitness.toFixed(2)} (Delta: ${deltaStr})`));
       } else {
         rolledBack = true;
         consecutiveRejections++;
-        await coordinator.rejectStep();
+        await Effect.runPromise(coordinator.rejectStep());
         // The store records the verdict FIRST (accepted/rejected + history),
         // then the rollback marker marks the undone step in the history.
         live.recordStep(stepEval);
@@ -456,7 +457,7 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     let promoted = false;
     if (acceptedCount > 0) {
       log(chalk.green(`\n✔ Promoting winning worktree commits to '${targetBranch}'...`));
-      await coordinator.promoteAndCleanup(targetBranch);
+      await Effect.runPromise(coordinator.promoteAndCleanup(targetBranch));
       promoted = true;
 
       // Update state — through the detached legacy snapshot (the `session`
@@ -471,8 +472,8 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
       saveSession(cwd, legacyStateCopy(state));
     } else {
       log(chalk.yellow("\n⚠ No mutations improved fitness. Worktree torn down cleanly without changes."));
-      await coordinator.release();
-      await worktreeDriver.teardown();
+      await Effect.runPromise(coordinator.release());
+      await Effect.runPromise(worktreeDriver.teardown());
     }
 
     // The run's final transitions: completed, and the lock snapshot resolved
@@ -503,8 +504,8 @@ export async function runOptimizationLoop(options: RunLoopOptions = {}): Promise
     };
   } catch (err: unknown) {
     try {
-      await coordinator.release();
-      await worktreeDriver.teardown();
+      await Effect.runPromise(coordinator.release());
+      await Effect.runPromise(worktreeDriver.teardown());
     } catch {
       // ignore
     }

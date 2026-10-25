@@ -391,7 +391,7 @@ export class McpServerCoordinator {
     // the developer's working tree (same semantics as the legacy bare reset).
     if (snap) {
       for (const [relPath, content] of snap.entries()) {
-        await this.driver.writeFile(relPath, content);
+        await Effect.runPromise(this.driver.writeFile(relPath, content));
       }
     }
     const workingDir = workingDirOverride ?? this.getWorkingDir();
@@ -561,7 +561,7 @@ export class McpServerCoordinator {
     // mismatching the lock metadata's runId against the live session's.
     const runId = options.runId ?? `baseline-${Date.now()}`;
     if (!this.sandbox.isLocked()) {
-      await this.sandbox.acquire(runId, "main");
+      await Effect.runPromise(this.sandbox.acquire(runId, "main"));
     }
     // CR3: the live session does NOT begin here. A state file written before
     // the invariant gate and benchmarks would survive their failure as a fake
@@ -689,7 +689,7 @@ export class McpServerCoordinator {
     }
 
     if (!this.sandbox.isLocked()) {
-      await this.sandbox.acquire(`step-${Date.now()}`, "main");
+      await Effect.runPromise(this.sandbox.acquire(`step-${Date.now()}`, "main"));
       // P2 (#46): serialize the metadata of the ALREADY-ACQUIRED lock —
       // reflective, no new locking protocol.
       liveSessionFor(this.rootDir).setLock(this.serializeLock());
@@ -702,7 +702,7 @@ export class McpServerCoordinator {
       // F8: record the pre-mutation host-disk state BEFORE anything is written,
       // so a rejection can put the disk back while the driver reverts its map.
       this.pendingDiskBackup = this.backupDiskFiles(options.mutations.map((m) => m.relPath));
-      await this.sandbox.applyMutation(options.mutations);
+      await Effect.runPromise(this.sandbox.applyMutation(options.mutations));
       for (const m of options.mutations) {
         this.syncDriverToDisk(m.relPath, m.content);
       }
@@ -753,10 +753,10 @@ export class McpServerCoordinator {
     });
 
     if (evaluation.accepted) {
-      const receipt = await this.sandbox.acceptStep(
+      const receipt = await Effect.runPromise(this.sandbox.acceptStep(
         evaluation.iteration,
         evaluation.fitnessScore
-      );
+      ));
       await this.captureSnapshot(evaluation.iteration);
       // R3: remember the host-disk files this accepted step CREATED so a later
       // rollback to an earlier step can remove exactly those.
@@ -811,7 +811,7 @@ export class McpServerCoordinator {
       // F8: the mutation was accepted — the disk keeps it; drop the backup.
       this.pendingDiskBackup = null;
     } else {
-      await this.sandbox.rejectStep();
+      await Effect.runPromise(this.sandbox.rejectStep());
 
       // F8: the driver map was reverted by rejectStep(); now put the HOST DISK
       // back to its pre-mutation state too.
@@ -867,7 +867,7 @@ export class McpServerCoordinator {
           const mutatedRecords = await Promise.all(
             modifiedFiles.map(async (relPath) => {
               try {
-                const content = await this.driver.readFile(relPath);
+                const content = await Effect.runPromise(this.driver.readFile(relPath));
                 return { relPath, content };
               } catch {
                 try {
@@ -949,7 +949,7 @@ export class McpServerCoordinator {
     for (const file of files) {
       let content: string | null = null;
       try {
-        content = await this.driver.readFile(file);
+        content = await Effect.runPromise(this.driver.readFile(file));
       } catch {
         try {
           content = fs.readFileSync(path.resolve(cwd, file), "utf8");
@@ -1216,7 +1216,7 @@ export class McpServerCoordinator {
     const lockHeldBefore = this.sandbox.isLocked();
     if (!lockHeldBefore) {
       try {
-        await this.sandbox.acquire(`rollback-${Date.now()}`, "main");
+        await Effect.runPromise(this.sandbox.acquire(`rollback-${Date.now()}`, "main"));
         // P2 (#46): serialize the metadata of the lock this rollback JUST
         // acquired (reflective; the lock file stays the authority).
         liveSessionFor(this.rootDir).setLock(this.serializeLock());
@@ -1311,7 +1311,7 @@ export class McpServerCoordinator {
       // F5: a lock acquired by THIS rollback is released on success and on
       // failure alike; a lock held by the surrounding session stays held.
       if (!lockHeldBefore && this.sandbox.isLocked()) {
-        await this.sandbox.release();
+        await Effect.runPromise(this.sandbox.release());
       }
       // The serialized lock snapshot follows the real one either way.
       if (!lockHeldBefore) {

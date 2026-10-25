@@ -2,9 +2,32 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { Effect } from "effect";
 import { GitSandboxCoordinator } from "../packages/core/src/sandbox/coordinator.js";
 import { InMemorySandboxDriver } from "../packages/core/src/sandbox/in-memory-driver.js";
-import { SandboxLockBusyError } from "../packages/core/src/errors.js";
+import {
+  SandboxLockBusyError,
+  SandboxLockNotHeldError,
+} from "../packages/core/src/errors.js";
+
+const run = Effect.runPromise;
+
+/**
+ * Captures the value on the EFFECT FAILURE CHANNEL (ADR-018): `tapError` only
+ * fires for typed failures — a defect or a plain rejected promise leaves
+ * `captured` undefined.
+ */
+async function captureFailure<A, E>(effect: Effect.Effect<A, E, never>): Promise<E | undefined> {
+  let captured: E | undefined;
+  await Effect.runPromiseExit(
+    Effect.tapError(effect, (err) =>
+      Effect.sync(() => {
+        captured = err;
+      })
+    )
+  );
+  return captured;
+}
 
 describe("GitSandboxCoordinator Deep Module", () => {
   let tempLockDir: string;
@@ -33,31 +56,35 @@ describe("GitSandboxCoordinator Deep Module", () => {
       lockDir: path.join(tempLockDir, ".lock.d"),
     });
 
-    const ctx = await coordinator.acquire("run-coord-1", "main");
+    const ctx = await run(coordinator.acquire("run-coord-1", "main"));
     expect(ctx.runId).toBe("run-coord-1");
     expect(coordinator.isLocked()).toBe(true);
 
     // Apply mutation
-    await coordinator.applyMutation([
-      { relPath: "src/calc.ts", content: "export const calc = () => 2;\n" },
-    ]);
-    expect(await driver.readFile("src/calc.ts")).toBe("export const calc = () => 2;\n");
+    await run(
+      coordinator.applyMutation([
+        { relPath: "src/calc.ts", content: "export const calc = () => 2;\n" },
+      ])
+    );
+    expect(await run(driver.readFile("src/calc.ts"))).toBe("export const calc = () => 2;\n");
 
     // Reject mutation (rollback)
-    await coordinator.rejectStep();
-    expect(await driver.readFile("src/calc.ts")).toBe("export const calc = () => 1;\n");
+    await run(coordinator.rejectStep());
+    expect(await run(driver.readFile("src/calc.ts"))).toBe("export const calc = () => 1;\n");
 
     // Re-apply and accept step
-    await coordinator.applyMutation([
-      { relPath: "src/calc.ts", content: "export const calc = () => 3;\n" },
-    ]);
-    const receipt = await coordinator.acceptStep(1, 120.5);
+    await run(
+      coordinator.applyMutation([
+        { relPath: "src/calc.ts", content: "export const calc = () => 3;\n" },
+      ])
+    );
+    const receipt = await run(coordinator.acceptStep(1, 120.5));
     expect(receipt.stepNumber).toBe(1);
     expect(receipt.score).toBe(120.5);
     expect(typeof receipt.commitHash).toBe("string");
 
     // Promote and cleanup
-    await coordinator.promoteAndCleanup("main");
+    await run(coordinator.promoteAndCleanup("main"));
     expect(coordinator.isLocked()).toBe(false);
   });
 
@@ -69,18 +96,59 @@ describe("GitSandboxCoordinator Deep Module", () => {
     const coord1 = new GitSandboxCoordinator(driver1, { lockDir });
     const coord2 = new GitSandboxCoordinator(driver2, { lockDir });
 
-    await coord1.acquire("run-1", "main");
+    await run(coord1.acquire("run-1", "main"));
 
     // Second coordinator should fail to acquire
-    await expect(coord2.acquire("run-2", "main")).rejects.toThrow(SandboxLockBusyError);
+    await expect(run(coord2.acquire("run-2", "main"))).rejects.toThrow(SandboxLockBusyError);
 
-    await coord1.release();
+    await run(coord1.release());
     expect(coord1.isLocked()).toBe(false);
 
     // Now coord2 can acquire cleanly
-    const ctx2 = await coord2.acquire("run-2", "main");
+    const ctx2 = await run(coord2.acquire("run-2", "main"));
     expect(ctx2.runId).toBe("run-2");
-    await coord2.release();
+    await run(coord2.release());
+  });
+
+  it("returns SandboxLockBusyError on the failure channel when the lock is held", async () => {
+    const lockDir = path.join(tempLockDir, ".lock.d");
+    const coord1 = new GitSandboxCoordinator(new InMemorySandboxDriver(), { lockDir });
+    const coord2 = new GitSandboxCoordinator(new InMemorySandboxDriver(), { lockDir });
+
+    await run(coord1.acquire("run-busy-1", "main"));
+
+    const err = await captureFailure(coord2.acquire("run-busy-2", "main"));
+    expect(err).toBeInstanceOf(SandboxLockBusyError);
+
+    await run(coord1.release());
+  });
+
+  it("returns SandboxLockNotHeldError on the failure channel when the lock is not held", async () => {
+    const driver = new InMemorySandboxDriver({ allowedGlobs: ["src/**/*.ts"] });
+    const coordinator = new GitSandboxCoordinator(driver, {
+      lockDir: path.join(tempLockDir, ".lock.d"),
+    });
+
+    expect(coordinator.isLocked()).toBe(false);
+
+    const applyErr = await captureFailure(
+      coordinator.applyMutation([{ relPath: "src/a.ts", content: "x" }])
+    );
+    expect(applyErr).toBeInstanceOf(SandboxLockNotHeldError);
+    expect((applyErr as SandboxLockNotHeldError).operation).toBe("applyMutation");
+
+    expect(await captureFailure(coordinator.verifyBlastRadius())).toBeInstanceOf(
+      SandboxLockNotHeldError
+    );
+    expect(await captureFailure(coordinator.acceptStep(1, 1.0))).toBeInstanceOf(
+      SandboxLockNotHeldError
+    );
+    expect(await captureFailure(coordinator.rejectStep())).toBeInstanceOf(
+      SandboxLockNotHeldError
+    );
+    expect(await captureFailure(coordinator.promoteAndCleanup("main"))).toBeInstanceOf(
+      SandboxLockNotHeldError
+    );
   });
 
   it("detects stale lock with dead PID and automatically reclaims lock", async () => {
@@ -107,10 +175,10 @@ describe("GitSandboxCoordinator Deep Module", () => {
     });
 
     // Acquire should detect dead PID, reclaim, and succeed
-    const ctx = await coord.acquire("new-live-run", "main");
+    const ctx = await run(coord.acquire("new-live-run", "main"));
     expect(ctx.runId).toBe("new-live-run");
     expect(coord.isLocked()).toBe(true);
 
-    await coord.release();
+    await run(coord.release());
   });
 });
