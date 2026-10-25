@@ -12,6 +12,7 @@ import * as readline from "node:readline";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { Effect } from "effect";
 import {
   createFormatter,
   stripAnsi,
@@ -420,7 +421,7 @@ export class PerfGymMcpServer {
     } finally {
       try {
         if (sandbox.isLocked()) {
-          await sandbox.release();
+          await Effect.runPromise(sandbox.release());
         }
       } catch {
         // Best-effort cleanup: never mask the tool result with a release error.
@@ -449,7 +450,7 @@ export class PerfGymMcpServer {
     if (!context) return;
 
     try {
-      await driver.teardown();
+      await Effect.runPromise(driver.teardown());
     } finally {
       // The eval branch outlives the worktree removal — drop it (force: the
       // branch may hold step commits that rollback references by commit

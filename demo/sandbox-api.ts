@@ -16,6 +16,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { Effect } from "effect";
 import {
   GitWorktreeDriver,
   matchesGlob,
@@ -195,14 +196,14 @@ export class DemoSandbox {
     this.context = null;
     if (driver) {
       try {
-        await driver.teardown();
+        await Effect.runPromise(driver.teardown());
       } catch {
         // ignore teardown races
       }
     }
     if (coordinator) {
       try {
-        await coordinator.release();
+        await Effect.runPromise(coordinator.release());
       } catch {
         // ignore release races
       }
@@ -234,9 +235,8 @@ export class DemoSandbox {
       });
 
       try {
-        this.context = await this.coordinator.acquire(
-          `demo-${Date.now().toString(36)}`,
-          "main"
+        this.context = await Effect.runPromise(
+          this.coordinator.acquire(`demo-${Date.now().toString(36)}`, "main")
         );
       } catch (err) {
         await this.disposeInternal();
@@ -301,14 +301,14 @@ export class DemoSandbox {
   public write(relPath: string, content: string): Promise<void> {
     return this.enqueue(async () => {
       const { coordinator } = this.ensureSession();
-      await coordinator.applyMutation([{ relPath, content }]);
+      await Effect.runPromise(coordinator.applyMutation([{ relPath, content }]));
     });
   }
 
   public readFile(relPath: string): Promise<string> {
     return this.enqueue(async () => {
       const { driver } = this.ensureSession();
-      return driver.readFile(relPath);
+      return Effect.runPromise(driver.readFile(relPath));
     });
   }
 
@@ -352,21 +352,21 @@ export class DemoSandbox {
   public verify(): Promise<void> {
     return this.enqueue(async () => {
       const { coordinator } = this.ensureSession();
-      await coordinator.verifyBlastRadius();
+      await Effect.runPromise(coordinator.verifyBlastRadius());
     });
   }
 
   public accept(stepNumber: number, score: number) {
     return this.enqueue(async () => {
       const { coordinator } = this.ensureSession();
-      return coordinator.acceptStep(stepNumber, score);
+      return Effect.runPromise(coordinator.acceptStep(stepNumber, score));
     });
   }
 
   public reject(): Promise<void> {
     return this.enqueue(async () => {
       const { coordinator } = this.ensureSession();
-      await coordinator.rejectStep();
+      await Effect.runPromise(coordinator.rejectStep());
     });
   }
 
@@ -377,7 +377,7 @@ export class DemoSandbox {
     }
     return this.enqueue(async () => {
       const { coordinator } = this.ensureSession();
-      await coordinator.promoteAndCleanup(targetBranch);
+      await Effect.runPromise(coordinator.promoteAndCleanup(targetBranch));
       const commitHash = gitOut(["rev-parse", targetBranch], this.repoDir) ?? "";
       this.driver = null;
       this.coordinator = null;
@@ -405,10 +405,10 @@ export class DemoSandbox {
         heartbeatIntervalMs: 1_000,
       });
       try {
-        await rival.acquire("competing-run", "main");
+        await Effect.runPromise(rival.acquire("competing-run", "main"));
       } catch (err) {
         try {
-          await rival.release();
+          await Effect.runPromise(rival.release());
         } catch {
           // ignore: never acquired
         }
@@ -416,12 +416,12 @@ export class DemoSandbox {
       }
       // Reaching here means the lock was NOT exclusive — tear down and fail.
       try {
-        await rivalDriver.teardown();
+        await Effect.runPromise(rivalDriver.teardown());
       } catch {
         // ignore
       }
       try {
-        await rival.release();
+        await Effect.runPromise(rival.release());
       } catch {
         // ignore
       }

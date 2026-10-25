@@ -128,3 +128,13 @@
 ### 29. Writing `-Infinity` with `toFixed` Leaks into UI Strings
 * **Problem**: `(-Infinity).toFixed(2)` returns the string `"-Infinity"`, and appending a suffix map (e.g. `%`) after a substitution token produces half-substituted tokens like `-%`.
 * **Solution**: Normalize non-finite metrics to a bare `-` token at the *mapping layer* (before rendering — never let a rendered suffix follow a substitution token), and assert with UI-level leak tests (`output not.toContain("Infinity"|"NaN"|"-%")`), not just mapping assertions.
+
+## Effect v4 Migration Pitfalls (Ticket #50)
+
+### 30. Effect v4 API Surface Differences
+* **Problem**: Effect v4 (4.x) has no `Effect.catchAll`/`Effect.void`; `Effect.match(effect, {onFailure, onSuccess})` folds typed errors only (defects bypass it); `Effect.ensuring` finalizers must be infallible, so fallible cleanup (promoteAndCleanup) fails to typecheck.
+* **Solution**: Use `Effect.catchTag`/`Effect.catch` for recovery and `Effect.onExit` for finalizers that may fail — `onExit` merges exit causes like the old throw-in-finally. `Effect.gen` needs a real generator (`function*` + `const self = this` to capture class `this`).
+
+### 31. Awaiting a Non-thenable Effect Silently Does Nothing
+* **Problem**: `await someEffect` on an Effect value returns the Effect itself immediately without running it — migrated `await sandbox.release()` compiles under `any`-ish typing and appears to pass while never releasing the lock.
+* **Solution**: Every migrated call site must be `await Effect.runPromise(effect)` (edge-only). Sweep all external callers with rg for each migrated method name; rely on tsc (`Effect` is not `Promise`-compatible) to catch leftovers.

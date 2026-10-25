@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Effect } from "effect";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -703,8 +704,8 @@ describe("EvaluationPipeline — sandbox integration", () => {
       allowedGlobs: ["src/**/*"],
       initialFiles: { "src/hot.ts": content },
     });
-    const stored = await driver.initialize("run-int", "main");
-    await driver.writeFile("src/hot.ts", content); // boundary-checked mutation
+    const stored = await Effect.runPromise(driver.initialize("run-int", "main"));
+    await Effect.runPromise(driver.writeFile("src/hot.ts", content)); // boundary-checked mutation
 
     // Materialize the workspace on disk: subprocess stages need a real cwd.
     const onDisk = makeSandbox();
