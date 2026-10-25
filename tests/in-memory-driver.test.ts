@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Effect } from "effect";
 import { InMemorySandboxDriver } from "../packages/core/src/sandbox/in-memory-driver.js";
+import { matchesGlob } from "../packages/core/src/sandbox/git-worktree-driver.js";
 import {
   PathOutsideTargetError,
   PathTraversalError,
@@ -200,5 +201,23 @@ describe("InMemorySandboxDriver", () => {
     expect(await run(driver.readFile("src/math.ts"))).toBe(
       "export const add = (a: number, b: number) => a + b;"
     );
+  });
+});
+
+describe("globstar whitelist matching (behaviour parity with pre-Effect seam)", () => {
+  it("matches **/-prefixed globs against relative paths", () => {
+    expect(matchesGlob("**/*.ts", "a/b.ts")).toBe(true);
+    expect(matchesGlob("**/foo", "foo")).toBe(true);
+    expect(matchesGlob("**/foo", "a/foo")).toBe(true);
+  });
+
+  it("keeps a trailing /** glob matching the directory root itself", () => {
+    expect(matchesGlob("src/**", "src")).toBe(true);
+    expect(matchesGlob("src/**", "src/a.ts")).toBe(true);
+  });
+
+  it("in-memory driver honours **/-prefixed whitelists", () => {
+    const d = new InMemorySandboxDriver({ allowedGlobs: ["**/*.ts"] });
+    expect(() => d.assertPathWhitelisted("a/b.ts")).not.toThrow();
   });
 });

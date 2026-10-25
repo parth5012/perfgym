@@ -41,8 +41,8 @@ export function matchesGlob(pattern: string, targetPath: string): boolean {
     .replace(/\*/g, "[^/]*")
     .replace(/___GLOBSTAR___/g, ".*")
     .replace(/___SLASH_GLOBSTAR_SLASH___/g, "/(?:.*/)?")
-    .replace(/___SLASH_GLOBSTAR_END___/g, "/(?:.*)?")
-    .replace(/___GLOBSTAR_SLASH_START___/g, "/(?:.*/)?");
+    .replace(/___SLASH_GLOBSTAR_END___/g, "(?:/.*)?")
+    .replace(/___GLOBSTAR_SLASH_START___/g, "(?:.*/)?");
 
   return new RegExp(`^${regexStr}$`, isWin ? "i" : "").test(normPath);
 }
