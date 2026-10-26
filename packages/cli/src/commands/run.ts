@@ -116,7 +116,10 @@ export const asEffect = (value: unknown): Effect.Effect<unknown, unknown, never>
     value !== null &&
     typeof (value as { then?: unknown }).then === "function"
   ) {
-    return Effect.tryPromise(() => value as Promise<unknown>);
+    return Effect.tryPromise({
+      try: () => value as Promise<unknown>,
+      catch: (error) => error,
+    });
   }
   return Effect.sync(() => value);
 };
