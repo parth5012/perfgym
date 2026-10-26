@@ -769,6 +769,10 @@ export const EXIT_INTERRUPTED = 130;
  * the generic `1` instead of silently inheriting an unrelated code.
  */
 const EXIT_CODE_BY_ERROR_KIND: Readonly<Record<string, number>> = {
+  // 1 — generic domain error (map #70): named here so the intent is explicit;
+  // every class absent from this map falls through to the same generic 1.
+  FileNotFoundError: EXIT_FAILURE,
+  SandboxLockNotHeldError: EXIT_FAILURE,
   // 2 — usage / config
   ConfigError: EXIT_USAGE,
   UnknownFormatError: EXIT_USAGE,

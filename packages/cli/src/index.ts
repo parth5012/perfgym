@@ -228,8 +228,14 @@ program
     // The baseline program runs at the edge through the shared runner: a
     // thrown config error is rendered (and exit-coded) by `fail` below.
     const outcome = await runEffect(runBaseline({ samples }), {
+      signals: true,
       onError: (error) => fail(formatter, options, error),
     });
+    if (outcome.status === "interrupted") {
+      // Same Ctrl-C contract as `perfgym run`: interruption is the outcome,
+      // not a success and not a silent fall-through to exit code 0.
+      process.exit(130);
+    }
     if (outcome.status !== "success") {
       return;
     }
