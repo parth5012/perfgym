@@ -3,6 +3,7 @@ import { Cause, Effect, Exit, Option } from "effect";
 import {
   asEffect,
   collectStrayChildPids,
+  dropPid,
   releaseSandbox,
 } from "../src/commands/run.js";
 import type { GitSandboxCoordinator, GitWorktreeDriver } from "../../core/src/index.js";
@@ -43,6 +44,21 @@ describe("collectStrayChildPids (portable child discovery, self-review fix)", ()
     const pids = collectStrayChildPids({ readProcChildren: () => "101 102\n", exec });
     expect(pids).toEqual([101, 102]);
     expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("treats an EMPTY /proc answer as authoritative too (no shell-out)", () => {
+    // Linux reports "" when the process has no children — that is an answer,
+    // not a failure: falling through to `ps` here made the ps helper list ITSELF
+    // and got its (possibly recycled) PID SIGKILLed at the end of every run.
+    const exec = vi.fn(() => "9999\n");
+    expect(collectStrayChildPids({ readProcChildren: () => "", exec })).toEqual([]);
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("drops the exec helper's own pid from the candidate list", () => {
+    expect(dropPid("5151 4242\n", 4242)).toBe("5151");
+    expect(dropPid("4242\n", 4242)).toBe("");
+    expect(dropPid("101 102\n", 7)).toBe("101 102");
   });
 
   it("prefers pgrep -P over the GNU-only ps --ppid when /proc is unavailable", () => {

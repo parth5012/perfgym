@@ -18,6 +18,7 @@ import {
   type NegativeMemoryEntry,
   matchesGlob,
   SessionFileStore,
+  stripAnsiDeep,
   type SessionLoadOutcome,
   type SerializedSessionState,
 } from "../../core/src/index.js";
@@ -877,7 +878,10 @@ export const structuredError = (error: unknown): { error: StructuredError } => {
       } catch {
         continue;
       }
-      details[key] = value;
+      // Detail values are cleaned at the source too: `JSON.stringify` writes
+      // ESC as `\u001b`, so a post-serialization strip never matches, and a
+      // consumer's `JSON.parse` would otherwise see raw ANSI (AC2).
+      details[key] = stripAnsiDeep(value);
     }
   } else if (typeof error === "string") {
     message = error;

@@ -145,4 +145,20 @@ describe("JSON error document (Ticket #51, AC2)", () => {
     ) as { error: { message: string } };
     expect(doc.error.message).toBe("boom");
   });
+
+  it("strips ANSI from detail values, not only from the message", () => {
+    const withStderr = Object.assign(new Error("git failed"), {
+      code: "ERR_GIT",
+      stderr: "\u001b[31mfatal: denied\u001b[0m",
+      stdout: "ok\u001b[0m",
+    });
+    const doc = JSON.parse(renderStructuredError(withStderr)) as {
+      error: { details: { stderr: string; stdout: string } };
+    };
+    // What a consumer sees after JSON.parse — ESC must not survive there.
+    expect(doc.error.details.stderr).toBe("fatal: denied");
+    expect(doc.error.details.stdout).toBe("ok");
+    expect(doc.error.details.stderr).not.toMatch(/\u001b/);
+    expect(doc.error.details.stdout).not.toMatch(/\u001b/);
+  });
 });
