@@ -10,7 +10,7 @@
  * - Auto-promotion of the winning worktree state to the target branch
  */
 
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import chalk from "chalk";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -163,13 +163,31 @@ export const collectStrayChildPids = (adapters: {
       return null;
     }
   };
-  collect(tryRead());
-  if (pids.length === 0) collect(tryExec("pgrep", ["-P", String(process.pid)]));
+  const proc = tryRead();
+  if (proc !== null) {
+    // /proc answered — including with "" for "no children". That is an
+    // answer, not a failure: falling through to `ps` here lets the helper
+    // list ITSELF (it is our child) and get its possibly-recycled PID killed.
+    collect(proc);
+    return pids;
+  }
+  collect(tryExec("pgrep", ["-P", String(process.pid)]));
   if (pids.length === 0) {
     collect(tryExec("ps", ["-o", "pid=", "--ppid", String(process.pid)]));
   }
   return pids;
 };
+
+/**
+ * Drop one PID from a whitespace-separated pid list — used to remove the
+ * `ps`/`pgrep` helper itself, which is a child of this process and would
+ * otherwise be reported (and later SIGKILLed) by `--ppid` matching.
+ */
+export const dropPid = (raw: string, pid: number): string =>
+  raw
+    .split(/\s+/)
+    .filter((token) => token.length > 0 && Number(token) !== pid)
+    .join(" ");
 
 /**
  * Best-effort SIGKILL of this process's direct children.
@@ -184,7 +202,14 @@ const killStrayChildProcesses = (): void => {
   const children = collectStrayChildPids({
     readProcChildren: () =>
       fs.readFileSync(`/proc/self/task/${process.pid}/children`, "utf8"),
-    exec: (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" }),
+    exec: (cmd, args) => {
+      // spawnSync (not execFileSync) so the helper's own PID is knowable:
+      // `ps --ppid <us>` lists the ps process itself, and SIGKILLing a
+      // recycled PID later would take down an unrelated process.
+      const res = spawnSync(cmd, args, { encoding: "utf8" });
+      if (res.error || res.status !== 0) return null;
+      return dropPid(res.stdout ?? "", res.pid);
+    },
   });
   for (const pid of children) {
     try {
