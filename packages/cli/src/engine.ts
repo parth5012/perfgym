@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Fiber, Option } from "effect";
 import {
   EvaluationPipeline,
   runInvariantGate,
@@ -9,6 +9,8 @@ import {
   NegativeMemoryCache,
   hashMutatedFiles,
   DEFAULT_NEGATIVE_MEMORY_ENTRIES,
+  ConfigError,
+  ERR_CONFIG,
   type PerfGymConfig,
   type StepEvaluation,
   type WorkspaceContext,
@@ -176,12 +178,24 @@ const normaliseAgentBudget = (config: Record<string, unknown>): PerfGymConfig["a
 export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   const configPath = path.join(rootDir, CONFIG_FILE_NAME);
   if (!fs.existsSync(configPath)) {
-    throw new Error(`Configuration file not found: ${configPath}. Run 'perfgym init' first.`);
+    // A missing config is a usage/config failure (exit code 2), so it is a
+    // tagged domain error rather than a bare Error (Ticket #51).
+    throw new ConfigError({
+      code: ERR_CONFIG,
+      configPath,
+      reason: "missing",
+      message: `Configuration file not found: ${configPath}. Run 'perfgym init' first.`,
+    });
   }
   const content = fs.readFileSync(configPath, "utf8");
   const parsed = asRecord(parseYaml(content) as unknown);
   if (parsed === null || !parsed.target || !parsed.invariants || !parsed.metrics) {
-    throw new Error(`Invalid configuration format in ${configPath}`);
+    throw new ConfigError({
+      code: ERR_CONFIG,
+      configPath,
+      reason: "invalid",
+      message: `Invalid configuration format in ${configPath}`,
+    });
   }
 
   // The YAML is returned verbatim — the documented `agent_budget` block
@@ -485,81 +499,93 @@ export type BaselineResult =
       error: string;
     };
 
-export async function runBaseline(options: BaselineOptions = {}): Promise<BaselineResult> {
-  const cwd = options.cwd ?? process.cwd();
-  const config = loadConfig(cwd);
+/**
+ * Establish (or re-establish) the baseline of a project.
+ *
+ * Returns an EFFECT — like every other command handler after Ticket #51 —
+ * so the edge (`runEffect`) decides how it executes and renders. The two
+ * gate/benchmark sub-programs are observed through `Effect.exit`, keeping the
+ * original "reported outcome, not a thrown error" contract of this function.
+ */
+export function runBaseline(
+  options: BaselineOptions = {},
+): Effect.Effect<BaselineResult, never, never> {
+  return Effect.gen(function* () {
+    const cwd = options.cwd ?? process.cwd();
+    const config = loadConfig(cwd);
 
-  // 1. Run invariant gate
-  const invariantExit = await Effect.runPromiseExit(
-    runInvariantGate({
-      command: config.invariants.command,
-      cwd,
-      timeoutMs: config.invariants.timeoutMs,
-    })
-  );
-
-  if (Exit.isFailure(invariantExit)) {
-    const err = invariantExit.cause;
-    return {
-      success: false,
-      error: `Invariants gate failed: ${err}`,
-    };
-  }
-
-  const invariantRes = invariantExit.value;
-  if (!invariantRes.passed) {
-    return {
-      success: false,
-      error: `Invariants gate failed: ${invariantRes.output}`,
-    };
-  }
-
-  // 2. Measure baseline benchmark distributions
-  const baselineMetrics: Record<string, number> = {};
-  const baselineDistributions: Record<string, BenchmarkDistribution> = {};
-
-  for (const metric of config.metrics) {
-    const benchExit = await Effect.runPromiseExit(
-      runBenchmark({
-        command: metric.command,
+    // 1. Run invariant gate
+    const invariantExit = yield* Effect.exit(
+      runInvariantGate({
+        command: config.invariants.command,
         cwd,
-        samples: options.samples ?? 5,
-        unit: metric.unit ?? "count",
-        ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
-      })
+        timeoutMs: config.invariants.timeoutMs,
+      }),
     );
 
-    if (Exit.isFailure(benchExit)) {
+    if (Exit.isFailure(invariantExit)) {
+      const err = invariantExit.cause;
       return {
         success: false,
-        error: `Benchmark '${metric.name}' failed during baseline measurement: ${benchExit.cause}`,
+        error: `Invariants gate failed: ${err}`,
       };
     }
 
-    const dist = benchExit.value;
-    baselineDistributions[metric.name] = dist;
-    baselineMetrics[metric.name] = dist.p50;
-  }
+    const invariantRes = invariantExit.value;
+    if (!invariantRes.passed) {
+      return {
+        success: false,
+        error: `Invariants gate failed: ${invariantRes.output}`,
+      };
+    }
 
-  const state: PerfGymState = {
-    version: config.version || "0.1.0",
-    initializedAt: Date.now(),
-    updatedAt: Date.now(),
-    targetName: config.target.name,
-    baselineMetrics,
-    baselineDistributions,
-    invariantsPassed: true,
-    bestFitnessScore: 0,
-    acceptedStepCount: 0,
-    totalStepCount: 0,
-  };
+    // 2. Measure baseline benchmark distributions
+    const baselineMetrics: Record<string, number> = {};
+    const baselineDistributions: Record<string, BenchmarkDistribution> = {};
 
-  const saved = saveSession(cwd, state);
+    for (const metric of config.metrics) {
+      const benchExit = yield* Effect.exit(
+        runBenchmark({
+          command: metric.command,
+          cwd,
+          samples: options.samples ?? 5,
+          unit: metric.unit ?? "count",
+          ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
+        }),
+      );
 
-  return {
-    success: true,
-    state: saved,
-  };
+      if (Exit.isFailure(benchExit)) {
+        return {
+          success: false,
+          error: `Benchmark '${metric.name}' failed during baseline measurement: ${benchExit.cause}`,
+        };
+      }
+
+      const dist = benchExit.value;
+      baselineDistributions[metric.name] = dist;
+      baselineMetrics[metric.name] = dist.p50;
+    }
+
+    const state: PerfGymState = {
+      version: config.version || "0.1.0",
+      initializedAt: Date.now(),
+      updatedAt: Date.now(),
+      targetName: config.target.name,
+      baselineMetrics,
+      baselineDistributions,
+      invariantsPassed: true,
+      bestFitnessScore: 0,
+      acceptedStepCount: 0,
+      totalStepCount: 0,
+    };
+
+    const saved = saveSession(cwd, state);
+
+    return {
+      success: true,
+      state: saved,
+    };
+  });
 }
 
 export interface StepOptions {
@@ -709,3 +735,282 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
     evaluation,
   };
 }
+
+// ============================================================================
+// The Effect edge runner (Ticket #51)
+//
+// ONE place executes Effect programs in production: the CLI and MCP edges
+// call `runEffect`, which owns interruption (SIGINT/SIGTERM), outcome
+// mapping, and the exit-code contract. Domain code hands back Effects and
+// never runs them itself.
+// ============================================================================
+
+/** 0 — the program succeeded. */
+export const EXIT_SUCCESS = 0;
+/** 1 — generic domain error (anything without a more specific class). */
+export const EXIT_FAILURE = 1;
+/** 2 — usage / configuration error (bad args, missing config, missing API key). */
+export const EXIT_USAGE = 2;
+/** 3 — the sandbox lock is held by someone else. */
+export const EXIT_LOCK_BUSY = 3;
+/** 4 — sandbox / integrity violation (traversal, tampering, disqualification). */
+export const EXIT_SANDBOX_VIOLATION = 4;
+/** 5 — external tool failure (git, tsc, benchmark / invariant command). */
+export const EXIT_EXTERNAL_TOOL = 5;
+/** 130 — 128 + SIGINT: the run was interrupted by Ctrl-C / SIGTERM. */
+export const EXIT_INTERRUPTED = 130;
+
+/**
+ * The documented error-class → exit-code table (AC1). Keyed on `_tag`
+ * (Effect `Data.TaggedError`) or, for plain Errors, on `name`.
+ *
+ * Deliberately a MAP and not a chain of instanceof checks: the mapping is
+ * data, reviewable at a glance, and a class nobody listed falls through to
+ * the generic `1` instead of silently inheriting an unrelated code.
+ */
+const EXIT_CODE_BY_ERROR_KIND: Readonly<Record<string, number>> = {
+  // 2 — usage / config
+  ConfigError: EXIT_USAGE,
+  UnknownFormatError: EXIT_USAGE,
+  MissingApiKeyError: EXIT_USAGE,
+  UnknownDriverError: EXIT_USAGE,
+  InvalidRunIdError: EXIT_USAGE,
+  InvalidStepOptionError: EXIT_USAGE,
+  // 3 — lock busy
+  SandboxLockBusyError: EXIT_LOCK_BUSY,
+  // 4 — sandbox / integrity
+  PathTraversalError: EXIT_SANDBOX_VIOLATION,
+  PathOutsideTargetError: EXIT_SANDBOX_VIOLATION,
+  TamperingError: EXIT_SANDBOX_VIOLATION,
+  DisqualificationError: EXIT_SANDBOX_VIOLATION,
+  WorktreeDiskBudgetExceededError: EXIT_SANDBOX_VIOLATION,
+  // 5 — external tool failures
+  GitCommandError: EXIT_EXTERNAL_TOOL,
+  WorktreeNotFoundError: EXIT_EXTERNAL_TOOL,
+  TypecheckError: EXIT_EXTERNAL_TOOL,
+  InvariantFailureError: EXIT_EXTERNAL_TOOL,
+  BenchmarkExecutionError: EXIT_EXTERNAL_TOOL,
+  LlmDriverError: EXIT_EXTERNAL_TOOL,
+  LlmFatalError: EXIT_EXTERNAL_TOOL,
+};
+
+/**
+ * The `kind` of an error: the Effect `_tag` when present, otherwise the
+ * `name` of an Error, otherwise undefined (a non-error value).
+ */
+const errorKind = (error: unknown): string | undefined => {
+  if (typeof error !== "object" || error === null) return undefined;
+  const candidate = error as { _tag?: unknown; name?: unknown };
+  if (typeof candidate._tag === "string") return candidate._tag;
+  if (typeof candidate.name === "string") return candidate.name;
+  return undefined;
+};
+
+/**
+ * Map any thrown value onto the documented exit-code contract:
+ * 0 success is never derived from an error; everything unmapped is the
+ * generic domain failure `1`.
+ */
+export const exitCodeForError = (error: unknown): number => {
+  const kind = errorKind(error);
+  if (kind !== undefined) {
+    const mapped = EXIT_CODE_BY_ERROR_KIND[kind];
+    if (mapped !== undefined) return mapped;
+  }
+  return EXIT_FAILURE;
+};
+
+/** ANSI CSI sequences (colour is never part of a structured error document). */
+const ANSI_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
+/** The four-key payload of the JSON error document (AC2). */
+export interface StructuredError {
+  readonly code: string;
+  readonly kind: string;
+  readonly message: string;
+  readonly details: Record<string, unknown>;
+}
+
+/**
+ * Build `{ error: { code, kind, message, details } }` for any thrown value.
+ *
+ * - `code`: the domain error's own `code`, falling back to `_tag` (the same
+ *   precedence the shared formatter uses), then `ERR_UNKNOWN`.
+ * - `kind`: `_tag` / `name` — the error CLASS, never a stack.
+ * - `details`: the error's own enumerable payload minus the four envelope
+ *   keys (and `cause`), so nothing inlined into a message can smuggle frames.
+ *   Values that cannot survive JSON (circular, functions) are dropped so the
+ *   rendered document and the object MCP serialises are always identical.
+ */
+export const structuredError = (error: unknown): { error: StructuredError } => {
+  const kind =
+    errorKind(error) ?? (typeof error === "object" && error !== null ? "UnknownError" : "Error");
+
+  let code = "ERR_UNKNOWN";
+  let details: Record<string, unknown> = {};
+  let message = "";
+
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as { code?: unknown; _tag?: unknown; message?: unknown };
+    if (typeof candidate.code === "string" && candidate.code.length > 0) {
+      code = candidate.code;
+    } else if (typeof candidate._tag === "string" && candidate._tag.length > 0) {
+      code = candidate._tag;
+    }
+    if (typeof candidate.message === "string") {
+      message = candidate.message;
+    }
+
+    const skip = new Set(["code", "_tag", "message", "name", "stack", "cause"]);
+    details = {};
+    for (const key of Object.keys(error)) {
+      if (skip.has(key)) continue;
+      const value = (error as Record<string, unknown>)[key];
+      // Drop what JSON cannot carry — a document that renders is worth more
+      // than a key that makes JSON.stringify (or MCP serialisation) throw.
+      try {
+        if (JSON.stringify(value) === undefined) continue;
+      } catch {
+        continue;
+      }
+      details[key] = value;
+    }
+  } else if (typeof error === "string") {
+    message = error;
+  } else {
+    message = String(error);
+  }
+
+  if (message.length === 0 && typeof error === "object" && error !== null) {
+    message = String(error);
+  }
+
+  // ANSI never survives into a structured document: `JSON.stringify` escapes
+  // the ESC byte as `\u001b`, so stripping AFTER serialization misses it —
+  // the message is cleaned here, at the source (AC2).
+  message = message.replace(ANSI_PATTERN, "");
+
+  return {
+    error: {
+      code,
+      kind,
+      message,
+      details,
+    },
+  };
+};
+
+/**
+ * Render the structured error as a JSON document — the ONLY shape a
+ * `--format json` failure (and an MCP tool failure) ever takes. No stack
+ * trace, no ANSI: both are stripped at this single choke point.
+ */
+export const renderStructuredError = (error: unknown): string => {
+  let raw: string;
+  try {
+    raw = JSON.stringify(structuredError(error));
+  } catch {
+    raw = JSON.stringify({
+      error: { code: "ERR_UNKNOWN", kind: "Error", message: String(error), details: {} },
+    });
+  }
+  return raw.replace(ANSI_PATTERN, "");
+};
+
+export interface RunEffectOptions {
+  /** Called once for a failed (non-interrupted) program, before the outcome resolves. */
+  readonly onError?: (error: unknown, exitCode: number) => void;
+  /**
+   * Install SIGINT/SIGTERM handlers that interrupt the program's fiber, so
+   * `Effect.acquireRelease` finalizers run before the outcome resolves.
+   * Opt-in: unit tests and embedding callers keep Node's default behaviour.
+   */
+  readonly signals?: boolean;
+}
+
+/** The terminal state of one `runEffect` call — a discriminated union. */
+export type RunOutcome<A> =
+  | { readonly status: "success"; readonly value: A; readonly exitCode: typeof EXIT_SUCCESS }
+  | { readonly status: "failure"; readonly error: unknown; readonly exitCode: number }
+  | { readonly status: "interrupted"; readonly exitCode: typeof EXIT_INTERRUPTED };
+
+/**
+ * The one edge at which Effect programs execute (Ticket #51).
+ *
+ * Runs `program` on a forked fiber so a signal can interrupt it:
+ *
+ * - **success** → `{ status: "success", value, exitCode: 0 }`;
+ * - **failure** → `onError(error, exitCodeForError(error))` is invoked and a
+ *   `{ status: "failure", error, exitCode }` outcome resolves — a typed
+ *   domain failure wins over any defect raised while unwinding;
+ * - **SIGINT/SIGTERM** → the fiber is interrupted, `acquireRelease`
+ *   finalizers run to completion, and the outcome is
+ *   `{ status: "interrupted", exitCode: 130 }`.
+ *
+ * The caller decides how to render (JSON vs markdown) and how to exit;
+ * `runEffect` itself never writes output and never calls `process.exit`.
+ */
+export const runEffect = <A>(
+  program: Effect.Effect<A, unknown, never>,
+  options: RunEffectOptions = {},
+): Promise<RunOutcome<A>> =>
+  (async (): Promise<RunOutcome<A>> => {
+    const signals: readonly NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+    let interruptedBySignal = false;
+    // The interrupt action is wired AFTER the fork (it closes over the fiber)
+    // but the LISTENERS are installed BEFORE it: `Effect.runFork` executes the
+    // program synchronously up to its first async boundary, and the run's
+    // git-worktree acquisition is synchronous. A Ctrl-C landing in that window
+    // must still find a SIGINT listener — otherwise Node's default action kills
+    // the process with the sandbox still held (stale lock + orphaned worktree,
+    // the exact bug AC4 covers). The listener body can only run on an event
+    // loop turn, i.e. after `runFork` returned, so `interrupt` is always set.
+    let interrupt: (() => void) | null = null;
+    const onSignal = (): void => {
+      interruptedBySignal = true;
+      interrupt?.();
+    };
+    if (options.signals === true) {
+      for (const signal of signals) process.on(signal, onSignal);
+    }
+
+    const fail = (error: unknown): RunOutcome<A> => {
+      const exitCode = exitCodeForError(error);
+      options.onError?.(error, exitCode);
+      return { status: "failure", error, exitCode };
+    };
+
+    try {
+      const fiber = Effect.runFork(program);
+      // Interrupting waits for the finalizers: by the time this settles the
+      // sandbox release has already run.
+      interrupt = (): void => {
+        void Effect.runPromise(Fiber.interrupt(fiber)).catch(() => {
+          // The fiber may already be done — nothing to interrupt.
+        });
+      };
+
+      const exit: Exit.Exit<A, unknown> = await Effect.runPromise(Fiber.await(fiber));
+      if (Exit.isSuccess(exit)) {
+        return { status: "success", value: exit.value, exitCode: EXIT_SUCCESS };
+      }
+
+      // 1. A typed domain failure is the run's own verdict.
+      const failure = Cause.findErrorOption(exit.cause);
+      if (Option.isSome(failure)) {
+        return fail(failure.value);
+      }
+      // 2. Ctrl-C: no domain failure — the interruption IS the outcome.
+      if (interruptedBySignal) {
+        return { status: "interrupted", exitCode: EXIT_INTERRUPTED };
+      }
+      // 3. A defect (e.g. an unexpected throw): squashed back to its value so
+      //    domain error classes still map to their documented exit code.
+      return fail(Cause.squash(exit.cause));
+    } finally {
+      if (options.signals === true) {
+        for (const signal of signals) process.off(signal, onSignal);
+      }
+    }
+  })();
+

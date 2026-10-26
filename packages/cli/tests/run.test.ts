@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Effect } from "effect";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { runOptimizationLoop, type MutationContext, type MutationGenerator } from "../src/commands/run.js";
-import { saveSession } from "../src/engine.js";
+import { runEffect, saveSession } from "../src/engine.js";
 import { liveSessionFor } from "../src/live-session.js";
 import { GitSandboxCoordinator } from "../../core/src/index.js";
 
@@ -106,12 +107,12 @@ metrics:
       return [{ relPath: "src/index.ts", content: code }];
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 2,
       generator,
       samples: 1,
-    });
+    }));
 
     expect(res.acceptedCount).toBe(1);
     // Iteration 1 observer: no steps yet, mid-mutation status... already
@@ -152,12 +153,12 @@ metrics:
 
     try {
       await expect(
-        runOptimizationLoop({
+        Effect.runPromise(runOptimizationLoop({
           cwd: testDir,
           maxIterations: 1,
           generator,
           samples: 1,
-        }),
+        })),
       ).rejects.toThrow("mutation blew up");
     } finally {
       failingRelease.mockRestore();
@@ -185,12 +186,12 @@ metrics:
 
     try {
       await expect(
-        runOptimizationLoop({
+        Effect.runPromise(runOptimizationLoop({
           cwd: testDir,
           maxIterations: 1,
           generator,
           samples: 1,
-        }),
+        })),
       ).rejects.toThrow("mutation blew up");
       // The flush failure was surfaced as a warning, not swallowed silently.
       expect(
@@ -289,12 +290,12 @@ metrics:
       ];
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 3,
       generator: mockGenerator,
       samples: 2,
-    });
+    }));
 
     expect(res.totalIterations).toBe(3);
     expect(res.acceptedCount).toBe(2);
@@ -353,12 +354,12 @@ metrics:
       return [{ relPath: "src/index.ts", content: code }];
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 2,
       generator,
       samples: 2,
-    });
+    }));
     expect(res.acceptedCount).toBe(1);
     expect(res.promoted).toBe(true);
 
@@ -411,13 +412,13 @@ metrics:
       ];
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 10,
       generator: mockGenerator,
       samples: 1,
       plateauThreshold: 3,
-    });
+    }));
 
     // Should stop at iteration 3 due to 3 consecutive non-improving steps
     expect(res.totalIterations).toBe(3);
@@ -502,12 +503,12 @@ metrics:
       { relPath: "src/index.ts", content: "// value: 150\nexport let count = 1;\n" },
     ];
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 1,
       generator,
       samples: 1,
-    });
+    }));
 
     expect(res.acceptedCount).toBe(0);
     expect(res.evaluations).toHaveLength(1);
@@ -534,12 +535,12 @@ metrics:
     const firstGenerator: MutationGenerator = async () => [
       { relPath: "src/index.ts", content: "// value: 150\nexport let count = 1;\n" },
     ];
-    await runOptimizationLoop({
+    await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 1,
       generator: firstGenerator,
       samples: 1,
-    });
+    }));
 
     const afterFirst = readMemoryFile(testDir);
     expect(afterFirst.targets["memory-test"]?.entries).toHaveLength(1);
@@ -549,12 +550,12 @@ metrics:
     const secondGenerator: MutationGenerator = async () => [
       { relPath: "src/index.ts", content: "// value: 170\nexport let count = 2;\n" },
     ];
-    await runOptimizationLoop({
+    await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 1,
       generator: secondGenerator,
       samples: 1,
-    });
+    }));
 
     const afterSecond = readMemoryFile(testDir);
     const entries = afterSecond.targets["memory-test"]?.entries ?? [];
@@ -571,12 +572,12 @@ metrics:
       { relPath: "src/index.ts", content: "// value: 70\nexport let count = 3;\n" },
     ];
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 1,
       generator,
       samples: 1,
-    });
+    }));
 
     expect(res.acceptedCount).toBe(1);
     expect(fs.existsSync(path.join(testDir, NEGATIVE_MEMORY_FILE))).toBe(false);
@@ -639,12 +640,12 @@ metrics:
       { relPath: "src/index.ts", content: "// value: 70\nexport let count = 3;\n" },
     ];
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 1,
       generator,
       samples: 1,
-    });
+    }));
 
     // Every step was accepted: nothing new was learned, so the file is not
     // rewritten at all.
@@ -668,12 +669,12 @@ metrics:
       return [{ relPath: "src/index.ts", content }];
     };
 
-    await runOptimizationLoop({
+    await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 2,
       generator,
       samples: 1,
-    });
+    }));
 
     // The memory channel is present on EVERY iteration — the first one
     // included, even when nothing has been remembered yet.
@@ -724,12 +725,12 @@ metrics:
       return [{ relPath: "src/index.ts", content: "// value: 150\nexport let count = 1;\n" }];
     };
 
-    await runOptimizationLoop({
+    await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 1,
       generator,
       samples: 1,
-    });
+    }));
 
     // The very first mutation already knows about the persisted failure.
     const remembered = contexts[0]!.negativeMemory;
@@ -753,12 +754,12 @@ metrics:
       { relPath: "src/index.ts", content: contents[index++] ?? contents[0]! },
     ];
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 3,
       generator,
       samples: 1,
-    });
+    }));
 
     expect(res.evaluations[1]!.accepted).toBe(true);
     expect(res.evaluations[2]!.accepted).toBe(false);
@@ -774,5 +775,128 @@ metrics:
     // The accepted-but-not-better step must not appear at all.
     expect(entries.some((entry) => entry.step === 2)).toBe(false);
     expect(entries.some((entry) => entry.deltaPercent === 10)).toBe(false);
+  });
+});
+
+// ============================================================================
+// Sandbox lifecycle at the edge (Ticket #51 — AC3)
+// ============================================================================
+
+describe("Sandbox lifecycle under the edge runner (Ticket #51)", () => {
+  const configYaml = `
+version: "1.0"
+target:
+  name: "lifecycle-target"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "instructions"
+    command: "node -e 'const fs = require(\\"fs\\"); const txt = fs.readFileSync(\\"src/index.ts\\", \\"utf8\\"); const m = txt.match(/value: (\\\\d+)/); const v = m ? parseInt(m[1]) : 100; console.log(JSON.stringify({ value: v }));'"
+    goal: "minimize"
+    weight: 1
+    unit: "count"
+`;
+
+  let testDir: string;
+  const lockDir = (): string => path.join(testDir, ".perfgym", ".lock.d");
+
+  beforeEach(() => {
+    testDir = path.join(
+      tmpdir(),
+      `perfgym-run-lifecycle-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    );
+    fs.mkdirSync(testDir, { recursive: true });
+
+    try {
+      execFileSync("git", ["init", "-b", "main"], { cwd: testDir, stdio: "ignore" });
+    } catch {
+      execFileSync("git", ["init"], { cwd: testDir, stdio: "ignore" });
+    }
+    execFileSync("git", ["config", "user.name", "Test Sentinel"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "sentinel@test.com"], { cwd: testDir, stdio: "ignore" });
+
+    fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(testDir, "src", "index.ts"), "// value: 100\nexport let count = 0;\n", "utf8");
+    fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), configYaml, "utf8");
+    execFileSync("git", ["add", "-A"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: testDir, stdio: "ignore" });
+
+    saveSession(testDir, {
+      version: "1.0",
+      initializedAt: Date.now(),
+      updatedAt: Date.now(),
+      targetName: "lifecycle-target",
+      baselineMetrics: { instructions: 100 },
+      invariantsPassed: true,
+      bestFitnessScore: 0,
+      acceptedStepCount: 0,
+      totalStepCount: 0,
+    });
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it("removes the worktree and releases the lock when the program fails", async () => {
+    let sandboxDir = "";
+    const rendered: { error: unknown; exitCode: number | null } = {
+      error: null,
+      exitCode: null,
+    };
+    const generator: MutationGenerator = async (context) => {
+      // The sandbox exists at this point: remember it so the assertions can
+      // prove it is gone after the failure.
+      sandboxDir = context.workingDir;
+      throw new Error("mutation blew up");
+    };
+
+    const outcome = await runEffect(
+      runOptimizationLoop({ cwd: testDir, maxIterations: 1, generator, samples: 1 }),
+      {
+        onError: (error, exitCode) => {
+          rendered.error = error;
+          rendered.exitCode = exitCode;
+        },
+      },
+    );
+
+    expect(outcome.status).toBe("failure");
+    if (outcome.status !== "failure") return;
+
+    // The failure reaches the edge with the generic-domain-error exit code (1)
+    // and is handed to `onError` for rendering.
+    expect(outcome.exitCode).toBe(1);
+    expect(rendered.exitCode).toBe(1);
+    expect((rendered.error as Error).message).toContain("mutation blew up");
+
+    // AC3: teardown ran despite the failure — no orphaned worktree, no lock.
+    expect(sandboxDir).not.toBe("");
+    expect(fs.existsSync(sandboxDir)).toBe(false);
+    expect(fs.existsSync(lockDir())).toBe(false);
+  });
+
+  it("leaves no worktree and no lock behind a successful run either", async () => {
+    let sandboxDir = "";
+    const generator: MutationGenerator = async (context) => {
+      sandboxDir = context.workingDir;
+      return [{ relPath: "src/index.ts", content: "// value: 70\nexport let count = 1;\n" }];
+    };
+
+    const outcome = await runEffect(
+      runOptimizationLoop({ cwd: testDir, maxIterations: 1, generator, samples: 1 }),
+    );
+
+    expect(outcome.status).toBe("success");
+    if (outcome.status !== "success") return;
+    expect(outcome.value.promoted).toBe(true);
+    expect(fs.existsSync(sandboxDir)).toBe(false);
+    expect(fs.existsSync(lockDir())).toBe(false);
   });
 });

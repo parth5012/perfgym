@@ -28,6 +28,17 @@ export interface CoordinatorOptions {
   staleThresholdMs?: number;
   heartbeatIntervalMs?: number;
   repoRoot?: string;
+  /**
+   * Register SIGINT/SIGTERM handlers that release the lock and exit the
+   * process (default `true`).
+   *
+   * The CLI run edge sets `false`: there the Effect runtime owns the signal
+   * (an interrupt runs the scoped `Effect.acquireRelease` finalizers, which
+   * remove the WORKTREE as well), and this handler would kill the process
+   * before those finalizers could run — leaving an orphaned worktree behind.
+   * The `exit` hook (last-resort lock release) is registered either way.
+   */
+  signalHooks?: boolean;
 }
 
 export interface LockMetadata {
@@ -47,12 +58,14 @@ export class GitSandboxCoordinator {
   private currentRunId: string | null = null;
   private locked = false;
   private repoRoot: string;
+  private signalHooks: boolean;
   private boundExitHandler: (() => void) | null = null;
   private boundSigintHandler: (() => void) | null = null;
   private boundSigtermHandler: (() => void) | null = null;
 
   constructor(driver?: WorkspaceDriver, options: CoordinatorOptions = {}) {
     this.repoRoot = options.repoRoot ?? process.cwd();
+    this.signalHooks = options.signalHooks ?? true;
     this.driver = driver ?? new GitWorktreeDriver({ repoRoot: this.repoRoot });
     this.lockDir = path.resolve(
       options.lockDir ?? path.join(this.repoRoot, ".perfgym", ".lock.d")
@@ -134,6 +147,13 @@ export class GitSandboxCoordinator {
     this.boundExitHandler = () => {
       this.syncRelease();
     };
+    process.once("exit", this.boundExitHandler);
+
+    // Ticket #51: the signal hooks are opt-out. With them off, the Effect
+    // edge's own interrupt handler owns SIGINT/SIGTERM so the scoped
+    // finalizers (worktree + lock + stray children) run to completion.
+    if (!this.signalHooks) return;
+
     this.boundSigintHandler = () => {
       this.syncRelease();
       process.exit(130);
@@ -143,7 +163,6 @@ export class GitSandboxCoordinator {
       process.exit(143);
     };
 
-    process.once("exit", this.boundExitHandler);
     process.once("SIGINT", this.boundSigintHandler);
     process.once("SIGTERM", this.boundSigtermHandler);
   }

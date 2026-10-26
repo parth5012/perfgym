@@ -267,6 +267,35 @@ metrics:
     expect(ok.result.isError).toBeUndefined();
   });
 
+  it("renders JSON tool failures as the shared structured error document (Ticket #51, AC2)", async () => {
+    // Same fresh-cwd failure as above, but asserting the SHAPE the CLI's
+    // `--format json` emits: { error: { code, kind, message, details } } —
+    // never a stack trace, never ANSI.
+    const failed = await server.handleJsonRpcRequest({
+      jsonrpc: "2.0",
+      id: 34,
+      method: "tools/call",
+      params: { name: "perfgym_step", arguments: { files: ["src/index.ts"], format: "json" } },
+    });
+
+    expect(failed.result.isError).toBe(true);
+    const text = failed.result.content[0].text as string;
+    const doc = JSON.parse(text) as { error: Record<string, unknown> };
+
+    expect(doc.error).toMatchObject({
+      code: expect.any(String),
+      kind: expect.any(String),
+      message: expect.any(String),
+      details: expect.any(Object),
+    });
+    expect(String(doc.error.message).length).toBeGreaterThan(0);
+
+    // Never a stack trace, never ANSI.
+    expect(text).not.toMatch(/\bat \S+:\d+:\d+/);
+    expect(text.toLowerCase()).not.toContain("stack");
+    expect(text).not.toContain("\u001b");
+  });
+
   it("exposes a format property on every tool input schema", async () => {
     const res = await server.handleJsonRpcRequest({
       jsonrpc: "2.0",

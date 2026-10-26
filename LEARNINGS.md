@@ -138,3 +138,17 @@
 ### 31. Awaiting a Non-thenable Effect Silently Does Nothing
 * **Problem**: `await someEffect` on an Effect value returns the Effect itself immediately without running it — migrated `await sandbox.release()` compiles under `any`-ish typing and appears to pass while never releasing the lock.
 * **Solution**: Every migrated call site must be `await Effect.runPromise(effect)` (edge-only). Sweep all external callers with rg for each migrated method name; rely on tsc (`Effect` is not `Promise`-compatible) to catch leftovers.
+
+## Effect Edge Runner & Signal Handling (Ticket #51)
+
+### 32. Signal Handlers Must Be Installed BEFORE `Effect.runFork`
+* **Problem**: `Effect.runFork(program)` executes the program synchronously up to its first async boundary. The run's sandbox `acquire()` is synchronous (`execFileSync("git", ["worktree","add",…])`), so `process.on("SIGINT")` registered AFTER `runFork` does not exist during the whole lock+worktree creation window — a Ctrl-C there hits Node with no listener, the default action kills the process, and the lock/worktree are orphaned (E2E: exit signal `SIGINT`, lock still on disk).
+* **Solution**: Register the listeners before forking and wire the fiber-dependent interrupt action right after (`let interrupt: (() => void) | null` closed over the forked fiber). JS signal callbacks run on an event-loop turn, which cannot happen while `runFork` is still blocking, so the fiber reference is always set by the time `onSignal` fires. Prove it with a SIGINT E2E that polls for lock+worktree existence — the polling observer is a *different* process and sees directories mid-`git worktree add`.
+
+### 33. A Wrapper Binary Relays Signals On Its Own Timer
+* **Problem**: spawning the CLI through `node_modules/.bin/tsx` starts a WRAPPER process; `child.kill("SIGINT")` signals the wrapper, which relays to its child with its own short timeout and then exits `130` itself. The test observes a "successful" 130 while the real CLI (the process holding the lock) is signalled late or SIGKILLed mid-cleanup — flaky under CPU load, green when idle.
+* **Solution**: in signal-sensitive E2E tests, spawn the real entrypoint as ONE process: `node --import <abs>/node_modules/tsx/dist/loader.mjs <cli-entry>` (absolute loader path — the test cwd is a temp dir with no node_modules). Always compare the spawned pid against the lock metadata pid to confirm you are signaling the process that owns the resources.
+
+### 34. Stripping ANSI After `JSON.stringify` Is a No-Op
+* **Problem**: `JSON.stringify` escapes the ESC byte as the six characters `\u001b`, so a `raw.replace(ANSI_PATTERN, "")` applied to the serialized document matches nothing — colored messages (`"\u001b[31mboom\u001b[0m"`) survive into `--format json` output.
+* **Solution**: strip ANSI from `message` (and any other string you control) while BUILDING the structured error, before serialization; keep the post-stringify replace only as a harmless belt-and-braces.
