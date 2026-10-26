@@ -25,6 +25,7 @@ import {
 import {
   loadSession,
   loadConfig,
+  renderStructuredError,
   type PerfGymState,
 } from "../../cli/src/engine.js";
 import {
@@ -51,6 +52,18 @@ const FORMAT_PROPERTY = {
 const resolveFormat = (args: Record<string, unknown>): OutputFormat =>
   // Unknown or missing values fall back to JSON rather than failing the call.
   args.format === "markdown" ? "markdown" : "json";
+
+/**
+ * Render a tool failure the way the CLI edge does (Ticket #51, AC2): JSON
+ * takes the ONE shared structured document `{ error: { code, kind, message,
+ * details } }` from `renderStructuredError` — never a stack, never ANSI —
+ * while markdown keeps the human-readable formatter output.
+ */
+const renderToolError = (
+  formatter: { format: OutputFormat; formatError: (error: unknown) => string },
+  error: unknown,
+): string =>
+  formatter.format === "json" ? renderStructuredError(error) : formatter.formatError(error);
 
 export interface McpTool {
   name: string;
@@ -509,7 +522,7 @@ export class PerfGymMcpServer {
             }
             return this.projectBaseline(formatter, state, distributions);
           } catch (err: unknown) {
-            return { text: formatter.formatError(err), isError: true };
+            return { text: renderToolError(formatter, err), isError: true };
           }
         });
       }
@@ -524,7 +537,7 @@ export class PerfGymMcpServer {
             const evaluation = await coordinator.handleStep({ files, samples, minDelta });
             return { text: formatter.formatStep(evaluation, this.bestEffortConfig()) };
           } catch (err: unknown) {
-            return { text: formatter.formatError(err), isError: true };
+            return { text: renderToolError(formatter, err), isError: true };
           }
         });
       }
@@ -551,7 +564,7 @@ export class PerfGymMcpServer {
             if (uninitialized) {
               return this.resetWorkingTree(formatter);
             }
-            return { text: formatter.formatError(err), isError: true };
+            return { text: renderToolError(formatter, err), isError: true };
           }
         });
       }
@@ -567,7 +580,7 @@ export class PerfGymMcpServer {
                   : JSON.stringify(report, null, 2),
             };
           } catch (err: unknown) {
-            return { text: formatter.formatError(err), isError: true };
+            return { text: renderToolError(formatter, err), isError: true };
           }
         });
       }
@@ -587,7 +600,7 @@ export class PerfGymMcpServer {
                   : JSON.stringify(result, null, 2),
             };
           } catch (err: unknown) {
-            return { text: formatter.formatError(err), isError: true };
+            return { text: renderToolError(formatter, err), isError: true };
           }
         });
       }
@@ -605,7 +618,7 @@ export class PerfGymMcpServer {
                   : JSON.stringify(outcome, null, 2),
             };
           } catch (err: unknown) {
-            return { text: formatter.formatError(err), isError: true };
+            return { text: renderToolError(formatter, err), isError: true };
           }
         });
       }
@@ -625,7 +638,7 @@ export class PerfGymMcpServer {
                   : JSON.stringify(outcome, null, 2),
             };
           } catch (err: unknown) {
-            return { text: formatter.formatError(err), isError: true };
+            return { text: renderToolError(formatter, err), isError: true };
           }
         });
       }
@@ -731,7 +744,8 @@ export class PerfGymMcpServer {
       };
     } catch (err: unknown) {
       return {
-        text: formatter.formatError(
+        text: renderToolError(
+          formatter,
           new Error(`Rollback failed: ${err instanceof Error ? err.message : String(err)}`)
         ),
         isError: true,

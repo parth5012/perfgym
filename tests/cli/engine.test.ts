@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { Effect } from "effect";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -305,7 +306,7 @@ metrics:
       fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
       fs.writeFileSync(path.join(testDir, "src", "index.ts"), "export const x = 1;", "utf8");
 
-      const res = await runBaseline({ cwd: testDir, samples: 2 });
+      const res = await Effect.runPromise(runBaseline({ cwd: testDir, samples: 2 }));
       expect(res.success).toBe(true);
       if (res.success) {
         expect(res.state.baselineMetrics["instructions"]).toBe(100);
@@ -334,7 +335,7 @@ metrics:
 `;
       fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), configYaml, "utf8");
 
-      const res = await runBaseline({ cwd: testDir, samples: 1 });
+      const res = await Effect.runPromise(runBaseline({ cwd: testDir, samples: 1 }));
       expect(res.success).toBe(false);
       if (!res.success) {
         expect(res.error).toContain("Invariants gate failed");

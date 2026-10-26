@@ -27,6 +27,9 @@ import {
   runStep,
   loadNegativeMemory,
   negativeMemoryFilePath,
+  runEffect,
+  exitCodeForError,
+  renderStructuredError,
 } from "./engine.js";
 import { runOptimizationLoop } from "./commands/run.js";
 import {
@@ -113,13 +116,16 @@ const write = (text: string): void => {
 
 /** Emit a failure through `formatError`; JSON goes to stdout so parsers can read it. */
 const fail = (formatter: OutputFormatter, options: OutputOptions, error: unknown): void => {
-  const text = render(formatter, formatter.formatError(error), options);
   if (formatter.format === "json") {
-    write(text);
+    // AC2: the ONE structured error document — {error:{code,kind,message,
+    // details}} — produced by renderStructuredError; never a stack, never ANSI.
+    write(renderStructuredError(error));
   } else {
+    const text = render(formatter, formatter.formatError(error), options);
     process.stderr.write(`${text}\n`);
   }
-  process.exitCode = 1;
+  // AC1: the documented error-class → exit-code contract.
+  process.exitCode = exitCodeForError(error);
 };
 
 const resolveFormatter = (options: OutputOptions): OutputFormatter =>
@@ -219,14 +225,15 @@ program
       write(render(formatter, "📊 Measuring baseline performance & invariant tests...", options));
     }
 
-    let res: Awaited<ReturnType<typeof runBaseline>>;
-    try {
-      res = await runBaseline({ samples });
-    } catch (error: unknown) {
-      fail(formatter, options, error);
+    // The baseline program runs at the edge through the shared runner: a
+    // thrown config error is rendered (and exit-coded) by `fail` below.
+    const outcome = await runEffect(runBaseline({ samples }), {
+      onError: (error) => fail(formatter, options, error),
+    });
+    if (outcome.status !== "success") {
       return;
     }
-
+    const res = outcome.value;
     if (!res.success) {
       fail(formatter, options, new Error(`Failed to establish baseline: ${res.error}`));
       return;
@@ -409,8 +416,12 @@ program
       const json = formatter.format === "json";
       applyColorPolicy(formatter, options);
 
-      try {
-        const result = await runOptimizationLoop({
+      // The run program executes at this edge only: runEffect owns the fiber,
+      // installs the SIGINT/SIGTERM handlers, and waits out the
+      // acquireRelease finalizers (worktree removal + lock release) before
+      // resolving. An interrupted run exits 130.
+      const outcome = await runEffect(
+        runOptimizationLoop({
           maxIterations: iterations,
           targetBranch: options.targetBranch,
           driver: options.driver,
@@ -425,37 +436,45 @@ program
           // Keep stdout pure JSON: the loop's live progress is suppressed,
           // its summary is rendered below through the formatter.
           quiet: json,
-        });
-
-        if (json) {
-          write(
-            render(
-              formatter,
-              JSON.stringify(
-                {
-                  status: result.stoppedReason,
-                  totalIterations: result.totalIterations,
-                  acceptedCount: result.acceptedCount,
-                  bestFitnessScore: Number.isFinite(result.bestFitnessScore)
-                    ? result.bestFitnessScore
-                    : null,
-                  promoted: result.promoted,
-                  totalCostUsd: result.totalCostUsd,
-                  totalTokens: result.totalTokens,
-                  // Evaluations carry raw invariant/revert text; escapes from
-                  // subprocess output survive JSON.stringify, so clean them
-                  // here without changing the payload's shape.
-                  evaluations: stripAnsiDeep(result.evaluations),
-                },
-                null,
-                2,
-              ),
-              options,
+        }),
+        {
+          signals: true,
+          onError: (error) => fail(formatter, options, error),
+        },
+      );
+      if (outcome.status === "interrupted") {
+        process.exit(130);
+      }
+      if (outcome.status !== "success") {
+        return;
+      }
+      const result = outcome.value;
+      if (json) {
+        write(
+          render(
+            formatter,
+            JSON.stringify(
+              {
+                status: result.stoppedReason,
+                totalIterations: result.totalIterations,
+                acceptedCount: result.acceptedCount,
+                bestFitnessScore: Number.isFinite(result.bestFitnessScore)
+                  ? result.bestFitnessScore
+                  : null,
+                promoted: result.promoted,
+                totalCostUsd: result.totalCostUsd,
+                totalTokens: result.totalTokens,
+                // Evaluations carry raw invariant/revert text; escapes from
+                // subprocess output survive JSON.stringify, so clean them
+                // here without changing the payload's shape.
+                evaluations: stripAnsiDeep(result.evaluations),
+              },
+              null,
+              2,
             ),
-          );
-        }
-      } catch (error: unknown) {
-        fail(formatter, options, error);
+            options,
+          ),
+        );
       }
     },
   );
@@ -495,7 +514,7 @@ const optionalNumber = (value: string | undefined): number | undefined => {
  * F4: the returned promise is awaited by the (async) actions below, so
  * parseAsync resolves only after the output has been flushed. An escaping
  * error reproduces the fail() parity rule — JSON errors to stdout, markdown
- * errors to stderr — and books exit code 1.
+ * errors to stderr — and books the documented error-class exit code (AC1).
  */
 const runLifecycle = async (
   formatter: OutputFormatter,
@@ -507,13 +526,7 @@ const runLifecycle = async (
     const result = await command(formatter.format);
     emitResult(formatter, options, result);
   } catch (error: unknown) {
-    const text = render(formatter, formatter.formatError(error), options);
-    if (formatter.format === "json") {
-      write(text);
-    } else {
-      process.stderr.write(`${text}\n`);
-    }
-    process.exitCode = 1;
+    fail(formatter, options, error);
   }
 };
 

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { Effect } from "effect";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -111,7 +112,7 @@ metrics:
     fs.mkdirSync(path.join(dir, "src"), { recursive: true });
     fs.writeFileSync(path.join(dir, "src", "index.ts"), "// value: 100\nexport let count = 0;\n", "utf8");
 
-    const baseRes = await runBaseline({ cwd: dir, samples: 1 });
+    const baseRes = await Effect.runPromise(runBaseline({ cwd: dir, samples: 1 }));
     expect(baseRes.success).toBe(true);
 
     // The improvement: 100 → 50 (minimize) — an accepted, better step.

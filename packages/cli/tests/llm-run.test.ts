@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { Effect } from "effect";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
@@ -87,12 +88,12 @@ metrics:
       }),
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 2,
       llmDriver: stubDriver,
       samples: 1,
-    });
+    }));
 
     expect(res.totalIterations).toBe(2);
     expect(res.acceptedCount).toBe(2);
@@ -120,13 +121,13 @@ metrics:
       }),
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 5,
       llmDriver: stubDriver,
       maxTokens: 1500, // Iteration 2 will cross 2000 >= 1500
       samples: 1,
-    });
+    }));
 
     expect(res.stoppedReason).toBe("budget-exhausted");
     expect(res.totalIterations).toBe(2);
@@ -148,13 +149,13 @@ metrics:
       }),
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 5,
       llmDriver: stubDriver,
       maxCostUsd: 0.08, // Iteration 2 will cross 0.10 >= 0.08
       samples: 1,
-    });
+    }));
 
     expect(res.stoppedReason).toBe("budget-exhausted");
     expect(res.totalIterations).toBe(2);
@@ -169,12 +170,12 @@ metrics:
       }),
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 5,
       llmDriver: stubDriver,
       samples: 1,
-    });
+    }));
 
     expect(res.stoppedReason).toBe("llm-gave-up");
   });
@@ -189,12 +190,12 @@ metrics:
       }),
     };
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 5,
       llmDriver: stubDriver,
       samples: 1,
-    });
+    }));
 
     expect(res.stoppedReason).toBe("error");
   });
@@ -206,11 +207,11 @@ metrics:
 
     try {
       await expect(
-        runOptimizationLoop({
+        Effect.runPromise(runOptimizationLoop({
           cwd: testDir,
           driver: "api",
           provider: "openai",
-        })
+        }))
       ).rejects.toThrowError(MissingApiKeyError);
     } finally {
       process.env = originalEnv;
@@ -240,11 +241,11 @@ llm:
 `;
     fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), customYaml, "utf8");
 
-    const res = await runOptimizationLoop({
+    const res = await Effect.runPromise(runOptimizationLoop({
       cwd: testDir,
       maxIterations: 3,
       samples: 1,
-    });
+    }));
 
     // cli driver ran the custom command and gave up (mutations: [])
     expect(res.stoppedReason).toBe("llm-gave-up");

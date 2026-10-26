@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 const ANSI_PATTERN = /\u001b\[[0-9;]*m/;
 
@@ -271,7 +271,9 @@ metrics:
 
   it("emits formatError JSON when a command throws", () => {
     const res = runCli(["baseline", "--format", "json"], testDir);
-    expect(res.status).toBe(1);
+    // A missing config is a usage/config failure under the Ticket #51
+    // exit-code contract: ConfigError → 2 (not the generic domain failure 1).
+    expect(res.status).toBe(2);
     const doc = JSON.parse(res.stdout) as { error: { message: string } };
     expect(doc.error.message).toContain("Configuration file not found");
   });
@@ -516,7 +518,8 @@ metrics:
 
   it("fails with the config error when there is no .perfgym.yaml", () => {
     const res = runCli(["memory", "show", "--format", "json"], testDir);
-    expect(res.status).toBe(1);
+    // ConfigError is a usage/config failure (Ticket #51 AC1): exit code 2.
+    expect(res.status).toBe(2);
     const doc = JSON.parse(res.stdout) as { error: { message: string } };
     expect(doc.error.message).toContain("Configuration file not found");
   });
@@ -588,3 +591,173 @@ metrics:
   });
 });
 
+
+// ============================================================================
+// Ctrl-C teardown (Ticket #51 — AC4)
+// ============================================================================
+
+describe("CLI E2E — SIGINT interrupts `perfgym run` (Ticket #51)", () => {
+  let testDir: string;
+
+  // The run parks inside the CLI mutation driver (`sleep 10`): the sandbox
+  // lock and the worktree are held while it waits, so SIGINT always lands in
+  // the middle of a run with live resources to tear down.
+  const RUN_CONFIG = `
+version: "1.0"
+target:
+  name: "sigint-target"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "latency"
+    command: "node -e 'console.log(JSON.stringify({ value: 100 }))'"
+    goal: "minimize"
+    weight: 1
+    unit: "ms"
+llm:
+  driver: cli
+  cli_command: sleep
+  cli_args: ["10"]
+`;
+
+  const lockDir = (): string => path.join(testDir, ".perfgym", ".lock.d");
+  const worktreesDir = (): string => path.join(testDir, ".perfgym", "worktrees");
+  const worktreeEntries = (): string[] =>
+    fs.existsSync(worktreesDir()) ? fs.readdirSync(worktreesDir()) : [];
+
+  const sleep = (ms: number): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  beforeEach(() => {
+    testDir = path.join(
+      tmpdir(),
+      `perfgym-cli-sigint-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    );
+    fs.mkdirSync(testDir, { recursive: true });
+
+    try {
+      execFileSync("git", ["init", "-b", "main"], { cwd: testDir, stdio: "ignore" });
+    } catch {
+      execFileSync("git", ["init"], { cwd: testDir, stdio: "ignore" });
+    }
+    execFileSync("git", ["config", "user.name", "Test Sentinel"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "sentinel@test.com"], { cwd: testDir, stdio: "ignore" });
+
+    fs.mkdirSync(path.join(testDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(testDir, "src", "code.ts"), "export const a = 1;\n", "utf8");
+    fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), RUN_CONFIG, "utf8");
+    execFileSync("git", ["add", "-A"], { cwd: testDir, stdio: "ignore" });
+    execFileSync("git", ["commit", "-m", "initial commit"], { cwd: testDir, stdio: "ignore" });
+
+    // Seeded baseline: `perfgym run` skips the baseline phase and acquires the
+    // sandbox immediately, so the worktree/lock appear quickly.
+    fs.mkdirSync(path.join(testDir, ".perfgym"), { recursive: true });
+    fs.writeFileSync(
+      path.join(testDir, ".perfgym", "state.json"),
+      JSON.stringify({
+        version: "1.0",
+        targetName: "sigint-target",
+        baselineMetrics: { latency: 100 },
+        invariantsPassed: true,
+        bestFitnessScore: 0,
+        acceptedStepCount: 0,
+        totalStepCount: 0,
+      }),
+      "utf8",
+    );
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it("releases the lock and removes the worktree when SIGINT interrupts the run", async () => {
+    // Spawned as ONE process (node + the tsx loader) instead of the tsx shim:
+    // the shim is a wrapper that relays the signal to its child with its own
+    // timeout and exits 130 ITSELF — so the signal never reaches the CLI and
+    // its child can be killed mid-cleanup, leaving a stale lock behind. Ctrl-C
+    // has to hit the process that actually holds the sandbox (Ticket #51 AC4).
+    const tsxLoader = path.resolve(__dirname, "../../node_modules/tsx/dist/loader.mjs");
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        tsxLoader,
+        cliEntrypoint,
+        "run",
+        "--iterations", "1",
+        "--driver", "cli",
+        "--cli-command", "sleep",
+        "--cli-args", "10",
+        "--format", "json",
+      ],
+      { cwd: testDir, stdio: ["ignore", "pipe", "pipe"] },
+    );
+
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+
+    const exited = new Promise<number | null>((resolve) => {
+      child.once("exit", (code) => resolve(code));
+    });
+
+    try {
+      // Wait until the run holds the lock AND has created its worktree, then
+      // interrupt it while those resources are live.
+      const deadline = Date.now() + 25_000;
+      while (
+        Date.now() < deadline &&
+        child.exitCode === null &&
+        !(fs.existsSync(lockDir()) && worktreeEntries().length > 0)
+      ) {
+        await sleep(50);
+      }
+
+      expect(
+        fs.existsSync(lockDir()),
+        `run never acquired the sandbox lock; output:\n${output}`,
+      ).toBe(true);
+      expect(worktreeEntries().length, "run never created a worktree").toBeGreaterThan(0);
+
+      child.kill("SIGINT");
+
+      const code = await Promise.race([
+        exited,
+        sleep(15_000).then(() => "timeout" as const),
+      ]);
+      expect(
+        code,
+        `CLI did not exit with 130 after SIGINT; output:\n${output}`,
+      ).toBe(130);
+
+      // AC4: the interrupt ran the scoped release — no stale lock, no orphaned
+      // worktree directory, and git only sees the checked-out worktree.
+      expect(
+        fs.existsSync(lockDir()),
+        `lock survived the interrupt; output:\n${output}`,
+      ).toBe(false);
+      expect(worktreeEntries(), `worktree survived the interrupt; output:\n${output}`).toEqual([]);
+
+      const listed = execFileSync("git", ["worktree", "list", "--porcelain"], {
+        cwd: testDir,
+        encoding: "utf8",
+      });
+      expect(listed.match(/^worktree /gm)?.length ?? 0).toBe(1);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    }
+  }, 45_000);
+});
