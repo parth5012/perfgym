@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { Cause, Effect, Exit, Option } from "effect";
-import { asEffect, collectStrayChildPids } from "../src/commands/run.js";
+import {
+  asEffect,
+  collectStrayChildPids,
+  releaseSandbox,
+} from "../src/commands/run.js";
+import type { GitSandboxCoordinator, GitWorktreeDriver } from "../../core/src/index.js";
 
 /**
  * Edge-runner helpers behind Ticket #51's cleanup guarantee, unit-tested in
@@ -73,6 +78,49 @@ describe("collectStrayChildPids (portable child discovery, self-review fix)", ()
       exec: () => null,
     });
     expect(pids).toEqual([]);
+  });
+});
+
+describe("releaseSandbox runs its finalizers in a safe order", () => {
+  it("kills strays and tears the worktree down BEFORE releasing the lock", async () => {
+    const order: string[] = [];
+    const coordinator = {
+      release: () =>
+        Effect.sync(() => {
+          order.push("release-lock");
+        }),
+    } as unknown as GitSandboxCoordinator;
+    const driver = {
+      teardown: () =>
+        Effect.sync(() => {
+          order.push("teardown-worktree");
+        }),
+    } as unknown as GitWorktreeDriver;
+
+    await Effect.runPromise(releaseSandbox(coordinator, driver));
+
+    // A concurrent process may grab the lock the instant it is free, and
+    // stray children may still hold files inside the worktree — so the
+    // worktree must be gone first and the lock released last.
+    expect(order).toEqual(["teardown-worktree", "release-lock"]);
+  });
+
+  it("still releases the lock when the worktree teardown fails", async () => {
+    const order: string[] = [];
+    const coordinator = {
+      release: () =>
+        Effect.sync(() => {
+          order.push("release-lock");
+        }),
+    } as unknown as GitSandboxCoordinator;
+    const driver = {
+      teardown: () => Effect.sync(() => {
+        throw new Error("EBUSY: worktree is locked");
+      }),
+    } as unknown as GitWorktreeDriver;
+
+    await Effect.runPromise(releaseSandbox(coordinator, driver));
+    expect(order).toEqual(["release-lock"]);
   });
 });
 

@@ -201,14 +201,17 @@ const killStrayChildProcesses = (): void => {
  * the remaining ones run: an unremovable lock must not skip the worktree
  * teardown, and neither may skip the stray-child kill.
  */
-const releaseSandbox = (
+export const releaseSandbox = (
   coordinator: GitSandboxCoordinator,
   driver: GitWorktreeDriver,
 ): Effect.Effect<void, never, never> =>
   Effect.gen(function* () {
-    yield* Effect.exit(asEffect(coordinator.release()));
-    yield* Effect.exit(driver.teardown());
+    // Order matters (self-review, high): stray children may hold files inside
+    // the worktree, and a waiting process grabs the lock the instant it is
+    // free — so kill first, remove the worktree second, release the lock last.
     yield* Effect.exit(Effect.sync(() => killStrayChildProcesses()));
+    yield* Effect.exit(asEffect(driver.teardown()));
+    yield* Effect.exit(asEffect(coordinator.release()));
   });
 
 /** Whether a cause carries an interrupt reason (Effect 4 stores them as `reasons`). */
