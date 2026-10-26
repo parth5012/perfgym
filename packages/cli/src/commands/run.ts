@@ -107,7 +107,7 @@ export interface RunLoopResult {
  * with "not an Effect" AND leave its rejection unhandled. Converting it here
  * keeps both worlds cleanup-safe.
  */
-const asEffect = (value: unknown): Effect.Effect<unknown, unknown, never> => {
+export const asEffect = (value: unknown): Effect.Effect<unknown, unknown, never> => {
   if (Effect.isEffect(value)) {
     return value as Effect.Effect<unknown, unknown, never>;
   }
@@ -122,6 +122,53 @@ const asEffect = (value: unknown): Effect.Effect<unknown, unknown, never> => {
 };
 
 /**
+ * Discover this process's direct children without assuming a platform.
+ *
+ * Order matters: `/proc` is authoritative on Linux, `pgrep -P` is portable
+ * (BSD/macOS/Linux), and `ps --ppid` is a GNU extension kept as the last
+ * resort — shelling out to a flag BSD `ps` rejects would throw inside the
+ * catch and silently find nothing, leaving stray children alive. Pure, so
+ * every branch is unit-testable; adapters are responsible for their output.
+ */
+export const collectStrayChildPids = (adapters: {
+  readProcChildren: () => string | null;
+  exec: (cmd: string, args: string[]) => string | null;
+}): number[] => {
+  const pids: number[] = [];
+  const collect = (raw: string | null): void => {
+    if (raw === null) return;
+    for (const token of raw.split(/\s+/)) {
+      if (token.length === 0) continue;
+      const pid = Number(token);
+      if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+      pids.push(pid);
+    }
+  };
+  // A failing adapter is "no answer", never a throw: this runs inside a
+  // finalizer, where nothing may mask the run's own outcome.
+  const tryRead = (): string | null => {
+    try {
+      return adapters.readProcChildren();
+    } catch {
+      return null;
+    }
+  };
+  const tryExec = (cmd: string, args: string[]): string | null => {
+    try {
+      return adapters.exec(cmd, args);
+    } catch {
+      return null;
+    }
+  };
+  collect(tryRead());
+  if (pids.length === 0) collect(tryExec("pgrep", ["-P", String(process.pid)]));
+  if (pids.length === 0) {
+    collect(tryExec("ps", ["-o", "pid=", "--ppid", String(process.pid)]));
+  }
+  return pids;
+};
+
+/**
  * Best-effort SIGKILL of this process's direct children.
  *
  * The run's sandbox may own a long-lived child — the LLM CLI driver's
@@ -131,30 +178,12 @@ const asEffect = (value: unknown): Effect.Effect<unknown, unknown, never> => {
  * allowed to mask the run's own outcome.
  */
 const killStrayChildProcesses = (): void => {
-  const children: number[] = [];
-  // Linux: the authoritative list of this process's direct children.
-  try {
-    const raw = fs.readFileSync(`/proc/self/task/${process.pid}/children`, "utf8");
-    for (const token of raw.split(/\s+/)) {
-      if (token.length > 0) children.push(Number(token));
-    }
-  } catch {
-    // Not Linux (or /proc unavailable) — fall through to ps.
-  }
-  if (children.length === 0) {
-    try {
-      const out = execFileSync("ps", ["-o", "pid=", "--ppid", String(process.pid)], {
-        encoding: "utf8",
-      });
-      for (const token of out.split(/\s+/)) {
-        if (token.length > 0) children.push(Number(token));
-      }
-    } catch {
-      return; // No ps, or no children at all.
-    }
-  }
+  const children = collectStrayChildPids({
+    readProcChildren: () =>
+      fs.readFileSync(`/proc/self/task/${process.pid}/children`, "utf8"),
+    exec: (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" }),
+  });
   for (const pid of children) {
-    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
     try {
       process.kill(pid, "SIGKILL");
     } catch {
