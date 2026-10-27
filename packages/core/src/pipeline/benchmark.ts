@@ -95,14 +95,16 @@ export function resolveSampleCount(configured: number | undefined): number {
 /**
  * Resolve the effective warm-up spawn count: default 5, clamped into [0, 20]
  * (0 disables warm-ups entirely). NaN/undefined use the default; Infinity
- * clamps to the max. Read from `.perfgym.yaml` `benchmark.warmup_iterations`
+ * clamps to the max. Truncated to an integer first — the spawn loop tests
+ * `i < warmupCount`, so a fractional count (2.5) would otherwise fire
+ * Math.ceil() spawns. Read from `.perfgym.yaml` `benchmark.warmup_iterations`
  * by the config layer (ticket #53).
  */
 export function resolveWarmupCount(configured: number | undefined): number {
   if (configured === undefined || Number.isNaN(configured)) {
     return DEFAULT_BENCHMARK_WARMUP;
   }
-  return Math.min(MAX_BENCHMARK_WARMUP, Math.max(0, configured));
+  return Math.min(MAX_BENCHMARK_WARMUP, Math.max(0, Math.trunc(configured)));
 }
 
 /**

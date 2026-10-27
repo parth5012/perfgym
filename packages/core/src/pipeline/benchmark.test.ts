@@ -180,6 +180,9 @@ describe("resolveSampleCount / resolveBenchmarkTimeoutMs", () => {
     expect(resolveWarmupCount(3)).toBe(3);
     expect(resolveWarmupCount(21)).toBe(20);
     expect(resolveWarmupCount(Infinity)).toBe(20);
+    // A fractional count must not round UP into an extra spawn: the loop
+    // `i < warmupCount` would otherwise run Math.ceil(2.5) = 3 spawns.
+    expect(resolveWarmupCount(2.5)).toBe(2);
   });
 });
 
