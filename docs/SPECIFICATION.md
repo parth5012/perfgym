@@ -32,7 +32,26 @@ agent_budget:
   max_iterations?: number
   rollback_on_failure?: boolean
   negative_memory_size?: number  # bounds the negative memory (failed strategies), default 5
+
+benchmark:
+  warmup_iterations?: number  # discarded warm-up spawns before sampling; default 5, range 0-20
 ```
+
+**Warm-up isolation & immutable timers.** Before the first measured sample the
+runner executes `benchmark.warmup_iterations` (default 5) *discarded* process
+spawns with an identical command and environment; their outputs are never
+stored or counted. Every spawn is additionally injected — automatically, with
+no opt-in — with a bootstrap that runs before user code, freezes `Date`,
+`Date.prototype.getTime`, `globalThis.performance`, `process.hrtime` and
+`process.hrtime.bigint` (originals reachable through the documented escape
+hatch `globalThis.__perfgymOriginalTimers`), and emits a monotonic
+before/after stamp per sample; a tampered, zero-elapsed, or non-monotonic
+stamp rejects the sample and it is re-collected within the sample budget.
+Documented limitations: each sample is a separate process spawn, so an
+in-process V8 warm-up cannot be imposed on an arbitrary user command (JIT
+warm-up inside one process stays the harness's responsibility), and non-Node
+benchmark commands are unaffected by the timer bootstrap because
+`NODE_OPTIONS` only reaches Node.js processes.
 
 ---
 

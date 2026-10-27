@@ -360,6 +360,7 @@ export class EvaluationPipeline {
             command: metricConfig.command,
             cwd: context.workingDir,
             samples: opts?.samples,
+            warmup: pipeline.#config.benchmark?.warmupIterations,
             unit: metricConfig.unit ?? "count",
             ...(metricConfig.timeoutMs !== undefined ? { timeoutMs: metricConfig.timeoutMs } : {}),
             ...(harnessEnforcementDir !== null && harnessEnforcementDir !== ""

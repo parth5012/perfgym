@@ -237,6 +237,49 @@ metrics:
     });
   });
 
+  describe("loadConfig — benchmark warm-up configuration (Ticket #53)", () => {
+    const base = `
+version: "1.0"
+target:
+  name: "warmup-target"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "instructions"
+    command: "node -e 'process.exit(0)'"
+    goal: "minimize"
+    weight: 1
+`;
+
+    it("maps the documented snake_case benchmark.warmup_iterations onto the camelCase config", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nbenchmark:\n  warmup_iterations: 3\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).benchmark?.warmupIterations).toBe(3);
+    });
+
+    it("accepts the camelCase warmupIterations spelling as well", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nbenchmark:\n  warmupIterations: 7\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).benchmark?.warmupIterations).toBe(7);
+    });
+
+    it("leaves warmupIterations unset when no benchmark block exists (runner default 5 applies)", () => {
+      fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), base, "utf8");
+
+      expect(loadConfig(testDir).benchmark?.warmupIterations).toBeUndefined();
+    });
+  });
+
   describe("Negative memory recording (Ticket #38)", () => {
     it("pins the documented negative memory file location", () => {
       expect(NEGATIVE_MEMORY_PATH).toBe(path.join(".perfgym", "negative-memory.json"));

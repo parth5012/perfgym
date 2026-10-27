@@ -601,6 +601,7 @@ export class McpServerCoordinator {
           command: metric.command,
           cwd,
           samples,
+          warmup: this.config.benchmark?.warmupIterations,
           unit: metric.unit ?? "count",
           ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
         })
@@ -1045,6 +1046,7 @@ export class McpServerCoordinator {
         command,
         cwd,
         samples,
+        warmup: this.config.benchmark?.warmupIterations,
         unit: metricConfig.unit ?? "count",
         ...(options.timeoutMs !== undefined
           ? { timeoutMs: options.timeoutMs }
