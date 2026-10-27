@@ -11,6 +11,9 @@
  * 1. Captures the untouched originals and publishes them as the documented
  *    escape hatch `globalThis.__perfgymOriginalTimers` (a frozen object), so
  *    legitimate timing harnesses keep a supported way to read real time.
+ *    `dateNow()`, `performanceNow()`, `hrtime()` and `hrtimeBigint()` are
+ *    directly callable; `getTime` is the raw `Date.prototype.getTime`, so it
+ *    takes a Date receiver: `original.getTime.call(someDate)`.
  * 2. Freezes the timer surfaces — `Date` (plus its `Date.now` clock),
  *    `Date.prototype.getTime`, `globalThis.performance` (plus `.now`),
  *    `process.hrtime` and `process.hrtime.bigint` — as non-configurable
@@ -106,7 +109,11 @@ export const TIMER_BOOTSTRAP_SOURCE = `(function () {
       dateNow: dateNow,
       getTime: getTime,
       performance: perfObject,
-      performanceNow: perfNow,
+      // Bound to its receiver: performance.now is an instance method, so a
+      // bare reference would throw ERR_INVALID_THIS when the hatch calls it.
+      // The shield publishes performance.now separately and keeps its own
+      // this; only this convenience alias needs the binding.
+      performanceNow: perfNow.bind(perfObject),
       hrtime: hrtimeObject,
       hrtimeBigint: hrtimeBigint,
     }),
