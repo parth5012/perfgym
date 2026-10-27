@@ -344,7 +344,10 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
   let ceiling: number | undefined;
   let currentP99: number | undefined;
   if (baseline !== undefined && current !== undefined) {
-    const effectiveMAD = Math.max(baseline.mad, madFloorCoefficient * baseline.p50);
+    // |p50| keeps the floor a positive relative tolerance band: a negative
+    // median would make `coefficient × p50` negative and collapse effectiveMAD
+    // straight back onto MAD, defeating the floor.
+    const effectiveMAD = Math.max(baseline.mad, madFloorCoefficient * Math.abs(baseline.p50));
     if (primaryGoal === "maximize") {
       ceiling = baseline.p50 - 3 * effectiveMAD;
       currentP99 = current.min;

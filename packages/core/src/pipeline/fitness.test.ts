@@ -150,8 +150,8 @@ describe("computeFitnessVerdict — tail guard edge cases", () => {
     expect(verdict.rejected).toBeUndefined();
   });
 
-  it("rejects any p99 > p50 for a MAD=0 (constant) baseline", () => {
-    const baseline = dist(10, 0); // ceiling is exactly p50
+  it("rejects a p99 above the floored ceiling for a MAD=0 (constant) baseline", () => {
+    const baseline = dist(10, 0); // floored ceiling is p50 + 3 × 1% × p50 = 10.3
     const above = computeFitnessVerdict({
       invariants: passedInvariants,
       violations: [],
@@ -162,15 +162,15 @@ describe("computeFitnessVerdict — tail guard edge cases", () => {
     expect(above.tailGuardPassed).toBe(false);
     expect(above.rejected?.reason).toBe("tail-guard");
 
-    // p99 exactly equal to the ceiling passes (strict `>` comparison).
-    const atCeiling = computeFitnessVerdict({
+    // A p99 below the floored ceiling passes (comparison is strict `>`).
+    const withinCeiling = computeFitnessVerdict({
       invariants: passedInvariants,
       violations: [],
       metrics: [metric("latency", 1)],
       baseline,
       current: { ...baseline, p50: 9.5, p99: 10 },
     });
-    expect(atCeiling.tailGuardPassed).toBe(true);
+    expect(withinCeiling.tailGuardPassed).toBe(true);
   });
 
   it("treats the tail guard as not applicable (passed) when a distribution is missing", () => {
@@ -322,6 +322,24 @@ describe("computeFitnessVerdict — tail guard MAD floor", () => {
     expect(configured.tailGuardCeiling).toBe(11.5);
     expect(configured.tailGuardPassed).toBe(true);
     expect(configured.accepted).toBe(true);
+  });
+
+  it("keeps the floor positive for a negative baseline p50", () => {
+    // A negative median would make `floorCoefficient × p50` negative and
+    // collapse effectiveMAD back onto MAD; the tolerance band must stay
+    // positive regardless of the median's sign.
+    const baseline = dist(-10, 0);
+    const verdict = computeFitnessVerdict({
+      invariants: passedInvariants,
+      violations: [],
+      metrics: [metric("latency", 3)],
+      baseline,
+      current: { ...baseline, p50: -10, p99: -9.8 },
+    });
+
+    expect(verdict.tailGuardCeiling).toBeCloseTo(-9.7, 10);
+    expect(verdict.tailGuardPassed).toBe(true);
+    expect(verdict.rejected).toBeUndefined();
   });
 });
 
