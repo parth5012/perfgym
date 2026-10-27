@@ -121,6 +121,14 @@ export interface PerfGymConfig {
     harnessScripts?: string[];
   }>;
   /**
+   * Relative MAD floor of the tail guard (defaults to 0.01 = 1% of the
+   * baseline p50, ticket #52): effectiveMAD = max(MAD, floorCoefficient ×
+   * p50). Keeps a constant (MAD = 0) baseline from collapsing the tail
+   * ceiling onto p50. Applies to the ceiling only — never to the
+   * significance threshold or the fitness score.
+   */
+  floorCoefficient?: number;
+  /**
    * The search budget of the agent. The YAML spells it `agent_budget`
    * (snake_case, as documented in docs/SPECIFICATION.md) and the CLI
    * normalises it onto this camelCase shape.

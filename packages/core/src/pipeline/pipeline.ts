@@ -84,6 +84,11 @@ export interface EvaluateStepOptions {
   readonly iteration?: number;
   /** Overrides the minimum significance threshold (default 2.5%, clamped ≥ 0). */
   readonly minSignificanceDelta?: number;
+  /**
+   * Relative MAD floor of the tail-guard ceiling (default 0.01 = 1% of
+   * baseline p50, ticket #52). Threaded through to `computeFitnessVerdict`.
+   */
+  readonly floorCoefficient?: number;
   /** Measured samples per benchmark command (default 5, see #13 clamps). */
   readonly samples?: number;
   /** Explicit harness dir for tamper verification; defaults to the frozen one. */
@@ -436,6 +441,7 @@ export class EvaluationPipeline {
       baseline: meta.opts?.baseline,
       current: stageData.distributions[0],
       minSignificanceDelta: meta.opts?.minSignificanceDelta,
+      floorCoefficient: meta.opts?.floorCoefficient ?? this.#config.floorCoefficient,
       weights: Object.fromEntries(this.#config.metrics.map((m) => [m.name, m.weight])),
       primaryGoal: this.#config.metrics[0]?.goal,
     });

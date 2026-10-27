@@ -18,7 +18,8 @@ import type { BenchmarkDistribution, InvariantResult, LintViolation, MetricResul
  * ```
  * Score =
  *   -infinity  if invariants fail OR a rule disqualifies
- *   -infinity  if the tail guard is violated (current p99 > baseline p50 + 3 × baseline MAD)
+ *   -infinity  if the tail guard is violated (current p99 > baseline p50 + 3 × effective MAD,
+ *              where effective MAD = max(baseline MAD, floorCoefficient × baseline p50))
  *   0          if Δ% < Δ_min (2.5% minimum significance — insignificant noise)
  *   Σ_i w_i · Δ%_i − Σ_j P_j                                   [otherwise]
  * ```
@@ -56,12 +57,25 @@ import type { BenchmarkDistribution, InvariantResult, LintViolation, MetricResul
  *   Effect wrapper surfaces it as InsignificantDeltaError (score-0 channel).
  * - Tail guard edge cases: missing baseline or current distribution ⇒ the
  *   guard is not applicable and `tailGuardPassed` is true. A MAD = 0 baseline
- *   is constant, so the ceiling equals p50 exactly and ANY p99 > p50 is a
- *   tail regression. `tailGuardPassed` is false only when the guard itself
- *   breached the ceiling — rejections earlier in the pipeline leave it true.
+ *   is constant, so the ceiling would collapse onto p50; a non-zero floor
+ *   (#52) keeps the ceiling at p50 + 3 × (1% of p50) by default, so only a
+ *   p99 beyond that floored ceiling is a tail regression. `tailGuardPassed`
+ *   is false only when the guard itself breached the ceiling — rejections
+ *   earlier in the pipeline leave it true.
  */
 
 export const DEFAULT_MIN_SIGNIFICANCE_DELTA = 2.5;
+
+/**
+ * Relative MAD floor of the tail guard (#52): with N≈5 samples of an integer
+ * CPU loop, MAD is frequently 0, which collapses the ceiling onto p50 and
+ * makes one jittery p99 outlier reject every legitimate step.
+ * `effectiveMAD = max(MAD, floorCoefficient × p50)` keeps a 1%-of-p50
+ * tolerance band. The floor applies ONLY to the tail-guard ceiling — never
+ * to the significance threshold or the fitness score — so it cannot mask a
+ * real regression.
+ */
+export const DEFAULT_TAIL_MAD_FLOOR_COEFFICIENT = 0.01;
 
 export type FitnessRejectionReason =
   | "invariants"
@@ -94,8 +108,9 @@ export interface FitnessVerdict {
   readonly minSignificanceDelta: number;
   readonly primaryDeltaPercent?: number;
   /**
-   * For goal="minimize", the high-tail ceiling: baseline p50 + 3 × baseline MAD.
-   * For goal="maximize", the low-tail floor: baseline p50 - 3 × baseline MAD.
+   * For goal="minimize", the high-tail ceiling: baseline p50 + 3 × effective MAD.
+   * For goal="maximize", the low-tail floor: baseline p50 - 3 × effective MAD.
+   * effective MAD = max(baseline MAD, floorCoefficient × baseline p50) (#52).
    */
   readonly tailGuardCeiling?: number;
   /**
@@ -119,10 +134,19 @@ export interface FitnessParams {
   /**
    * Optimization goal for the primary metric ("minimize" | "maximize").
    * Default: "minimize".
-   * - "minimize": rejects when current.p99 > baseline.p50 + 3 × baseline.mad
-   * - "maximize": rejects when current.min < baseline.p50 - 3 × baseline.mad
+   * - "minimize": rejects when current.p99 > baseline.p50 + 3 × effective MAD
+   * - "maximize": rejects when current.min < baseline.p50 - 3 × effective MAD
+   * (effective MAD = max(baseline MAD, floorCoefficient × baseline p50))
    */
   readonly primaryGoal?: "minimize" | "maximize";
+  /**
+   * Relative MAD floor for the tail-guard ceiling (default 0.01 = 1% of
+   * baseline p50): effectiveMAD = max(MAD, floorCoefficient × p50), so a
+   * constant (MAD = 0) baseline keeps a tolerance band instead of
+   * collapsing the ceiling onto p50. Applies ONLY to the ceiling — the
+   * significance threshold and the fitness score are untouched.
+   */
+  readonly floorCoefficient?: number;
 }
 
 // ============================================================================
@@ -255,6 +279,12 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
       ? DEFAULT_MIN_SIGNIFICANCE_DELTA
       : Math.max(0, thresholdConfigured);
 
+  const floorConfigured = params.floorCoefficient;
+  const madFloorCoefficient =
+    floorConfigured === undefined || !Number.isFinite(floorConfigured)
+      ? DEFAULT_TAIL_MAD_FLOOR_COEFFICIENT
+      : Math.max(0, floorConfigured);
+
   const weightResolution = normalizeWeights(
     params.metrics.map((m) => m.name),
     params.weights
@@ -300,8 +330,11 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
   }
 
   // 3. Tail guard — depends on primaryGoal:
-  // - "minimize" (latency/size): rejects when current p99 > baseline p50 + 3 × baseline MAD.
-  // - "maximize" (throughput/ops): rejects when current min < baseline p50 - 3 × baseline MAD.
+  // - "minimize" (latency/size): rejects when current p99 > baseline p50 + 3 × effective MAD.
+  // - "maximize" (throughput/ops): rejects when current min < baseline p50 - 3 × effective MAD.
+  // effective MAD = max(baseline MAD, floorCoefficient × baseline p50) (#52): a
+  // MAD = 0 baseline would otherwise collapse the ceiling onto p50 and reject
+  // every jittery-but-legitimate step. The floor touches the ceiling only.
   // Note on maximize: benchmark distribution exposes min (not p1); min is used as the worst
   // low-tail sample.
   const baseline = params.baseline;
@@ -311,8 +344,9 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
   let ceiling: number | undefined;
   let currentP99: number | undefined;
   if (baseline !== undefined && current !== undefined) {
+    const effectiveMAD = Math.max(baseline.mad, madFloorCoefficient * baseline.p50);
     if (primaryGoal === "maximize") {
-      ceiling = baseline.p50 - 3 * baseline.mad;
+      ceiling = baseline.p50 - 3 * effectiveMAD;
       currentP99 = current.min;
       // Non-finite distribution statistics (ceiling/floor or min): the check cannot
       // be applied, so it does not fail (tailGuardPassed stays true).
@@ -331,7 +365,7 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
             reason: "tail-guard",
             message: `Tail degraded: current min (${currentP99}) fell below floor (${ceiling.toFixed(
               2
-            )}) = baseline p50 (${baseline.p50}) - 3 × baseline MAD (${baseline.mad})`,
+            )}) = baseline p50 (${baseline.p50}) - 3 × effective MAD (${effectiveMAD})`,
           },
           reasons: weightResolution.notes,
           totalPenalty: 0,
@@ -341,7 +375,7 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
         });
       }
     } else {
-      ceiling = baseline.p50 + 3 * baseline.mad;
+      ceiling = baseline.p50 + 3 * effectiveMAD;
       currentP99 = current.p99;
       // Non-finite distribution statistics (ceiling or p99): the check cannot
       // be applied, so it does not fail (tailGuardPassed stays true).
@@ -360,7 +394,7 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
             reason: "tail-guard",
             message: `Tail degraded: current p99 (${currentP99}) exceeded ceiling (${ceiling.toFixed(
               2
-            )}) = baseline p50 (${baseline.p50}) + 3 × baseline MAD (${baseline.mad})`,
+            )}) = baseline p50 (${baseline.p50}) + 3 × effective MAD (${effectiveMAD})`,
           },
           reasons: weightResolution.notes,
           totalPenalty: 0,

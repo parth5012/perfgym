@@ -674,6 +674,9 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
     iteration: state.totalStepCount + 1,
     samples: options.samples ?? 5,
     minSignificanceDelta: options.minSignificanceDelta,
+    ...(config.floorCoefficient !== undefined
+      ? { floorCoefficient: config.floorCoefficient }
+      : {}),
   });
 
   // Update state
