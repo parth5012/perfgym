@@ -4,16 +4,39 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { Effect } from "effect";
 import { BenchmarkExecutionError } from "../errors.js";
 import type { BenchmarkDistribution, MetricResult } from "../index.js";
+import { areTimerStampsValid, withTimerBootstrap } from "./bootstrap.js";
 
 /**
  * ============================================================================
  * Deterministic Benchmark Seam (pipeline stage 2)
  * ============================================================================
  *
- * Executes each configured metric command N times (default 5, clamped to
- * 1..20) after 1 discarded warmup run, and reduces the captured samples to a
- * full `BenchmarkDistribution`. Commands run strictly sequentially (one
- * process at a time) so samples are recorded in capture order.
+ * Executes each configured metric command W times as DISCARDED warm-up spawns
+ * (default 5, clamped to 0..20 — `.perfgym.yaml` `benchmark.warmup_iterations`)
+ * and then N times as measured samples (default 5, clamped to 1..20), reducing
+ * the captured samples to a full `BenchmarkDistribution`. Commands run
+ * strictly sequentially (one process at a time) so samples are recorded in
+ * capture order.
+ *
+ * Warm-up isolation (FLAW-12 / ticket #53): the W warm-up spawns use an
+ * IDENTICAL command and environment; their outputs are discarded entirely —
+ * not stored, not parsed, never in the distribution — so cold-start
+ * (process spawn, page cache, first-JIT) pollution never reaches the
+ * statistics. Documented limitation: every measured sample is its own process
+ * spawn, so an in-process V8 warm-up CANNOT be imposed on an arbitrary user
+ * command; JIT warm-up inside a single process stays the responsibility of
+ * the user's harness.
+ *
+ * Immutable timer bootstrap & tripwire (FLAW-09 / ticket #53): every spawn is
+ * injected — automatically, no user opt-in — with `pipeline/bootstrap.ts` via
+ * NODE_OPTIONS, so it runs BEFORE user code loads, freezes the timer surfaces
+ * (originals reachable only through `globalThis.__perfgymOriginalTimers`) and
+ * emits a monotonic before/after stamp on stderr. A sample whose stamp is
+ * tampered, zero-elapsed, or non-monotonic is rejected as invalid and
+ * re-collected within the sample budget (at most N rejections per run); an
+ * invalid sample is never counted toward the distribution. Non-Node benchmark
+ * commands are unaffected (documented limitation — NODE_OPTIONS is ignored by
+ * Python/Rust/... processes, and a stamp-less spawn is treated as valid).
  *
  * Determinism policy (map ticket #13):
  * - Small-sample statistics must lean on robust estimators (MAD, IQR) rather
@@ -44,6 +67,9 @@ import type { BenchmarkDistribution, MetricResult } from "../index.js";
 export const DEFAULT_HARNESS_DIR = ".perfgym/.harness";
 export const DEFAULT_BENCHMARK_SAMPLES = 5;
 export const MAX_BENCHMARK_SAMPLES = 20;
+/** Discarded warm-up spawns before the first measured sample (ticket #53). */
+export const DEFAULT_BENCHMARK_WARMUP = 5;
+export const MAX_BENCHMARK_WARMUP = 20;
 export const DEFAULT_BENCHMARK_TIMEOUT_MS = 30_000;
 export const MAX_BENCHMARK_TIMEOUT_MS = 60_000;
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024; // 2MB capture cap per stream
@@ -64,6 +90,19 @@ export function resolveSampleCount(configured: number | undefined): number {
     return DEFAULT_BENCHMARK_SAMPLES;
   }
   return Math.min(MAX_BENCHMARK_SAMPLES, Math.max(1, configured));
+}
+
+/**
+ * Resolve the effective warm-up spawn count: default 5, clamped into [0, 20]
+ * (0 disables warm-ups entirely). NaN/undefined use the default; Infinity
+ * clamps to the max. Read from `.perfgym.yaml` `benchmark.warmup_iterations`
+ * by the config layer (ticket #53).
+ */
+export function resolveWarmupCount(configured: number | undefined): number {
+  if (configured === undefined || Number.isNaN(configured)) {
+    return DEFAULT_BENCHMARK_WARMUP;
+  }
+  return Math.min(MAX_BENCHMARK_WARMUP, Math.max(0, configured));
 }
 
 /**
@@ -458,6 +497,11 @@ export interface BenchmarkRunOptions {
   readonly timeoutMs?: number;
   readonly env?: Readonly<Record<string, string>>;
   readonly samples?: number;
+  /**
+   * Discarded warm-up spawns before the first measured sample (default 5,
+   * clamped 0..20 — `.perfgym.yaml` `benchmark.warmup_iterations`, ticket #53).
+   */
+  readonly warmup?: number;
   readonly unit?: string;
   /**
    * Provide to enforce frozen-harness tamper protection (existence, non-empty,
@@ -653,14 +697,18 @@ const runCapturedCommand = (options: {
 
 /**
  * The deterministic benchmark seam: optional frozen-harness verification,
- * then 1 discarded warmup run, then N sequential measured samples reduced to
- * a full BenchmarkDistribution with robust MAD/IQR spread statistics.
+ * then W discarded warm-up spawns (identical command and environment; their
+ * outputs never reach the distribution), then N sequential measured samples —
+ * each stamped by the immutable timer bootstrap and rejected/re-collected
+ * when the stamp is tampered, zero-elapsed, or non-monotonic — reduced to a
+ * full BenchmarkDistribution with robust MAD/IQR spread statistics.
  */
 export const runBenchmark = (
   options: BenchmarkRunOptions
 ): Effect.Effect<BenchmarkDistribution, BenchmarkExecutionError> => {
   const timeoutMs = resolveBenchmarkTimeoutMs(options.timeoutMs);
   const sampleCount = resolveSampleCount(options.samples);
+  const warmupCount = resolveWarmupCount(options.warmup);
   const unit = options.unit ?? "count";
 
   let resolvedCwd: string | undefined;
@@ -687,7 +735,14 @@ export const runBenchmark = (
     command: options.command,
     cwd: resolvedCwd,
     timeoutMs,
-    env: options.env,
+    env: {
+      ...options.env,
+      // Timer bootstrap (FLAW-09): injected AUTOMATICALLY, no opt-in — it
+      // runs before user code in every (Node) spawn, warm-up or measured.
+      NODE_OPTIONS: withTimerBootstrap(
+        options.env?.NODE_OPTIONS ?? process.env.NODE_OPTIONS
+      ),
+    },
   };
 
   return Effect.gen(function* () {
@@ -709,13 +764,46 @@ export const runBenchmark = (
 
     const execute = runCapturedCommand(executionOptions);
 
-    // 2. Exactly one discarded warmup run (JIT/page-cache settle).
-    yield* Effect.asVoid(execute);
+    // 2. W discarded warm-up spawns (FLAW-12): identical command and
+    //    environment, outputs thrown away entirely — never stored, never
+    //    parsed, never counted in the distribution — so cold-start
+    //    pollution (spawn cost, page cache, first-JIT) lands here instead of
+    //    in the samples. Their stamps are ignored too: only measured samples
+    //    are tripwire-checked.
+    for (let i = 0; i < warmupCount; i++) {
+      yield* Effect.asVoid(execute);
+    }
 
-    // 3. N sequential measured samples, recorded in capture order.
+    // 3. N sequential measured samples, recorded in capture order. A sample
+    //    with a tampered / zero-elapsed / non-monotonic bootstrap stamp is
+    //    rejected and re-collected; the re-collection budget is the sample
+    //    budget itself (at most `sampleCount` rejections per run), so a
+    //    persistently cheating command fails loudly instead of looping.
     const collected: number[] = [];
-    for (let i = 0; i < sampleCount; i++) {
+    let rejectedSamples = 0;
+    while (collected.length < sampleCount) {
       const captured = yield* execute;
+
+      // Tripwire first: a tampered clock invalidates whatever stdout says.
+      if (!areTimerStampsValid(captured.stderr)) {
+        rejectedSamples += 1;
+        if (rejectedSamples > sampleCount) {
+          return yield* Effect.fail(
+            benchmarkFailure(
+              options.command,
+              "invalid timer stamp",
+              `Benchmark command "${options.command}" produced ${rejectedSamples} samples with ` +
+                "tampered, zero-elapsed, or non-monotonic timer stamps — the immutable timer " +
+                `bootstrap rejected them all and the re-collection budget (${sampleCount} within ` +
+                "the sample budget) is exhausted. Stop replacing Date/performance/hrtime in the " +
+                "benchmark; read time through globalThis.__perfgymOriginalTimers instead.",
+              captured.stderr.trim()
+            )
+          );
+        }
+        continue; // rejected as invalid — never counted toward the distribution
+      }
+
       const parsed = parseBenchmarkValue(captured.stdout);
       if (parsed === null) {
         return yield* Effect.fail(

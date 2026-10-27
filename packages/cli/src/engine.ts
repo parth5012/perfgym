@@ -176,6 +176,25 @@ const normaliseAgentBudget = (config: Record<string, unknown>): PerfGymConfig["a
   } as PerfGymConfig["agentBudget"];
 };
 
+/**
+ * Normalise the documented `benchmark` block onto the camelCase
+ * `PerfGymConfig["benchmark"]` shape (ticket #53). The YAML spells the
+ * warm-up count `benchmark.warmup_iterations` (snake_case, matching the
+ * `agent_budget` convention); both spellings are accepted. A non-numeric
+ * value is dropped so the runner's `resolveWarmupCount` default of 5
+ * applies; out-of-range numbers are clamped by that same resolver.
+ * Absent block ⇒ absent view (no phantom config).
+ */
+const normaliseBenchmark = (config: Record<string, unknown>): PerfGymConfig["benchmark"] => {
+  const block = asRecord(config.benchmark);
+  if (block === null) return undefined;
+  const raw = block.warmupIterations ?? block.warmup_iterations;
+  return {
+    ...block,
+    ...(typeof raw === "number" ? { warmupIterations: raw } : {}),
+  } as PerfGymConfig["benchmark"];
+};
+
 export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   const configPath = path.join(rootDir, CONFIG_FILE_NAME);
   if (!fs.existsSync(configPath)) {
@@ -201,7 +220,8 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
 
   // The YAML is returned verbatim — the documented `agent_budget` block
   // (`max_iterations`, `rollback_on_failure`) survives as the user wrote it.
-  // `agentBudget` is the normalised, typed view of the same block.
+  // `agentBudget` is the normalised, typed view of the same block; the same
+  // applies to `benchmark.warmup_iterations` → `benchmark.warmupIterations`.
   const rawLlm = asRecord(parsed.llm);
   const normalisedLlm = rawLlm
     ? {
@@ -216,11 +236,13 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
         pricing: rawLlm.pricing as any,
       }
     : undefined;
+  const normalisedBenchmark = normaliseBenchmark(parsed);
 
   return {
     ...(parsed as unknown as PerfGymConfig),
     agentBudget: normaliseAgentBudget(parsed),
     ...(normalisedLlm ? { llm: normalisedLlm } : {}),
+    ...(normalisedBenchmark ? { benchmark: normalisedBenchmark } : {}),
   };
 }
 
@@ -550,6 +572,7 @@ export function runBaseline(
           command: metric.command,
           cwd,
           samples: options.samples ?? 5,
+          warmup: config.benchmark?.warmupIterations,
           unit: metric.unit ?? "count",
           ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
         }),

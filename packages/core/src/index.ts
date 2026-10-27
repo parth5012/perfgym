@@ -14,6 +14,7 @@ export * from "./sandbox/git-worktree-driver.js";
 export * from "./sandbox/coordinator.js";
 export * from "./pipeline/invariants.js";
 export * from "./pipeline/benchmark.js";
+export * from "./pipeline/bootstrap.js";
 export * from "./pipeline/fitness.js";
 export * from "./pipeline/pipeline.js";
 export * from "./feedback/synthesizer.js";
@@ -139,6 +140,18 @@ export interface PerfGymConfig {
      * (defaults to 5 — the "top 5 anti-patterns" bound of FLAW-13).
      */
     readonly negativeMemorySize?: number;
+  };
+  /**
+   * Benchmark-runner controls (ticket #53). The YAML spells them
+   * `benchmark.warmup_iterations` (snake_case, matching the `agent_budget`
+   * convention) and the CLI normalises them onto this camelCase shape.
+   */
+  benchmark?: {
+    /**
+     * Discarded warm-up spawns issued before the first measured sample
+     * (defaults to 5, clamped to 0..20 — warm-up isolation, FLAW-12).
+     */
+    warmupIterations?: number;
   };
   llm?: {
     driver?: "api" | "cli" | string;

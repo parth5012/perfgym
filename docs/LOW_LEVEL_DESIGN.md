@@ -396,7 +396,7 @@ sequenceDiagram
     Linter-->>Pipeline: LintResult { totalPenalty: 10, disqualified: false }
 
     Note over Pipeline: Stage 3: Deterministic Benchmark Sampling
-    Pipeline->>Bench: run(worktreeDir) [N=5 samples + 1 warmup]
+    Pipeline->>Bench: run(worktreeDir) [N=5 samples + 5 discarded warm-ups]
     Bench-->>Pipeline: BenchmarkDistribution { p50: 12.1ms, p99: 15.0ms, max: 16.2ms }
 
     Note over Pipeline: Stage 4: Fitness & Tail Guard Calculation

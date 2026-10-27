@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_BENCHMARK_SAMPLES,
+  DEFAULT_BENCHMARK_WARMUP,
   DEFAULT_HARNESS_DIR,
   MAX_BENCHMARK_SAMPLES,
   MAX_BENCHMARK_TIMEOUT_MS,
+  MAX_BENCHMARK_WARMUP,
   computeBenchmarkDistribution,
   computeIqr,
   computeMad,
@@ -16,10 +18,47 @@ import {
   parseBenchmarkValue,
   resolveBenchmarkTimeoutMs,
   resolveSampleCount,
+  resolveWarmupCount,
   runBenchmark,
 } from "./benchmark.js";
 import { BenchmarkExecutionError } from "../errors.js";
 import type { BenchmarkDistribution } from "../index.js";
+
+/**
+ * Counting benchmark fixture (ticket #53): every spawn — warm-up or measured —
+ * appends its own 1-based index to a counter file and prints it, so a test can
+ * prove WHICH spawns were discarded and which were sampled. `onSpawn` is plain
+ * JS executed after the counter bump, before the index is printed (it lives in
+ * the script file, so no shell quoting is involved).
+ */
+const writeCountingBenchmark = (
+  dir: string,
+  onSpawn = ""
+): { command: string; counter: string } => {
+  const counter = join(dir, "counter");
+  const script = join(dir, "bench.js");
+  writeFileSync(
+    script,
+    [
+      "const fs = require('node:fs');",
+      "const p = process.argv[2];",
+      "const n = (fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\\n').filter(Boolean).length : 0) + 1;",
+      "fs.appendFileSync(p, n + '\\n');",
+      ...(onSpawn === "" ? [] : [onSpawn]),
+      "console.log(n);",
+    ].join("\n")
+  );
+  return { command: `node ${script} ${counter}`, counter };
+};
+
+/** Number of benchmark spawns recorded in the counter file so far. */
+const spawnCount = (counter: string): number => {
+  try {
+    return readFileSync(counter, "utf8").split("\n").filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+};
 
 /**
  * Unwrap either the distribution or the typed BenchmarkExecutionError,
@@ -130,6 +169,17 @@ describe("resolveSampleCount / resolveBenchmarkTimeoutMs", () => {
     expect(resolveBenchmarkTimeoutMs(-1)).toBe(resolveBenchmarkTimeoutMs(undefined));
     expect(resolveBenchmarkTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(MAX_BENCHMARK_TIMEOUT_MS);
     expect(resolveBenchmarkTimeoutMs(Infinity)).toBe(MAX_BENCHMARK_TIMEOUT_MS);
+  });
+
+  it("defaults warm-ups to 5 and clamps the count into 0..20 (AC5)", () => {
+    expect(DEFAULT_BENCHMARK_WARMUP).toBe(5);
+    expect(MAX_BENCHMARK_WARMUP).toBe(20);
+    expect(resolveWarmupCount(undefined)).toBe(5);
+    expect(resolveWarmupCount(0)).toBe(0);
+    expect(resolveWarmupCount(-4)).toBe(0);
+    expect(resolveWarmupCount(3)).toBe(3);
+    expect(resolveWarmupCount(21)).toBe(20);
+    expect(resolveWarmupCount(Infinity)).toBe(20);
   });
 });
 
@@ -294,6 +344,7 @@ describe("runBenchmark", () => {
         command: `node -e "require('node:fs').appendFileSync('${counter}', 'x\\n'); console.log('42')"`,
         cwd: dir,
         samples: 2,
+        warmup: 1,
         timeoutMs: 5_000,
       });
 
@@ -603,6 +654,131 @@ describe("runBenchmark", () => {
         chmodSync(dir, 0o755);
         rmSync(dir, { recursive: true, force: true });
         rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("warm-up isolation & timer tripwire (FLAW-09/FLAW-12, ticket #53)", () => {
+    it("issues exactly 5 discarded warm-up spawns before the first measured sample (AC1)", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "perfgym-warmup-"));
+      try {
+        const { command, counter } = writeCountingBenchmark(dir);
+        const result = await runBenchmarkSafe({
+          command,
+          cwd: dir,
+          samples: 2,
+          timeoutMs: 5_000,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        // 5 warm-up spawns (indices 1..5) + 2 measured samples = exactly 7.
+        expect(spawnCount(counter)).toBe(7);
+        // The first measured sample is spawn 6 — all 5 discarded warm-ups ran
+        // BEFORE it — and the warm-up outputs (1..5) never enter the
+        // distribution; only measured spawns 6 and 7 are sampled.
+        expect(result.distribution.samples).toEqual([6, 7]);
+        expect(result.distribution.sampleCount).toBe(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("flags a sample whose benchmark zeroes Date.now as invalid and re-collects it (AC2)", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "perfgym-tamper-"));
+      try {
+        // Spawn 6 = first measured spawn (after the 5 default warm-ups) —
+        // the benchmark zeroes Date.now exactly once, on that spawn only.
+        const { command, counter } = writeCountingBenchmark(
+          dir,
+          "if (n === 6) { Date.now = () => 0; }"
+        );
+        const result = await runBenchmarkSafe({
+          command,
+          cwd: dir,
+          samples: 2,
+          timeoutMs: 5_000,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        // 5 warm-ups + 1 rejected (zeroed clock) + 2 valid re-collected samples.
+        expect(spawnCount(counter)).toBe(8);
+        // Spawn 6 was flagged invalid and NEVER counted; the re-collected
+        // spawns 7 and 8 are the only samples in the distribution.
+        expect(result.distribution.samples).toEqual([7, 8]);
+        expect(result.distribution.sampleCount).toBe(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects a sample whose monotonic stamp is non-monotonic and re-collects it (AC4)", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "perfgym-stamp-"));
+      try {
+        // First measured spawn forges a backwards (after < before) stamp on
+        // stderr; every later spawn emits only the bootstrap's real stamp.
+        const { command, counter } = writeCountingBenchmark(
+          dir,
+          `if (n === 6) { console.error('\\n__perfgym_stamp__{"before":"1000","after":"500","tampered":false}'); }`
+        );
+        const result = await runBenchmarkSafe({
+          command,
+          cwd: dir,
+          samples: 2,
+          timeoutMs: 5_000,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        // 5 warm-ups + 1 rejected (non-monotonic stamp) + 2 valid samples.
+        expect(spawnCount(counter)).toBe(8);
+        // The non-monotonic sample is re-collected, never counted.
+        expect(result.distribution.samples).toEqual([7, 8]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("honors warmup: 0 — no discarded spawns before the measured sample (AC5)", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "perfgym-warmup0-"));
+      try {
+        const { command, counter } = writeCountingBenchmark(dir);
+        const result = await runBenchmarkSafe({
+          command,
+          cwd: dir,
+          samples: 1,
+          warmup: 0,
+          timeoutMs: 5_000,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(spawnCount(counter)).toBe(1);
+        expect(result.distribution.samples).toEqual([1]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("honors a configurable warmup count — 2 discarded spawns (AC5)", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "perfgym-warmup2-"));
+      try {
+        const { command, counter } = writeCountingBenchmark(dir);
+        const result = await runBenchmarkSafe({
+          command,
+          cwd: dir,
+          samples: 1,
+          warmup: 2,
+          timeoutMs: 5_000,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(spawnCount(counter)).toBe(3); // 2 warm-ups + 1 measured
+        expect(result.distribution.samples).toEqual([3]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
     });
   });
