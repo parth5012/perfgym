@@ -15,6 +15,45 @@ import {
  * injects it.
  */
 describe("timer bootstrap — immutable timers (AC3)", () => {
+  it("exposes working escape-hatch helpers — performanceNow bound, getTime via a Date receiver", () => {
+    const script = `
+      "use strict";
+      const original = globalThis.__perfgymOriginalTimers;
+      const call = (label, fn) => {
+        try { fn(); return true; }
+        catch (e) { console.error(label + ": " + e.message); return false; }
+      };
+      console.log(JSON.stringify({
+        dateNow: call("dateNow", () => original.dateNow()),
+        performanceNow: call("performanceNow", () => original.performanceNow()),
+        hrtime: call("hrtime", () => original.hrtime()),
+        hrtimeBigint: call("hrtimeBigint", () => original.hrtimeBigint()),
+        perfViaMember: call("performance.now", () => original.performance.now()),
+        // getTime is Date.prototype.getTime: it needs a Date receiver, so it
+        // is reachable but not zero-argument callable (parked, see ticket #53).
+        getTimeWithReceiver: (() => {
+          try { return typeof original.getTime.call(new Date()) === "number"; }
+          catch (e) { console.error("getTime: " + e.message); return false; }
+        })(),
+      }));
+    `;
+
+    const result = spawnSync(process.execPath, ["-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, NODE_OPTIONS: withTimerBootstrap(process.env.NODE_OPTIONS) },
+    });
+
+    expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      dateNow: true,
+      performanceNow: true,
+      hrtime: true,
+      hrtimeBigint: true,
+      perfViaMember: true,
+      getTimeWithReceiver: true,
+    });
+  });
+
   it("freezes the timer surfaces against replacement while __perfgymOriginalTimers keeps working", () => {
     const script = `
       "use strict";
