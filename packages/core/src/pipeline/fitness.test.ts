@@ -261,6 +261,71 @@ describe("computeFitnessVerdict — tail guard edge cases", () => {
 });
 
 // ============================================================================
+// Tail guard MAD floor (#52)
+// ============================================================================
+
+describe("computeFitnessVerdict — tail guard MAD floor", () => {
+  it("accepts a jittery p99 within the floored ceiling when baseline samples are identical (MAD=0)", () => {
+    // N=5 identical integer CPU-loop samples ⇒ MAD = 0, which used to
+    // collapse the ceiling onto p50 and reject one jittery p99 outlier.
+    const baseline = dist(10, 0); // samples [10, 10, 10, 10, 10]
+    const verdict = computeFitnessVerdict({
+      invariants: passedInvariants,
+      violations: [],
+      metrics: [metric("latency", 5)],
+      baseline,
+      current: { ...baseline, samples: [9.5, 9.5, 9.5, 9.5, 10.2], p50: 9.5, p99: 10.2 },
+    });
+
+    // Floored ceiling: 10 + 3 × max(0, 0.01 × 10) = 10.3 ≥ p99 10.2.
+    expect(verdict.tailGuardCeiling).toBe(10.3);
+    expect(verdict.tailGuardPassed).toBe(true);
+    expect(verdict.accepted).toBe(true);
+    expect(verdict.score).toBe(5);
+  });
+
+  it("still rejects a genuine tail blowout for a MAD=0 baseline (the floor cannot mask a regression)", () => {
+    const baseline = dist(10, 0);
+    const verdict = computeFitnessVerdict({
+      invariants: passedInvariants,
+      violations: [],
+      metrics: [metric("latency", 5)],
+      baseline,
+      current: { ...baseline, p50: 9.5, p99: 15 }, // 50% p99 blowout
+    });
+
+    expect(verdict.score).toBe(-Infinity);
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.tailGuardPassed).toBe(false);
+    expect(verdict.rejected?.reason).toBe("tail-guard");
+    // The floor lifts the ceiling by 0.3 — not far enough to swallow the blowout.
+    expect(verdict.tailGuardCeiling).toBe(10.3);
+  });
+
+  it("honours a configurable floorCoefficient", () => {
+    const baseline = dist(10, 0);
+    const params = {
+      invariants: passedInvariants,
+      violations: [],
+      metrics: [metric("latency", 5)],
+      baseline,
+      current: { ...baseline, p50: 9.5, p99: 11 },
+    };
+
+    // Default coefficient 0.01: ceiling 10.3, p99 11.0 still breaches.
+    const defaulted = computeFitnessVerdict(params);
+    expect(defaulted.tailGuardCeiling).toBe(10.3);
+    expect(defaulted.tailGuardPassed).toBe(false);
+
+    // Coefficient 0.05: ceiling 10 + 3 × (0.05 × 10) = 11.5, p99 11.0 is accepted.
+    const configured = computeFitnessVerdict({ ...params, floorCoefficient: 0.05 });
+    expect(configured.tailGuardCeiling).toBe(11.5);
+    expect(configured.tailGuardPassed).toBe(true);
+    expect(configured.accepted).toBe(true);
+  });
+});
+
+// ============================================================================
 // Significance threshold
 // ============================================================================
 
