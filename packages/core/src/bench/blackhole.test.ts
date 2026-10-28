@@ -46,4 +46,21 @@ describe("blackhole sink (@perfgym/core/bench, FLAW-10 / ticket #54)", () => {
     expect(verifyChecksum("quiet stderr", 42)).toBe("missing");
     expect(parseChecksum("quiet stderr")).toBeNull();
   });
+
+  it("returns the LAST published checksum when stderr carries several", () => {
+    // Diagnostic noise and earlier publications may share the prefix; the
+    // exit hook publishes the final consumed value LAST, so stale lines
+    // must never mask it.
+    const first = computeChecksum(1);
+    const last = computeChecksum(2);
+    const stderr = [
+      `${CHECKSUM_PREFIX}${JSON.stringify({ checksum: first })}`,
+      "foreign output mentioning the prefix is NOT a checksum line",
+      `${CHECKSUM_PREFIX}${JSON.stringify({ checksum: last })}`,
+    ].join("\n");
+
+    expect(parseChecksum(stderr)).toBe(last);
+    expect(verifyChecksum(stderr, 2)).toBe("verified");
+    expect(verifyChecksum(stderr, 1)).toBe("mismatch");
+  });
 });

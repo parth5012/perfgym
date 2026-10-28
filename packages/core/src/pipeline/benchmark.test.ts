@@ -880,6 +880,49 @@ describe("black-hole sink & checksum verification (FLAW-10, ticket #54)", () => 
     }
   });
 
+  it("exhausting the budget through MIXED rejections reports each cause accurately (AC2)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "perfgym-mixed-rejections-"));
+    try {
+      const counter = join(dir, "counter");
+      const script = join(dir, "bench.ts");
+      writeFileSync(
+        script,
+        [
+          "import * as fs from 'node:fs';",
+          "const p = process.argv[2];",
+          "const n = (fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\\n').filter(Boolean).length : 0) + 1;",
+          "fs.appendFileSync(p, n + '\\n');",
+          "// Spawn 1: a backwards (after < before) stamp — stamp rejection.",
+          "// Spawn 2: a healthy stamp but NO checksum — checksum rejection.",
+          "if (n === 1) {",
+          "  console.error('\\n__perfgym_stamp__{\"before\":\"1000\",\"after\":\"500\",\"tampered\":false}');",
+          "}",
+          "console.log('42');",
+        ].join("\n")
+      );
+
+      const result = await runBenchmarkSafe({
+        command: `node ${script} ${counter}`,
+        cwd: dir,
+        samples: 1,
+        warmup: 0,
+        requireChecksum: true,
+        timeoutMs: 5_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // The checksum exhaustion names ONLY the checksum rejections…
+      expect(result.error.message).toContain("1 sample(s) that failed checksum verification");
+      // …and keeps the shared budget story honest…
+      expect(result.error.message).toContain("2 total rejection(s)");
+      expect(result.error.message).toContain("1 tampered timer stamp(s)");
+      expect(spawnCount(counter)).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("re-collects a require_checksum sample with no checksum and fails loudly when the budget is exhausted (AC2)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "perfgym-require-checksum-"));
     try {
