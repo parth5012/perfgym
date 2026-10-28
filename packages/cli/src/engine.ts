@@ -208,9 +208,14 @@ const normaliseMetrics = (config: Record<string, unknown>): PerfGymConfig["metri
   return metrics.map((entry) => {
     const metric = asRecord(entry) ?? {};
     const flag = metric.requireChecksum ?? metric.require_checksum;
+    // `timeout_ms` is the documented YAML spelling (SPECIFICATION.md); both
+    // spellings are accepted. A non-numeric value is dropped so the runner's
+    // default timeout applies.
+    const timeout = metric.timeoutMs ?? metric.timeout_ms;
     return {
       ...metric,
       ...(typeof flag === "boolean" ? { requireChecksum: flag } : {}),
+      ...(typeof timeout === "number" ? { timeoutMs: timeout } : {}),
     } as PerfGymConfig["metrics"][number];
   });
 };
@@ -265,6 +270,14 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
     agentBudget: normaliseAgentBudget(parsed),
     ...(normalisedLlm ? { llm: normalisedLlm } : {}),
     ...(normalisedBenchmark ? { benchmark: normalisedBenchmark } : {}),
+    // `floorCoefficient` (ticket #52) is a top-level typed field; the YAML
+    // convention is snake_case (matching `agent_budget`/`require_checksum`),
+    // so both spellings are accepted. A non-numeric value is dropped so the
+    // runner default (0.01) applies — `effectiveTailMad` re-clamps anyway.
+    ...((parsed.floorCoefficient ?? parsed.floor_coefficient) !== undefined &&
+    typeof (parsed.floorCoefficient ?? parsed.floor_coefficient) === "number"
+      ? { floorCoefficient: (parsed.floorCoefficient ?? parsed.floor_coefficient) as number }
+      : {}),
   };
 }
 

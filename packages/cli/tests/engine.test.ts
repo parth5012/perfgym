@@ -265,3 +265,44 @@ metrics:
     expect(config.metrics[1]?.requireChecksum).toBeUndefined();
   });
 });
+
+describe("loadConfig — metrics[].timeout_ms normalisation (OCR round-4)", () => {
+  it("maps the documented snake_case timeout_ms onto timeoutMs; camelCase also accepted; non-numeric dropped", () => {
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, ".perfgym.yaml"),
+      `
+version: "1.0"
+target:
+  name: "timeouts"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "snake"
+    command: "node -e 'console.log(1)'"
+    goal: "minimize"
+    weight: 1
+    timeout_ms: 1200
+  - name: "camel"
+    command: "node -e 'console.log(1)'"
+    goal: "minimize"
+    weight: 1
+    timeoutMs: 900
+  - name: "junk"
+    command: "node -e 'console.log(1)'"
+    goal: "minimize"
+    weight: 1
+    timeout_ms: "soon"
+`,
+      "utf8"
+    );
+
+    const config = loadConfig(dir);
+    expect(config.metrics[0]?.timeoutMs).toBe(1200);
+    expect(config.metrics[1]?.timeoutMs).toBe(900);
+    // A non-numeric value is dropped so the runner's default timeout applies.
+    expect(config.metrics[2]?.timeoutMs).toBeUndefined();
+  });
+});

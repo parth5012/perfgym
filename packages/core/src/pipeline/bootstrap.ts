@@ -143,8 +143,12 @@ export const TIMER_BOOTSTRAP_SOURCE = `(function () {
   // to fd 2 on exit (fs.writeSync — async stderr writes can be dropped while
   // the process is exiting). The prefix is an inline literal kept in sync
   // with TIMER_STAMP_PREFIX (this source never sees module scope).
-  var fs = process.getBuiltinModule("fs");
+  // process.getBuiltinModule exists only on Node >= 20.16 / >= 22.3; on older
+  // runtimes the guard degrades to no stamp instead of crashing every
+  // benchmark child before user code loads.
+  var fs = typeof process.getBuiltinModule === "function" ? process.getBuiltinModule("fs") : null;
   process.on("exit", function () {
+    if (fs === null) return;
     try {
       var after = readNs();
       fs.writeSync(
@@ -186,15 +190,19 @@ export function hasNodeRequirePreload(existingNodeOptions?: string): boolean {
 
 /**
  * Build the `NODE_OPTIONS` value that injects the bootstrap before user code:
- * a `--import data:text/javascript,...` entry appended to whatever
- * `NODE_OPTIONS` the environment already carries. A data URL needs no temp
+ * a `--import data:text/javascript,...` entry PREPENDED to whatever
+ * `NODE_OPTIONS` the environment already carries. Prepending matters: Node
+ * executes `--import` entries left-to-right, so a pre-existing entry must run
+ * AFTER the bootstrap or it could patch the timers before the originals are
+ * captured (the `--require`/`-r` forms cannot be ordered at all and are
+ * rejected outright by `hasNodeRequirePreload`). A data URL needs no temp
  * file and no path quoting, and is parsed identically on every platform.
  */
 export function withTimerBootstrap(existingNodeOptions?: string): string {
   const moduleUrl = `data:text/javascript,${encodeURIComponent(TIMER_BOOTSTRAP_SOURCE)}`;
   const injected = `--import ${moduleUrl}`;
   const base = existingNodeOptions?.trim() ?? "";
-  return base === "" ? injected : `${base} ${injected}`;
+  return base === "" ? injected : `${injected} ${base}`;
 }
 
 /**

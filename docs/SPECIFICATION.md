@@ -67,7 +67,12 @@ returns the value
 unchanged and, on process exit, publishes an FNV-1a checksum of it on stderr
 (`__perfgym_checksum__{...}`). The runner verifies the published checksum
 against the value parsed from stdout and re-collects a mismatching or missing
-sample within the same budget as a bad timer stamp. Set
+sample within the same budget as a bad timer stamp. The sunk value must be the
+value the benchmark reports as the metric: for an execution-time metric, sink
+the reported elapsed value itself — sinking only the computation's payload
+publishes a checksum of a different value, which a `require_checksum` run
+rejects as a mismatch (decoupling the sink from the reported metric is
+deferred to the packaging/policy follow-ups). Set
 `metrics[].require_checksum: true` to enforce this strictly (the run fails
 with a clear error when the budget is exhausted); without it, a sample with no
 checksum still runs but is reported as `dceSusceptible` (surfaced in markdown
