@@ -152,3 +152,27 @@
 ### 34. Stripping ANSI After `JSON.stringify` Is a No-Op
 * **Problem**: `JSON.stringify` escapes the ESC byte as the six characters `\u001b`, so a `raw.replace(ANSI_PATTERN, "")` applied to the serialized document matches nothing — colored messages (`"\u001b[31mboom\u001b[0m"`) survive into `--format json` output.
 * **Solution**: strip ANSI from `message` (and any other string you control) while BUILDING the structured error, before serialization; keep the post-stringify replace only as a harmless belt-and-braces.
+
+### 35. Unbound `this` Hides Behind `typeof` Assertions
+* **Problem**: an escape-hatch convenience alias published the raw `performance.now` reference. `hatch.performanceNow()` throws `ERR_INVALID_THIS` (`this` must be of type Performance), while `original.performance.now()` works — and the test asserted `typeof original.performanceNow === "function"`, which passes for the broken reference too. Two members (`performanceNow`, `Date.prototype.getTime`) were unusable on direct call while three worked, so the defect looked like a style choice, not a crash.
+* **Solution**: when exposing captured instance/prototype methods through a frozen object, `.bind()` the receiver at capture time OR state the receiver in the docblock and in the test. Prefer a test that INVOKES every published helper (`call("label", fn)` helper returning true/false per member) over `typeof` checks — `typeof === "function"` proves reachability, not callability. Empirical check first (`for (const k of [...]) try { hatch[k]() } catch` inside plain `node -e`) is faster than reasoning about V8 internals.
+
+### 36. `Math.max(0, x)` Does Not Floor — Fractional Counts Fire Extra Spawns
+* **Problem**: a clamped-with-Math.min/Math.max config value (`warmup_iterations: 2.5`) is NOT truncated, and a `for (let i = 0; i < warmupCount; i++)` loop fires `Math.ceil` iterations: 3 spawns for 2.5. Same latent pattern in the pre-existing `resolveSampleCount`.
+* **Solution**: `Math.trunc(configured)` before clamping for any value that indexes/loop-counts. Assert the truncation explicitly in the clamp test (`resolveWarmupCount(2.5) === 2`), red first.
+
+### 37. First-Line-Is-Right Parsing Inverts When the Source Appends
+* **Problem**: `parseChecksum` returned the FIRST `__perfgym_checksum__` stderr line. The publisher (an exit hook) appends the FINAL value last; any stale/duplicate publication or diagnostic text sharing the prefix upstream made the parser lock onto a value that is not the last one, so a real mismatch could verify.
+* **Solution**: when a producer appends (exit-hook stamps, checksums, second-pass logs), parse BACKWARDS (`split("\n")`, iterate from the end) and return the last well-formed line. Symmetric rule as #53's stamp parsing, which avoids matching only well-formed lines — keep foreign/malformed lines ignored.
+
+### 38. Shared Rejection Counters: Report the Cause AND the Total
+* **Problem**: a re-collection loop shared one `rejectedSamples` counter between two rejection causes (timer stamp, checksum). The failure message claimed the shared total for ONE cause ("produced 2 samples that failed checksum verification") when 2 was the sum of 1 stamp + 1 checksum rejection — and `checksumRejections` was incremented but never read.
+* **Solution**: message format `N sample(s) that failed <cause> — out of M total rejection(s) (K <other-cause>(s))`. The per-cause count must be its own variable; never interpolate the shared counter into a cause-specific sentence.
+
+### 39. Backticks Inside a Template-Literal Source Kill the Whole File
+* **Problem**: comments added inside `TIMER_BOOTSTRAP_SOURCE` (a JS-in-template-literal) and inside a test's `script` template literal used `` `performance.now` `` style quoting; esbuild then reported the error against a line inside the STRING, so the failure looked like a syntax error in unrelated code ("Expected \";\" but found \"performance\"") and vitest reported 0 tests collected.
+* **Solution**: in JS-source-as-template-literal blocks, use no backticks at all in comments (plain identifiers). Note the error line/column refers to within the string, so read the reported file before assuming the transform is at fault.
+
+### 40. OCR Provider 502s Scale With Batch Size
+* **Problem**: `ocr_review` on a 4-file group failed ~100% with `provider 502 / LLM request timed out` on the omniroute backend (retry_report shows one huge request), twice in a row, while every 2-file-group run completed.
+* **Solution**: keep `ocr_review` requests small — pass gitignore-style `exclude` lists to leave only 1-2 files selected, and run the groups in parallel via `Promise.allSettled`. Group splits of the same diff are the reliable way to full-coverage OCR on this backend. (Re-running the identical 4-file range is not productive; it was retried once before splitting.)
