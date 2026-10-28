@@ -176,3 +176,7 @@
 ### 40. OCR Provider 502s Scale With Batch Size
 * **Problem**: `ocr_review` on a 4-file group failed ~100% with `provider 502 / LLM request timed out` on the omniroute backend (retry_report shows one huge request), twice in a row, while every 2-file-group run completed.
 * **Solution**: keep `ocr_review` requests small — pass gitignore-style `exclude` lists to leave only 1-2 files selected, and run the groups in parallel via `Promise.allSettled`. Group splits of the same diff are the reliable way to full-coverage OCR on this backend. (Re-running the identical 4-file range is not productive; it was retried once before splitting.)
+
+### 41. `gh pr edit` Can Die on Deprecated GraphQL Fields
+* **Problem**: `gh pr edit 85 --body-file ...` failed with `GraphQL: Projects (classic) is being deprecated... (repository.pullRequest.projectCards)` and the body was NOT updated, despite a seemingly unrelated flag set.
+* **Solution**: update the body through the REST API instead: `gh api -X PATCH repos/OWNER/REPO/pulls/NN --input body.md` (or `-F body=@file.md`). Verify with `gh pr view --json body` afterwards — the CLI can fail after partial work or print the error only on stderr.
