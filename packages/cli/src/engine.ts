@@ -120,6 +120,9 @@ export function generateStarterConfig(language: SupportedLanguage = "typescript"
         unit: "ms",
       },
     ],
+    sandbox: {
+      command_backend: "auto",
+    },
   };
 }
 
@@ -220,6 +223,25 @@ const normaliseMetrics = (config: Record<string, unknown>): PerfGymConfig["metri
   });
 };
 
+/**
+ * Normalise the documented `sandbox.command_backend` config (ticket #56).
+ * Accepts both snake_case `command_backend` and camelCase `commandBackend`.
+ * Defaults to "auto".
+ */
+const normaliseSandbox = (config: Record<string, unknown>): PerfGymConfig["sandbox"] => {
+  const block = asRecord(config.sandbox);
+  const raw = block ? (block.commandBackend ?? block.command_backend) : undefined;
+  const valid = ["auto", "node-permission", "mxc", "bwrap", "none"] as const;
+  const backend = typeof raw === "string" && (valid as readonly string[]).includes(raw)
+    ? (raw as NonNullable<PerfGymConfig["sandbox"]>["command_backend"])
+    : "auto";
+  return {
+    ...(block ?? {}),
+    commandBackend: backend,
+    command_backend: backend,
+  };
+};
+
 export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   const configPath = path.join(rootDir, CONFIG_FILE_NAME);
   if (!fs.existsSync(configPath)) {
@@ -263,11 +285,13 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
     : undefined;
   const normalisedBenchmark = normaliseBenchmark(parsed);
   const normalisedMetrics = normaliseMetrics(parsed);
+  const normalisedSandbox = normaliseSandbox(parsed);
 
   return {
     ...(parsed as unknown as PerfGymConfig),
     metrics: normalisedMetrics,
     agentBudget: normaliseAgentBudget(parsed),
+    sandbox: normalisedSandbox,
     ...(normalisedLlm ? { llm: normalisedLlm } : {}),
     ...(normalisedBenchmark ? { benchmark: normalisedBenchmark } : {}),
     // `floorCoefficient` (ticket #52) is a top-level typed field; the YAML
