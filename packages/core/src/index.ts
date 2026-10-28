@@ -191,5 +191,13 @@ export interface PerfGymConfig {
     timeoutMs?: number;
     pricing?: Record<string, { promptPerMillion: number; completionPerMillion: number }>;
   };
+  sandbox?: {
+    /**
+     * Active command confinement backend (ticket #56).
+     * Probes mxc -> bwrap -> node-permission -> plain.
+     */
+    command_backend?: "auto" | "node-permission" | "mxc" | "bwrap" | "none";
+    commandBackend?: "auto" | "node-permission" | "mxc" | "bwrap" | "none";
+  };
 }
 

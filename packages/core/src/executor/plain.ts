@@ -54,7 +54,7 @@ function killProcessGroup(pid: number | undefined): void {
 }
 
 export class PlainExecutor implements CommandExecutor {
-  readonly backend = "plain";
+  readonly backend: string = "plain";
   private readonly allowedCapabilities?: CommandCapabilities;
 
   constructor(options?: PlainExecutorOptions) {

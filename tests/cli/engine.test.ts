@@ -310,6 +310,62 @@ metrics:
     });
   });
 
+  describe("loadConfig — sandbox command backend configuration (Ticket #56)", () => {
+    const base = [
+      'version: "1.0"',
+      "target:",
+      '  name: "bench-test"',
+      '  language: "typescript"',
+      '  files: ["src/**/*.ts"]',
+      "invariants:",
+      '  command: "echo test"',
+      "metrics:",
+      '  - name: "lat"',
+      '    command: "echo 10"',
+      '    goal: "minimize"',
+      "    weight: 1",
+    ].join("\n");
+
+    it("defaults sandbox.command_backend to 'auto' when omitted", () => {
+      fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), base, "utf8");
+      const config = loadConfig(testDir);
+      expect(config.sandbox?.command_backend).toBe("auto");
+      expect(config.sandbox?.commandBackend).toBe("auto");
+    });
+
+    it("normalises snake_case sandbox.command_backend to valid backend", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nsandbox:\n  command_backend: "node-permission"\n`,
+        "utf8"
+      );
+      const config = loadConfig(testDir);
+      expect(config.sandbox?.command_backend).toBe("node-permission");
+      expect(config.sandbox?.commandBackend).toBe("node-permission");
+    });
+
+    it("normalises camelCase sandbox.commandBackend to valid backend", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nsandbox:\n  commandBackend: "bwrap"\n`,
+        "utf8"
+      );
+      const config = loadConfig(testDir);
+      expect(config.sandbox?.command_backend).toBe("bwrap");
+      expect(config.sandbox?.commandBackend).toBe("bwrap");
+    });
+
+    it("falls back to 'auto' for an invalid backend string", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nsandbox:\n  command_backend: "invalid-sandbox"\n`,
+        "utf8"
+      );
+      const config = loadConfig(testDir);
+      expect(config.sandbox?.command_backend).toBe("auto");
+    });
+  });
+
   describe("Negative memory recording (Ticket #38)", () => {
     it("pins the documented negative memory file location", () => {
       expect(NEGATIVE_MEMORY_PATH).toBe(path.join(".perfgym", "negative-memory.json"));
