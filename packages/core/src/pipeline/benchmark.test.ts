@@ -923,6 +923,95 @@ describe("black-hole sink & checksum verification (FLAW-10, ticket #54)", () => 
     }
   });
 
+  it("reports a mismatch exhaustion as a consumed-value failure, not a missing checksum (AC2)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "perfgym-mismatch-exhaustion-"));
+    try {
+      const counter = join(dir, "counter");
+      const script = join(dir, "bench.ts");
+      writeFileSync(
+        script,
+        [
+          `import { blackhole } from ${JSON.stringify(BLACKHOLE_SOURCE)};`,
+          "import * as fs from 'node:fs';",
+          "const p = process.argv[2];",
+          "const n = (fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\\n').filter(Boolean).length : 0) + 1;",
+          "fs.appendFileSync(p, n + '\\n');",
+          "// Every spawn sinks a DIFFERENT value than it reports: a mismatch,",
+          "// never a missing checksum, exhausts the require_checksum budget.",
+          "blackhole(n + 1000);",
+          "console.log(JSON.stringify({ value: n }));",
+        ].join("\n")
+      );
+
+      const result = await runBenchmarkSafe({
+        command: `node ${script} ${counter}`,
+        cwd: dir,
+        samples: 1,
+        warmup: 0,
+        requireChecksum: true,
+        timeoutMs: 5_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // The hint must describe the verdict that actually failed: the sink
+      // consumed a DIFFERENT value — not "no checksum was published".
+      expect(result.error.message).toContain("consumed a different value");
+      expect(result.error.message).not.toContain("no checksum was published");
+      expect(spawnCount(counter)).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed before spawning when inherited NODE_OPTIONS carries a require preload", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "perfgym-require-preload-"));
+    try {
+      const counter = join(dir, "counter");
+      // A --require preload runs BEFORE the injected --import bootstrap, so
+      // it could replace process.hrtime.bigint before the originals are
+      // captured — the runner must refuse the run instead of sampling.
+      const result = await runBenchmarkSafe({
+        command: `node -e "console.log('42')"`,
+        cwd: dir,
+        samples: 2,
+        warmup: 1,
+        timeoutMs: 5_000,
+        env: { NODE_OPTIONS: "--require ./evil-preload.js" },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error._tag).toBe("BenchmarkExecutionError");
+      expect(result.error.message).toContain("--require");
+      // Fail closed: not a single warm-up or measured spawn happened.
+      expect(spawnCount(counter)).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs normally when inherited NODE_OPTIONS carries no require preload", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "perfgym-benign-node-options-"));
+    try {
+      const counter = join(dir, "counter");
+      const result = await runBenchmarkSafe({
+        command: `node -e "require('node:fs').appendFileSync('${counter}', 'x\\n'); console.log('42')"`,
+        cwd: dir,
+        samples: 1,
+        warmup: 0,
+        timeoutMs: 5_000,
+        env: { NODE_OPTIONS: "--max-old-space-size=4096" },
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.distribution.samples).toEqual([42]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("re-collects a require_checksum sample with no checksum and fails loudly when the budget is exhausted (AC2)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "perfgym-require-checksum-"));
     try {

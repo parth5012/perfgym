@@ -161,6 +161,30 @@ export const TIMER_BOOTSTRAP_SOURCE = `(function () {
 `;
 
 /**
+ * Detect a `--require`/`-r` preload in a `NODE_OPTIONS` value. Node executes
+ * accepted require forms BEFORE `--import` entries, so a preload could replace
+ * `process.hrtime.bigint` before the bootstrap captures the originals — the
+ * escape hatch would then publish the tampered clock as the "original". The
+ * runner treats a positive result as fail-closed and refuses the run.
+ *
+ * Covers the forms Node actually accepts in `NODE_OPTIONS` (verified on
+ * Node 26): `--require mod`, `--require=mod` (quotes included in the value
+ * token), and `-r mod`. The `-r=mod` / `-rmod` attached forms are rejected by
+ * Node itself, so the spawn fails loudly without our check.
+ */
+export function hasNodeRequirePreload(existingNodeOptions?: string): boolean {
+  // Split into tokens on whitespace outside quotes, mirroring how Node
+  // tokenizes NODE_OPTIONS.
+  const tokens = existingNodeOptions?.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  return tokens.some((token) => {
+    const option = token.replace(/^['"]|['"]$/g, "");
+    return (
+      option === "--require" || option.startsWith("--require=") || option === "-r"
+    );
+  });
+}
+
+/**
  * Build the `NODE_OPTIONS` value that injects the bootstrap before user code:
  * a `--import data:text/javascript,...` entry appended to whatever
  * `NODE_OPTIONS` the environment already carries. A data URL needs no temp

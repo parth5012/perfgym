@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
   TIMER_STAMP_PREFIX,
   areTimerStampsValid,
+  hasNodeRequirePreload,
   isValidTimerStamp,
   parseTimerStamps,
   withTimerBootstrap,
@@ -15,6 +16,25 @@ import {
  * injects it.
  */
 describe("timer bootstrap — immutable timers (AC3)", () => {
+  it("flags every NODE_OPTIONS require form Node accepts, and nothing else", () => {
+    // Empirically accepted by Node 26 (and documented for NODE_OPTIONS):
+    expect(hasNodeRequirePreload("--require ./evil.js")).toBe(true);
+    expect(hasNodeRequirePreload("--require=./evil.js")).toBe(true);
+    expect(hasNodeRequirePreload("-r ./evil.js")).toBe(true);
+    expect(hasNodeRequirePreload("--require='node:fs'")).toBe(true);
+    expect(hasNodeRequirePreload('--require="node:fs"')).toBe(true);
+    // Combined with other options, either order.
+    expect(hasNodeRequirePreload("--max-old-space-size=4096 --require ./evil.js")).toBe(true);
+    expect(hasNodeRequirePreload("--require ./a.js --max-old-space-size=4096")).toBe(true);
+    // A pre-existing --import entry is NOT a require preload.
+    expect(hasNodeRequirePreload("--import ./setup.js")).toBe(false);
+    expect(hasNodeRequirePreload("--max-old-space-size=4096")).toBe(false);
+    expect(hasNodeRequirePreload("")).toBe(false);
+    expect(hasNodeRequirePreload(undefined)).toBe(false);
+    // `-r` as a substring of another token must not false-positive.
+    expect(hasNodeRequirePreload("--report-uncaught-exceptions")).toBe(false);
+  });
+
   it("exposes working escape-hatch helpers — performanceNow bound, getTime via a Date receiver", () => {
     const script = `
       "use strict";

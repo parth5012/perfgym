@@ -110,6 +110,7 @@ const renderTypesSection = (evaluation: StepEvaluation): string[] => {
 const renderDistributionSection = (
   evaluation: StepEvaluation,
   goal: MetricGoal | null,
+  floorCoefficient?: number,
 ): string[] => {
   const { baselineDistribution: baseline, currentDistribution: current } = evaluation;
 
@@ -121,7 +122,7 @@ const renderDistributionSection = (
   }
 
   const unit = current.unit;
-  const tail = tailGuardOf(baseline, current, goal);
+  const tail = tailGuardOf(baseline, current, goal, floorCoefficient);
   let tailNote: string;
   if (tail.passed === null) {
     tailNote = "(Tail Guard unchecked)";
@@ -231,7 +232,7 @@ export class MarkdownFormatter {
       "",
       ...renderTypesSection(evaluation),
       "",
-      ...renderDistributionSection(evaluation, goal),
+      ...renderDistributionSection(evaluation, goal, config?.floorCoefficient),
       "",
       ...renderViolationsSection(evaluation.violations),
     ];

@@ -57,8 +57,11 @@ benchmark commands are unaffected by the timer bootstrap because
 **Black-hole sink & checksum verification (FLAW-10).** A benchmark command whose
 metric value is never consumed may be eliminated by V8's dead-code elimination,
 silently reporting a wrong (often all-zero) number. Metric scripts can defend
-against this by consuming the value through `blackhole(value)` (exported from
-`@perfgym/core/bench` and the main entry): the sink returns the value
+against this by consuming the value through `blackhole(value)` — import it from
+the main entry, `import { blackhole } from "@perfgym/core"`, which is the
+supported distribution surface and resolves anywhere the package is installed
+(the `@perfgym/core/bench` subpath also works inside this repository via the
+TS/Vite path alias, but is not a packaged export): the sink returns the value
 unchanged and, on process exit, publishes an FNV-1a checksum of it on stderr
 (`__perfgym_checksum__{...}`). The runner verifies the published checksum
 against the value parsed from stdout and re-collects a mismatching or missing

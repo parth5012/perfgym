@@ -132,6 +132,7 @@ export const toStepEvaluationJson = (
         evaluation.baselineDistribution,
         evaluation.currentDistribution,
         goal,
+        config?.floorCoefficient,
       ),
     },
     stepReceipt: null,

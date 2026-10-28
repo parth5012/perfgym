@@ -18,6 +18,7 @@ import type {
   MetricGoal,
   StepEvaluation,
 } from "../index.js";
+import { effectiveTailMad } from "../pipeline/fitness.js";
 
 /** The linter rule id the pipeline uses to surface typecheck failures. */
 export const TYPECHECK_SENTINEL_RULE = "perfgym:typecheck";
@@ -166,6 +167,7 @@ export const tailGuardOf = (
   baseline: BenchmarkDistribution | null | undefined,
   current: BenchmarkDistribution | null | undefined,
   goal: MetricGoal | null,
+  floorCoefficient?: number,
 ): TailGuardJson => {
   if (goal === null) {
     return { passed: null, madCeiling: null, rule: MINIMIZE_TAIL_GUARD_RULE };
@@ -177,8 +179,12 @@ export const tailGuardOf = (
     return { passed: null, madCeiling: null, rule };
   }
 
+  // The report must mirror the ceiling the pipeline ENFORCES: the same
+  // effective MAD (with the #52 floor) as `computeFitnessVerdict`, otherwise
+  // an accepted step would show a failed guard (and vice versa).
+  const effectiveMAD = effectiveTailMad(baseline, floorCoefficient);
   const ceiling =
-    goal === "maximize" ? baseline.p50 - 3 * baseline.mad : baseline.p50 + 3 * baseline.mad;
+    goal === "maximize" ? baseline.p50 - 3 * effectiveMAD : baseline.p50 + 3 * effectiveMAD;
   const observed = goal === "maximize" ? current.min : current.p99;
 
   // Compare against the raw ceiling: rounding before comparison would flip

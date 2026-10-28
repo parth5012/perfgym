@@ -193,12 +193,84 @@ describe("JsonFormatter.formatStep — LLD §6.1 schema", () => {
       currentDistribution: tiny,
     };
 
-    const parsed = parse(formatter.formatStep(evaluation, minimizeConfig));
+    // floorCoefficient 0 keeps the raw-MAD ceiling so the no-rounding
+    // property is tested against the exact arithmetic (10 + 3 * 0.002).
+    const parsed = parse(
+      formatter.formatStep(evaluation, { ...minimizeConfig, floorCoefficient: 0 })
+    );
     const tailGuard = (parsed.metrics as Record<string, unknown>).tailGuard as Record<string, unknown>;
 
     // Raw ceiling 10.006 < observed 10.0065: the pipeline rejects, so must we.
     expect(tailGuard.passed).toBe(false);
     expect(tailGuard.madCeiling).toBeCloseTo(10.006, 5);
+  });
+
+  it("applies the tail-guard MAD floor so an accepted step does not show a failed guard", () => {
+    // MAD=0 baseline: the pipeline's floored ceiling is 10 + 3 * (0.01 * 10)
+    // = 10.3, so p99 10.2 is ACCEPTED — the report must agree, not show a
+    // failed guard computed from the raw MAD (ceiling 10.0).
+    const baseline = distribution({
+      p50: 10,
+      mad: 0,
+      p99: 10,
+      min: 10,
+      max: 10,
+      samples: [10, 10, 10, 10, 10],
+    });
+    const evaluation = {
+      ...rejectedStep,
+      accepted: true,
+      fitnessScore: 5,
+      baselineDistribution: baseline,
+      currentDistribution: distribution({
+        p50: 10,
+        mad: 0,
+        p99: 10.2,
+        min: 10,
+        max: 10.2,
+        samples: [10, 10, 10, 10, 10.2],
+      }),
+    };
+
+    const parsed = parse(formatter.formatStep(evaluation, minimizeConfig));
+    const tailGuard = (parsed.metrics as Record<string, unknown>).tailGuard as Record<string, unknown>;
+
+    expect(tailGuard.passed).toBe(true);
+    expect(tailGuard.madCeiling).toBeCloseTo(10.3, 5);
+  });
+
+  it("honours a configured floorCoefficient in the reported tail-guard ceiling", () => {
+    const baseline = distribution({
+      p50: 10,
+      mad: 0,
+      p99: 10,
+      min: 10,
+      max: 10,
+      samples: [10, 10, 10, 10, 10],
+    });
+    const evaluation = {
+      ...rejectedStep,
+      accepted: true,
+      fitnessScore: 5,
+      baselineDistribution: baseline,
+      currentDistribution: distribution({
+        p50: 10,
+        mad: 0,
+        p99: 10.4,
+        min: 10,
+        max: 10.4,
+        samples: [10, 10, 10, 10, 10.4],
+      }),
+    };
+
+    // Coefficient 0.05: ceiling 10 + 3 * (0.05 * 10) = 11.5, p99 10.4 accepted.
+    const parsed = parse(
+      formatter.formatStep(evaluation, { ...minimizeConfig, floorCoefficient: 0.05 })
+    );
+    const tailGuard = (parsed.metrics as Record<string, unknown>).tailGuard as Record<string, unknown>;
+
+    expect(tailGuard.passed).toBe(true);
+    expect(tailGuard.madCeiling).toBeCloseTo(11.5, 5);
   });
 
   it("reports null distributions rather than fabricated zeros when a step short-circuits", () => {

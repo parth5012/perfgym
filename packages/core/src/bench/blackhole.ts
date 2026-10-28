@@ -8,7 +8,8 @@
  * countermeasure is a certified black-box sink: the benchmark calls
  *
  * ```ts
- * import { blackhole } from "@perfgym/core/bench";
+ * import { blackhole } from "@perfgym/core"; // main entry — the supported
+ *                                            // distribution import
  * const result = heavyWork();
  * blackhole(result); // result MUST be the value reported as the metric
  * console.log(JSON.stringify({ value: result }));
@@ -31,8 +32,8 @@
  * value is what gets published, and it must equal the parsed metric value.
  *
  * WHY A MODULE (not a raw injected string): unlike `TIMER_BOOTSTRAP_SOURCE`,
- * this file is imported by user benchmark code through the
- * `@perfgym/core/bench` subpath, so a normal typed module is fine.
+ * this file is imported by user benchmark code (through the main entry or the
+ * in-repo `@perfgym/core/bench` alias), so a normal typed module is fine.
  */
 
 import { writeSync } from "node:fs";
