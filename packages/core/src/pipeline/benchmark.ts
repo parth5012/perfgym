@@ -5,7 +5,11 @@ import { Effect } from "effect";
 import { verifyChecksum } from "../bench/blackhole.js";
 import { BenchmarkExecutionError } from "../errors.js";
 import type { BenchmarkDistribution, MetricResult } from "../index.js";
-import { areTimerStampsValid, withTimerBootstrap } from "./bootstrap.js";
+import {
+  areTimerStampsValid,
+  hasNodeRequirePreload,
+  withTimerBootstrap,
+} from "./bootstrap.js";
 
 /**
  * ============================================================================
@@ -773,6 +777,26 @@ export const runBenchmark = (
     }
   }
 
+  // Fail closed BEFORE any spawn (warm-up or measured): a `--require`/`-r`
+  // preload inherited through NODE_OPTIONS executes before the injected
+  // `--import` bootstrap, so it could replace a timer before the originals
+  // are captured and the escape hatch would publish the tampered clock.
+  const inheritedNodeOptions = options.env?.NODE_OPTIONS ?? process.env.NODE_OPTIONS;
+  if (hasNodeRequirePreload(inheritedNodeOptions)) {
+    return Effect.fail(
+      benchmarkFailure(
+        options.command,
+        "NODE_OPTIONS contains a require preload",
+        "Benchmark failed: NODE_OPTIONS contains a --require/-r preload, which Node " +
+          "executes BEFORE the injected timer bootstrap — a preload could replace " +
+          "process.hrtime/Date/performance before the originals are captured, making the " +
+          "monotonic tripwire and the __perfgymOriginalTimers escape hatch untrustworthy. " +
+          "Remove the preload from NODE_OPTIONS (or load it with --import, which runs " +
+          "after the bootstrap) and re-run."
+      )
+    );
+  }
+
   const executionOptions = {
     command: options.command,
     cwd: resolvedCwd,
@@ -781,9 +805,7 @@ export const runBenchmark = (
       ...options.env,
       // Timer bootstrap (FLAW-09): injected AUTOMATICALLY, no opt-in — it
       // runs before user code in every (Node) spawn, warm-up or measured.
-      NODE_OPTIONS: withTimerBootstrap(
-        options.env?.NODE_OPTIONS ?? process.env.NODE_OPTIONS
-      ),
+      NODE_OPTIONS: withTimerBootstrap(inheritedNodeOptions),
     },
   };
 
@@ -888,7 +910,11 @@ export const runBenchmark = (
                 `failed checksum verification — out of ${rejectedSamples} total rejection(s) ` +
                 `(${stampRejections} tampered timer stamp(s)) — the re-collection budget ` +
                 `(${sampleCount} within the sample budget) is exhausted. ` +
-                (options.requireChecksum === true
+                // Key the hint on the verdict that actually failed: under
+                // require_checksum a MISMATCH consumes the budget too, and
+                // telling that user "no checksum was published" sends them to
+                // the wrong fix.
+                (checksumVerdict === "missing"
                   ? "require_checksum is set but no checksum was published: consume the " +
                     'reported metric value with blackhole(result) from "@perfgym/core/bench".'
                   : "The sink consumed a different value than the benchmark reported: " +

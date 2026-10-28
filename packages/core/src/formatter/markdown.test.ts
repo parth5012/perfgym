@@ -67,6 +67,38 @@ describe("MarkdownFormatter.formatStep — LLD §6.2 template", () => {
     expect(output).toContain("(Tail Guard failed)");
   });
 
+  it("marks the tail guard passed when the floored ceiling accepts the step", () => {
+    // MAD=0 baseline with p99 inside the floored ceiling (10.3): the
+    // pipeline accepts, so the report must not claim a failed guard from
+    // the raw MAD.
+    const baseline = distribution({
+      p50: 10,
+      mad: 0,
+      p99: 10,
+      min: 10,
+      max: 10,
+      samples: [10, 10, 10, 10, 10],
+    });
+    const evaluation = {
+      ...rejectedStep,
+      accepted: true,
+      fitnessScore: 5,
+      baselineDistribution: baseline,
+      currentDistribution: distribution({
+        p50: 10,
+        mad: 0,
+        p99: 10.2,
+        min: 10,
+        max: 10.2,
+        samples: [10, 10, 10, 10, 10.2],
+      }),
+    };
+
+    const output = formatter.formatStep(evaluation, minimizeConfig);
+    expect(output).toContain("(Tail Guard passed)");
+    expect(output).not.toContain("(Tail Guard failed)");
+  });
+
   it("does not repeat typecheck sentinel failures as AST violations", () => {
     const output = formatter.formatStep(shortCircuitStep);
 

@@ -67,6 +67,27 @@ import type { BenchmarkDistribution, InvariantResult, LintViolation, MetricResul
 export const DEFAULT_MIN_SIGNIFICANCE_DELTA = 2.5;
 
 /**
+ * Resolve the effective MAD of the tail guard (#52): `max(MAD, floorCoefficient × |p50|)`,
+ * so a constant (MAD = 0) baseline keeps a tolerance band instead of collapsing
+ * the ceiling onto p50. Shared by `computeFitnessVerdict` (the enforcement) and
+ * the formatter's `tailGuardOf` (the report) so both always agree; the floor
+ * touches the ceiling only — never the significance threshold or the score.
+ */
+export function effectiveTailMad(
+  baseline: Pick<BenchmarkDistribution, "mad" | "p50">,
+  floorCoefficient?: number
+): number {
+  const coefficient =
+    floorCoefficient === undefined || !Number.isFinite(floorCoefficient)
+      ? DEFAULT_TAIL_MAD_FLOOR_COEFFICIENT
+      : Math.max(0, floorCoefficient);
+  // |p50| keeps the floor a positive relative tolerance band: a negative
+  // median would make `coefficient × p50` negative and collapse effectiveMAD
+  // straight back onto MAD, defeating the floor.
+  return Math.max(baseline.mad, coefficient * Math.abs(baseline.p50));
+}
+
+/**
  * Relative MAD floor of the tail guard (#52): with N≈5 samples of an integer
  * CPU loop, MAD is frequently 0, which collapses the ceiling onto p50 and
  * makes one jittery p99 outlier reject every legitimate step.
@@ -279,12 +300,6 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
       ? DEFAULT_MIN_SIGNIFICANCE_DELTA
       : Math.max(0, thresholdConfigured);
 
-  const floorConfigured = params.floorCoefficient;
-  const madFloorCoefficient =
-    floorConfigured === undefined || !Number.isFinite(floorConfigured)
-      ? DEFAULT_TAIL_MAD_FLOOR_COEFFICIENT
-      : Math.max(0, floorConfigured);
-
   const weightResolution = normalizeWeights(
     params.metrics.map((m) => m.name),
     params.weights
@@ -344,10 +359,8 @@ export function computeFitnessVerdict(params: FitnessParams): FitnessVerdict {
   let ceiling: number | undefined;
   let currentP99: number | undefined;
   if (baseline !== undefined && current !== undefined) {
-    // |p50| keeps the floor a positive relative tolerance band: a negative
-    // median would make `coefficient × p50` negative and collapse effectiveMAD
-    // straight back onto MAD, defeating the floor.
-    const effectiveMAD = Math.max(baseline.mad, madFloorCoefficient * Math.abs(baseline.p50));
+    // |p50| keeps the floor positive for a negative median (see helper).
+    const effectiveMAD = effectiveTailMad(baseline, params.floorCoefficient);
     if (primaryGoal === "maximize") {
       ceiling = baseline.p50 - 3 * effectiveMAD;
       currentP99 = current.min;
