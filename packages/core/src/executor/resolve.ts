@@ -1,6 +1,8 @@
 import type { CommandCapabilities, CommandExecutor } from "./index.js";
 import { PlainExecutor } from "./plain.js";
 import { NodePermissionExecutor, probeNodePermission } from "./node-permission.js";
+import { MxcExecutor, probeMxc as probeMxcBackend } from "./mxc.js";
+import { BwrapExecutor, probeBwrap as probeBwrapBackend } from "./bwrap.js";
 
 export type CommandBackendName =
   | "auto"
@@ -17,23 +19,11 @@ export interface ProbeFunctions {
 }
 
 export function defaultProbeMxc(): boolean {
-  // Until MxcExecutor is implemented in Ticket #57, default probe returns false
-  // so unimplemented stubs are not prematurely selected in auto mode.
-  return false;
+  return probeMxcBackend();
 }
 
 export function defaultProbeBwrap(): boolean {
-  // Until BwrapExecutor is implemented in Ticket #57, default probe returns false
-  // so unimplemented stubs are not prematurely selected in auto mode.
-  return false;
-}
-
-export class MxcStubExecutor extends PlainExecutor {
-  override readonly backend = "mxc";
-}
-
-export class BwrapStubExecutor extends PlainExecutor {
-  override readonly backend = "bwrap";
+  return probeBwrapBackend();
 }
 
 export interface ResolveExecutorOptions {
@@ -60,8 +50,8 @@ export function resolveCommandExecutor(options?: ResolveExecutorOptions): Comman
 
   const makePlain = () => factories?.createPlain?.() ?? new PlainExecutor({ allowedCapabilities: allowed });
   const makeNodePerm = () => factories?.createNodePermission?.() ?? new NodePermissionExecutor({ allowedCapabilities: allowed });
-  const makeMxc = () => factories?.createMxc?.() ?? new MxcStubExecutor({ allowedCapabilities: allowed });
-  const makeBwrap = () => factories?.createBwrap?.() ?? new BwrapStubExecutor({ allowedCapabilities: allowed });
+  const makeMxc = () => factories?.createMxc?.() ?? new MxcExecutor({ allowedCapabilities: allowed });
+  const makeBwrap = () => factories?.createBwrap?.() ?? new BwrapExecutor({ allowedCapabilities: allowed });
 
   if (requestedBackend === "none" || requestedBackend === "plain") {
     return makePlain();
