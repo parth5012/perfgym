@@ -8,8 +8,8 @@
  * countermeasure is a certified black-box sink: the benchmark calls
  *
  * ```ts
- * import { blackhole } from "@perfgym/core"; // main entry — the supported
- *                                            // distribution import
+ * import { blackhole } from "@perfgym/core"; // in-repo: resolved by the
+ *                                            // TS/Vite path alias
  * const result = heavyWork();
  * blackhole(result); // result MUST be the value reported as the metric
  * console.log(JSON.stringify({ value: result }));
