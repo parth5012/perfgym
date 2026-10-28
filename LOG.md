@@ -372,3 +372,19 @@ Status: Done. Red→green TDD for the 4 testable CRs; 4 red tests confirmed fail
 - Round 3: CodeRabbit created follow-up issues **#86** (timer-stamp requirement policy, with ACs) and **#87** (exports map + bench build entry + consumer-resolution test), both assigned to parth5012; tsconfig thread resolved. PR body's parked-items section updated to reference the fixes and #86/#87 (REST PATCH — `gh pr edit` dies on the deprecated projectCards GraphQL field).
 - Verification after docs commit: tsc clean, blackhole suite 5/5 (full suite last green 625/625 at `df1a9fe`; docs-only commit since).
 - New learning logged: LEARNINGS #41 (PR body editing via REST when `gh pr edit` GraphQL-fails).
+
+## MAP #71 babysit — requested review battery (OCR + parthpr + qodex) — 2026-10-28 — Done (parthpr pending)
+- User-requested battery on PR #85: babysit re-watch + OCR full-range review + parthpr /review + OpenQodex review.
+- OCR: 8 single/pair-file groups (omniroute 502-safety), all 13 changed code files covered vs main. 5 findings ≥ medium, ALL applied red→green in `a3e1b72`:
+  1. HIGH bug — `floor_coefficient` (snake_case, the documented YAML convention) was never normalised onto `floorCoefficient`; silent fallback to the default floor. Both spellings accepted, non-numeric dropped.
+  2. MEDIUM — `metrics[].timeout_ms` (documented in SPECIFICATION.md) not normalised onto `timeoutMs`; silent default-timeout fallback. Both spellings, non-numeric dropped.
+  3. HIGH security — `withTimerBootstrap` APPENDED the injected `--import`; a pre-existing `--import` in NODE_OPTIONS executed first and could patch timers before capture. Now PREPENDED (`--require`/`-r` stay fail-closed rejected — unordered).
+  4. HIGH bug — injected bootstrap crashed on Node < 20.16/< 22.3 (`process.getBuiltinModule` unguarded, top-level). Guarded; exit hook degrades to no-stamp instead of crashing. Red test simulates old runtime by deleting the API via a --require preload.
+  5. MEDIUM docs — blackhole contract for execution-time metrics clarified in SPECIFICATION.md (sunk value must be the reported metric; decoupling parked).
+  - Lows discarded per policy (markdown warning spacing, NaN guard on warmupIterations, docblock ×|p50| wording).
+  - OCR exclude-negation gotcha: `--exclude '**,!path'` does NOT re-include — "no items selected" on all 7 first groups; explicit per-file exclude lists work. (LEARNINGS #42.)
+- OpenQodex: `review '#85'` exit 2 — no reviewer binary on PATH (claude/codex absent); scanners ran (3, 0 candidates). Used its documented fallback `review --agent '#85'`: brief generated, delegated to an INDEPENDENT CodeReviewer subagent (reviewer: "subagent"), finalize → **Passed: no findings** on 25 files/+2111-37, with 5 lens investigations explicitly dropped (json-parse guards, spread clobber, sequential spawns, escape-hatch contracts, MAD-floor symmetry). Receipt: .openqodex/reviews/20261028-172854-811960332d0a/report.html.
+- Cleanup: `.openqodex/` config files swept into `a3e1b72` by `git add -A` were untracked in `4df6ecd` (files remain on disk; team-commit is the owner's call).
+- parthpr: /review posted; persistent review re-anchored to `861b301` (fully compliant, no majors) — a3e1b72/4df6ecd not yet processed; watch active.
+- Verification: `npx tsc --noEmit` clean; full `npx vitest run` **631/631 (45 files)**, +6 over 625.
+- Skipped from post-code-change pipeline: `code-simplifier`/`repo-quality-orchestrator` (churn outside map-scoped diff, consistent with prior rounds), no UI → no visual OCR pass, `retro` = this entry.
