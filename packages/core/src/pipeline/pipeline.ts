@@ -363,6 +363,8 @@ export class EvaluationPipeline {
             warmup: pipeline.#config.benchmark?.warmupIterations,
             unit: metricConfig.unit ?? "count",
             ...(metricConfig.timeoutMs !== undefined ? { timeoutMs: metricConfig.timeoutMs } : {}),
+            // Ticket #54 (FLAW-10): strict per-metric checksum opt-in.
+            ...(metricConfig.requireChecksum === true ? { requireChecksum: true } : {}),
             ...(harnessEnforcementDir !== null && harnessEnforcementDir !== ""
               ? { harnessDir: harnessEnforcementDir }
               : {}),

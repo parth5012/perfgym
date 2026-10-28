@@ -418,3 +418,24 @@ describe("JsonFormatter — remaining surface", () => {
     }
   });
 });
+
+describe("JsonFormatter — suspect flag & DCE warning (ticket #54)", () => {
+  it("emits suspect and dceSusceptible booleans on baseline and benchmark documents", () => {
+    const flagged = distribution({ suspect: true, dceSusceptible: true });
+
+    const baseline = parse(formatter.formatBaseline(flagged, undefined));
+    expect(baseline.suspect).toBe(true);
+    expect(baseline.dceSusceptible).toBe(true);
+
+    const benchmark = parse(formatter.formatBenchmark(flagged, distribution()));
+    expect(benchmark.suspect).toBe(true);
+    expect(benchmark.dceSusceptible).toBe(true);
+  });
+
+  it("reports false (never undefined) for a clean distribution", () => {
+    const clean = parse(formatter.formatBaseline(distribution(), undefined));
+
+    expect(clean.suspect).toBe(false);
+    expect(clean.dceSusceptible).toBe(false);
+  });
+});

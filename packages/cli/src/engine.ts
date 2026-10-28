@@ -195,6 +195,26 @@ const normaliseBenchmark = (config: Record<string, unknown>): PerfGymConfig["ben
   } as PerfGymConfig["benchmark"];
 };
 
+/**
+ * Normalise the documented per-metric `require_checksum` flag (snake_case,
+ * ticket #54) onto the camelCase `requireChecksum` field of the typed metric
+ * shape. Strict opt-in: the flag only appears when the YAML carries it —
+ * absent key ⇒ absent field (never defaulted into enforcement). A
+ * non-boolean value is dropped so the runner's default (no enforcement)
+ * applies.
+ */
+const normaliseMetrics = (config: Record<string, unknown>): PerfGymConfig["metrics"] => {
+  const metrics = Array.isArray(config.metrics) ? config.metrics : [];
+  return metrics.map((entry) => {
+    const metric = asRecord(entry) ?? {};
+    const flag = metric.requireChecksum ?? metric.require_checksum;
+    return {
+      ...metric,
+      ...(typeof flag === "boolean" ? { requireChecksum: flag } : {}),
+    } as PerfGymConfig["metrics"][number];
+  });
+};
+
 export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   const configPath = path.join(rootDir, CONFIG_FILE_NAME);
   if (!fs.existsSync(configPath)) {
@@ -237,9 +257,11 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
       }
     : undefined;
   const normalisedBenchmark = normaliseBenchmark(parsed);
+  const normalisedMetrics = normaliseMetrics(parsed);
 
   return {
     ...(parsed as unknown as PerfGymConfig),
+    metrics: normalisedMetrics,
     agentBudget: normaliseAgentBudget(parsed),
     ...(normalisedLlm ? { llm: normalisedLlm } : {}),
     ...(normalisedBenchmark ? { benchmark: normalisedBenchmark } : {}),
@@ -575,6 +597,8 @@ export function runBaseline(
           warmup: config.benchmark?.warmupIterations,
           unit: metric.unit ?? "count",
           ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
+          // Ticket #54 (FLAW-10): strict per-metric checksum opt-in.
+          ...(metric.requireChecksum === true ? { requireChecksum: true } : {}),
         }),
       );
 

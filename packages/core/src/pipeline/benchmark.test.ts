@@ -3,6 +3,8 @@ import { Effect } from "effect";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createFormatter } from "../formatter/index.js";
 import {
   DEFAULT_BENCHMARK_SAMPLES,
   DEFAULT_BENCHMARK_WARMUP,
@@ -784,5 +786,177 @@ describe("runBenchmark", () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+/**
+ * Black-hole sink & checksum verification (FLAW-10 / ticket #54): a
+ * benchmark result that is never consumed lets V8's Turbofan eliminate the
+ * whole computation, so `blackhole(result)` publishes a checksum on stderr
+ * and the runner verifies it against the metric value it parsed. A metric
+ * with `requireChecksum: true` treats a MISSING checksum as an invalid
+ * sample (re-collected through the same budget as the timer tripwire); a
+ * metric without the sink still runs but is flagged DCE-susceptible, and an
+ * all-zero metric is flagged suspect independently of the sink.
+ */
+describe("black-hole sink & checksum verification (FLAW-10, ticket #54)", () => {
+  /** Absolute path of the sink source, for spawned `.ts` benchmark fixtures. */
+  const BLACKHOLE_SOURCE = fileURLToPath(new URL("../bench/blackhole.ts", import.meta.url));
+
+  it("publishes a checksum via blackhole and the runner verifies it (AC1)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "perfgym-blackhole-"));
+    try {
+      const script = join(dir, "bench.ts");
+      writeFileSync(
+        script,
+        [
+          `import { blackhole } from ${JSON.stringify(BLACKHOLE_SOURCE)};`,
+          "const result: number = 42;",
+          "blackhole(result);",
+          "console.log(JSON.stringify({ value: result }));",
+        ].join("\n")
+      );
+
+      const result = await runBenchmarkSafe({
+        command: `node ${script}`,
+        cwd: dir,
+        samples: 2,
+        warmup: 0,
+        requireChecksum: true,
+        timeoutMs: 5_000,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.distribution.samples).toEqual([42, 42]);
+      // Every sample published a checksum the runner verified against the
+      // reported metric value — no DCE warning for an adopted sink.
+      expect(result.distribution.checksumVerified).toBe(true);
+      expect(result.distribution.dceSusceptible).toBeUndefined();
+      expect(
+        createFormatter("markdown").formatBaseline(result.distribution)
+      ).not.toContain("DCE-susceptible");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects and re-collects a sample whose published checksum does not match the reported value (AC1)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "perfgym-blackhole-tamper-"));
+    try {
+      const counter = join(dir, "counter");
+      const script = join(dir, "bench.ts");
+      writeFileSync(
+        script,
+        [
+          `import { blackhole } from ${JSON.stringify(BLACKHOLE_SOURCE)};`,
+          "import * as fs from 'node:fs';",
+          "const p = process.argv[2];",
+          "const n = (fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\\n').filter(Boolean).length : 0) + 1;",
+          "fs.appendFileSync(p, n + '\\n');",
+          "// First measured spawn sinks a DIFFERENT value than it reports.",
+          "blackhole(n === 1 ? n + 1000 : n);",
+          "console.log(JSON.stringify({ value: n }));",
+        ].join("\n")
+      );
+
+      const result = await runBenchmarkSafe({
+        command: `node ${script} ${counter}`,
+        cwd: dir,
+        samples: 2,
+        warmup: 0,
+        timeoutMs: 5_000,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // 1 rejected (checksum mismatch) + 2 valid re-collected samples = 3 spawns.
+      expect(spawnCount(counter)).toBe(3);
+      // The mismatched sample is NEVER counted toward the distribution.
+      expect(result.distribution.samples).toEqual([2, 3]);
+      expect(result.distribution.checksumVerified).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-collects a require_checksum sample with no checksum and fails loudly when the budget is exhausted (AC2)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "perfgym-require-checksum-"));
+    try {
+      const counter = join(dir, "counter");
+      const result = await runBenchmarkSafe({
+        command: `node -e "require('node:fs').appendFileSync('${counter}', 'x\\n'); console.log('42')"`,
+        cwd: dir,
+        samples: 1,
+        warmup: 0,
+        requireChecksum: true,
+        timeoutMs: 5_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error._tag).toBe("BenchmarkExecutionError");
+      // The failure names the actual cause — a missing checksum, not a
+      // generic benchmark error.
+      expect(result.error.message).toContain("checksum");
+      // The missing-checksum sample was RE-COLLECTED inside the sample
+      // budget (1 rejected + 1 rejected = budget of 1 exhausted), so the
+      // command ran twice before the loud failure.
+      expect(spawnCount(counter)).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still runs a benchmark without the sink and flags it DCE-susceptible (AC3)", async () => {
+    const result = await runBenchmarkSafe({
+      command: "echo 7",
+      samples: 1,
+      warmup: 0,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Not adopting the sink never breaks the benchmark (no forced change)…
+    expect(result.distribution.samples).toEqual([7]);
+    expect(result.distribution.checksumVerified).toBeUndefined();
+    // …but the metric is flagged and the warning reaches the reports.
+    expect(result.distribution.dceSusceptible).toBe(true);
+
+    const markdown = createFormatter("markdown").formatBaseline(result.distribution);
+    expect(markdown).toContain("DCE-susceptible");
+    expect(markdown).toContain("blackhole");
+
+    const json = JSON.parse(
+      createFormatter("json").formatBaseline(result.distribution)
+    ) as Record<string, unknown>;
+    expect(json.dceSusceptible).toBe(true);
+  });
+
+  it("flags a metric whose samples are all zero as suspect (AC4)", async () => {
+    const result = await runBenchmarkSafe({
+      command: "echo 0",
+      samples: 3,
+      warmup: 0,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.distribution.samples).toEqual([0, 0, 0]);
+    // Degenerate-metric detection is independent of the sink.
+    expect(result.distribution.suspect).toBe(true);
+
+    const markdown = createFormatter("markdown").formatBaseline(result.distribution);
+    expect(markdown).toContain("SUSPECT");
+
+    const json = JSON.parse(
+      createFormatter("json").formatBenchmark(result.distribution)
+    ) as Record<string, unknown>;
+    expect(json.suspect).toBe(true);
+
+    // A non-degenerate distribution carries no flag.
+    expect(computeBenchmarkDistribution([1, 2, 3]).suspect).toBeUndefined();
   });
 });

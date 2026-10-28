@@ -355,3 +355,36 @@ describe("MarkdownFormatter — remaining surface", () => {
     }
   });
 });
+
+describe("MarkdownFormatter — suspect flag & DCE warning (ticket #54)", () => {
+  it("surfaces the suspect flag and the DCE-susceptible warning on baseline and benchmark reports", () => {
+    const flagged = distribution({ suspect: true, dceSusceptible: true });
+
+    const baseline = formatter.formatBaseline(flagged);
+    expect(baseline).toContain("SUSPECT");
+    expect(baseline).toContain("DCE-susceptible");
+    expect(baseline).toContain("blackhole");
+
+    const benchmark = formatter.formatBenchmark(flagged, distribution());
+    expect(benchmark).toContain("SUSPECT");
+    expect(benchmark).toContain("DCE-susceptible");
+  });
+
+  it("surfaces both warnings on the step's current distribution", () => {
+    const output = formatter.formatStep({
+      ...acceptedStep,
+      currentDistribution: distribution({ suspect: true, dceSusceptible: true }),
+    });
+
+    expect(output).toContain("SUSPECT");
+    expect(output).toContain("DCE-susceptible");
+  });
+
+  it("a clean distribution carries neither warning", () => {
+    const clean = formatter.formatBaseline(distribution());
+
+    expect(clean).not.toContain("SUSPECT");
+    expect(clean).not.toContain("DCE-susceptible");
+    expect(formatter.formatStep(acceptedStep)).not.toContain("DCE-susceptible");
+  });
+});

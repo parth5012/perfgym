@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   STATE_PATH,
+  loadConfig,
   loadSession,
   runBaseline,
   runStep,
@@ -228,5 +229,39 @@ metrics:
     expect(disk.lastCommitHash).toBeUndefined();
     expect(disk.session).toBeUndefined();
     expect(disk.totalStepCount).toBe(0);
+  });
+});
+
+describe("loadConfig — metrics[].require_checksum strict opt-in (ticket #54)", () => {
+  it("maps the snake_case YAML key onto requireChecksum; absent key stays undefined", () => {
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, ".perfgym.yaml"),
+      `
+version: "1.0"
+target:
+  name: "strict"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "latency"
+    command: "node -e 'console.log(1)'"
+    goal: "minimize"
+    weight: 1
+    require_checksum: true
+  - name: "throughput"
+    command: "node -e 'console.log(1)'"
+    goal: "maximize"
+    weight: 1
+`,
+      "utf8"
+    );
+
+    const config = loadConfig(dir);
+    expect(config.metrics[0]?.requireChecksum).toBe(true);
+    // Strict opt-in: a metric without the key is never defaulted into enforcement.
+    expect(config.metrics[1]?.requireChecksum).toBeUndefined();
   });
 });
