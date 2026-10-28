@@ -273,6 +273,36 @@ metrics:
       expect(loadConfig(testDir).benchmark?.warmupIterations).toBe(7);
     });
 
+    it("maps the snake_case floor_coefficient onto the camelCase config (ticket #52 config surface)", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nfloor_coefficient: 0.05\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).floorCoefficient).toBe(0.05);
+    });
+
+    it("accepts the camelCase floorCoefficient spelling as well", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nfloorCoefficient: 0.02\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).floorCoefficient).toBe(0.02);
+    });
+
+    it("drops a non-numeric floor_coefficient so the runner default applies", () => {
+      fs.writeFileSync(
+        path.join(testDir, ".perfgym.yaml"),
+        `${base}\nfloor_coefficient: "big"\n`,
+        "utf8",
+      );
+
+      expect(loadConfig(testDir).floorCoefficient).toBeUndefined();
+    });
+
     it("leaves warmupIterations unset when no benchmark block exists (runner default 5 applies)", () => {
       fs.writeFileSync(path.join(testDir, ".perfgym.yaml"), base, "utf8");
 

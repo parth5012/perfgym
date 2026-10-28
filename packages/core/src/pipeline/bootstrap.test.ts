@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  TIMER_BOOTSTRAP_SOURCE,
   TIMER_STAMP_PREFIX,
   areTimerStampsValid,
   hasNodeRequirePreload,
@@ -164,5 +168,43 @@ describe("monotonic tripwire stamps (AC4)", () => {
           `${TIMER_STAMP_PREFIX}{"before":"1","after":"2","tampered":false}\n`
       )
     ).toBe(false);
+  });
+
+  it("prepends the bootstrap --import so it runs BEFORE any pre-existing --import entry", () => {
+    // A pre-existing --import executes left-to-right: appended after it, the
+    // bootstrap would capture already-patched timers as the "originals".
+    const combined = withTimerBootstrap(
+      "--import file:///tmp/preexisting.mjs --max-old-space-size=4096"
+    );
+
+    expect(combined.startsWith("--import data:text/javascript,")).toBe(true);
+    expect(combined.indexOf("--import data:text/javascript,")).toBeLessThan(
+      combined.indexOf("preexisting.mjs")
+    );
+  });
+
+  it("survives a Node without process.getBuiltinModule (< 20.16): no crash, stamp dropped", () => {
+    const dir = mkdtempSync(join(tmpdir(), "perfgym-no-builtin-module-"));
+    try {
+      // A --require preload deletes the API before the --import bootstrap
+      // runs, simulating Node < 20.16 where it does not exist at all.
+      const deleter = join(dir, "delete-builtin.cjs");
+      writeFileSync(deleter, "delete process.getBuiltinModule;\n", "utf8");
+      const moduleUrl = `data:text/javascript,${encodeURIComponent(TIMER_BOOTSTRAP_SOURCE)}`;
+
+      const result = spawnSync(process.execPath, ["-e", "console.log('42')"], {
+        encoding: "utf8",
+        env: { ...process.env, NODE_OPTIONS: `--require ${deleter} --import ${moduleUrl}` },
+      });
+
+      expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain("42");
+      // Degraded mode (documented): without fs access the exit hook cannot
+      // publish a stamp — the run proceeds, unprotected, rather than crashing
+      // every benchmark child on older runtimes.
+      expect(result.stderr ?? "").not.toContain("__perfgym_stamp__");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
