@@ -43,4 +43,6 @@ export interface CommandExecutor {
 
 export * from "./plain.js";
 export * from "./node-permission.js";
+export * from "./mxc.js";
+export * from "./bwrap.js";
 export * from "./resolve.js";

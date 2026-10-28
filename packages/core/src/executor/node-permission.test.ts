@@ -138,9 +138,15 @@ describe("NodePermissionExecutor & Backend Auto-Resolution", () => {
     });
     expect(nodeFailed.backend).toBe("plain");
 
-    // 7. default resolution without options resolves to node-permission in supported Node runtime
+    // 7. auto resolution without OS backends resolves to node-permission in supported Node runtime
+    const defaultNodeResolved = resolveCommandExecutor({
+      probes: { probeMxc: () => false, probeBwrap: () => false },
+    });
+    expect(defaultNodeResolved.backend).toBe("node-permission");
+
+    // 8. default resolution on this environment chooses an available confined backend (bwrap or node-permission)
     const defaultResolved = resolveCommandExecutor();
-    expect(defaultResolved.backend).toBe("node-permission");
+    expect(["bwrap", "node-permission"]).toContain(defaultResolved.backend);
   });
 
   it("handles compound shell commands and paths with spaces safely", async () => {
