@@ -839,11 +839,13 @@ export const runBenchmark = (
             benchmarkFailure(
               options.command,
               "invalid timer stamp",
-              `Benchmark command "${options.command}" produced ${rejectedSamples} samples with ` +
-                "tampered, zero-elapsed, or non-monotonic timer stamps — the immutable timer " +
-                `bootstrap rejected them all and the re-collection budget (${sampleCount} within ` +
-                "the sample budget) is exhausted. Stop replacing Date/performance/hrtime in the " +
-                "benchmark; read time through globalThis.__perfgymOriginalTimers instead.",
+              `Benchmark command "${options.command}" produced ${stampRejections} sample(s) with ` +
+                "tampered, zero-elapsed, or non-monotonic timer stamps — out of " +
+                `${rejectedSamples} total rejection(s) (${checksumRejections} failed checksum ` +
+                "verification) — the immutable timer bootstrap rejected them and the " +
+                `re-collection budget (${sampleCount} within the sample budget) is exhausted. ` +
+                "Stop replacing Date/performance/hrtime in the benchmark; read time through " +
+                "globalThis.__perfgymOriginalTimers instead.",
               captured.stderr.trim()
             )
           );
@@ -882,18 +884,16 @@ export const runBenchmark = (
             benchmarkFailure(
               options.command,
               "checksum verification failed",
-              `Benchmark command "${options.command}" produced ${rejectedSamples} samples that ` +
-                "failed checksum verification — the re-collection budget " +
+              `Benchmark command "${options.command}" produced ${checksumRejections} sample(s) that ` +
+                `failed checksum verification — out of ${rejectedSamples} total rejection(s) ` +
+                `(${stampRejections} tampered timer stamp(s)) — the re-collection budget ` +
                 `(${sampleCount} within the sample budget) is exhausted. ` +
                 (options.requireChecksum === true
                   ? "require_checksum is set but no checksum was published: consume the " +
                     'reported metric value with blackhole(result) from "@perfgym/core/bench".'
                   : "The sink consumed a different value than the benchmark reported: " +
                     'blackhole(result) must receive the reported metric value from ' +
-                    '"@perfgym/core/bench".') +
-                (stampRejections > 0
-                  ? ` (${stampRejections} further rejection(s) were tampered timer stamps.)`
-                  : ""),
+                    '"@perfgym/core/bench".'),
               captured.stderr.trim()
             )
           );

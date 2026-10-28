@@ -113,9 +113,15 @@ export function blackhole<T>(value: T): T {
  * Parse the checksum a benchmark published on stderr. Returns `null` when no
  * well-formed line exists (a non-Node command, a sink-less benchmark, or a
  * stamp-less kill) — foreign or malformed lines are ignored.
+ *
+ * Scans BACKWARDS and returns the LAST well-formed line: the exit hook
+ * publishes the final consumed value last, so diagnostic noise or an earlier
+ * publication sharing the prefix must never mask it.
  */
 export function parseChecksum(stderr: string): string | null {
-  for (const line of stderr.split("\n")) {
+  const lines = stderr.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i] as string;
     if (!line.startsWith(CHECKSUM_PREFIX)) continue;
     try {
       const parsed = JSON.parse(line.slice(CHECKSUM_PREFIX.length)) as { checksum?: unknown };
