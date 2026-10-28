@@ -14,6 +14,7 @@ export * from "./sandbox/git-worktree-driver.js";
 export * from "./sandbox/coordinator.js";
 export * from "./pipeline/invariants.js";
 export * from "./pipeline/benchmark.js";
+export * from "./bench/blackhole.js";
 export * from "./pipeline/bootstrap.js";
 export * from "./pipeline/fitness.js";
 export * from "./pipeline/pipeline.js";
@@ -60,6 +61,23 @@ export interface BenchmarkDistribution {
   readonly iqr: number;
   readonly sampleCount: number;
   readonly unit: string;
+  /**
+   * Ticket #54 (FLAW-10): every sample's metric value matched the
+   * `blackhole()` checksum stamped on stderr. Only set when true.
+   */
+  readonly checksumVerified?: boolean;
+  /**
+   * Ticket #54 (FLAW-10): no checksum was published, so the metric may be
+   * DCE-susceptible (V8 can eliminate an unconsumed computation). Only set
+   * when true.
+   */
+  readonly dceSusceptible?: boolean;
+  /**
+   * Ticket #54: every sample collapsed to (near) zero — the metric is
+   * `suspect` (suspiciously degenerate, likely a broken counter). Only set
+   * when true.
+   */
+  readonly suspect?: boolean;
 }
 
 /**
@@ -120,6 +138,14 @@ export interface PerfGymConfig {
      * `.perfgym/.harness` grader directory at initializeHarness (#15).
      */
     harnessScripts?: string[];
+    /**
+     * Ticket #54 (FLAW-10): require the `blackhole()` checksum on stderr —
+     * a sample without a matching checksum is re-collected (same
+     * `rejectedSamples` budget as a malformed timer stamp) and, on
+     * exhaustion, the run fails with a clear "checksum" error instead of
+     * accepting a possibly DCE-eliminated number.
+     */
+    requireChecksum?: boolean;
   }>;
   /**
    * Relative MAD floor of the tail guard (defaults to 0.01 = 1% of the

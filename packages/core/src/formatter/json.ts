@@ -155,6 +155,10 @@ export class JsonFormatter {
         goal: config?.metrics?.[0]?.goal ?? null,
         sampleCount: distribution.sampleCount,
         distribution: toDistributionJson(distribution),
+        // Ticket #54: always booleans (never undefined) so consumers can
+        // gate on `suspect` / `dceSusceptible` without null checks.
+        suspect: distribution.suspect === true,
+        dceSusceptible: distribution.dceSusceptible === true,
       },
       null,
       2,
@@ -228,6 +232,8 @@ export class JsonFormatter {
         distribution: toDistributionJson(distribution),
         baseline: baseline === undefined ? null : toDistributionJson(baseline),
         deltaPercent: deltaPercent === null ? null : Math.round(deltaPercent * 100) / 100,
+        suspect: distribution.suspect === true,
+        dceSusceptible: distribution.dceSusceptible === true,
       },
       null,
       2,

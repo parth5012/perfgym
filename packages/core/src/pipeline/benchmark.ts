@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { Effect } from "effect";
+import { verifyChecksum } from "../bench/blackhole.js";
 import { BenchmarkExecutionError } from "../errors.js";
 import type { BenchmarkDistribution, MetricResult } from "../index.js";
 import { areTimerStampsValid, withTimerBootstrap } from "./bootstrap.js";
@@ -38,6 +39,19 @@ import { areTimerStampsValid, withTimerBootstrap } from "./bootstrap.js";
  * commands are unaffected (documented limitation — NODE_OPTIONS is ignored by
  * Python/Rust/... processes, and a stamp-less spawn is treated as valid).
  *
+ * Black-hole sink & checksum verification (FLAW-10 / ticket #54): a benchmark
+ * result nobody consumes lets V8's Turbofan eliminate the whole computation.
+ * `blackhole(result)` (exported from `@perfgym/core/bench`) publishes a
+ * checksum on stderr; the runner VERIFIES a published checksum against the
+ * parsed metric value — a mismatch rejects the sample through the SAME
+ * rejection budget as the timer tripwire. A metric with
+ * `requireChecksum: true` (`.perfgym.yaml` `metrics[].require_checksum`)
+ * additionally treats a MISSING checksum as an invalid sample. Benchmarks
+ * that never adopt the sink keep running (no forced breaking change) but the
+ * resulting distribution is flagged `dceSusceptible`, and a distribution
+ * whose samples are all (absurdly) close to zero is flagged `suspect`
+ * independently of the sink — both flags surface in the formatted reports.
+ *
  * Determinism policy (map ticket #13):
  * - Small-sample statistics must lean on robust estimators (MAD, IQR) rather
  *   than naive percentiles; the distribution still exposes p50/p90/p95/p99
@@ -72,6 +86,13 @@ export const DEFAULT_BENCHMARK_WARMUP = 5;
 export const MAX_BENCHMARK_WARMUP = 20;
 export const DEFAULT_BENCHMARK_TIMEOUT_MS = 30_000;
 export const MAX_BENCHMARK_TIMEOUT_MS = 60_000;
+/**
+ * Magnitude at or below which a sample counts as "absurdly small" for any
+ * metric unit (ticket #54): exact zeros and sub-nanosecond DCE remnants both
+ * land here. A distribution whose samples ALL sit at or below it is flagged
+ * `suspect` — a degenerate metric that carries no signal.
+ */
+export const SUSPECT_METRIC_EPSILON = 1e-9;
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024; // 2MB capture cap per stream
 
 const TIMEOUT_EXIT_CODE = 124; // GNU timeout convention: killed after the deadline.
@@ -188,6 +209,13 @@ export function computeBenchmarkDistribution(
     throw new RangeError("computeBenchmarkDistribution() requires at least one sample");
   }
   const sorted = [...samples].sort((a, b) => a - b);
+  // Degenerate-metric detection (ticket #54): every sample (absurdly) close
+  // to zero means the metric measures nothing — flagged independently of
+  // whether the black-hole sink was adopted. Only set when true, so a healthy
+  // distribution keeps its exact shape.
+  const suspect = samples.every(
+    (sample) => Number.isFinite(sample) && Math.abs(sample) <= SUSPECT_METRIC_EPSILON
+  );
   return {
     samples: [...samples],
     p50: percentileOf(sorted, 50),
@@ -201,6 +229,7 @@ export function computeBenchmarkDistribution(
     iqr: computeIqr(samples),
     sampleCount: n,
     unit,
+    ...(suspect ? { suspect: true } : {}),
   };
 }
 
@@ -506,6 +535,14 @@ export interface BenchmarkRunOptions {
   readonly warmup?: number;
   readonly unit?: string;
   /**
+   * Strict checksum opt-in (`.perfgym.yaml` `metrics[].require_checksum`,
+   * ticket #54): a sample that publishes NO `blackhole` checksum is rejected
+   * and re-collected through the same budget as the timer tripwire; when the
+   * budget is exhausted the run fails loudly instead of measuring a
+   * DCE-susceptible metric.
+   */
+  readonly requireChecksum?: boolean;
+  /**
    * Provide to enforce frozen-harness tamper protection (existence, non-empty,
    * all files read-only). Omit for the plain benchmarking API with no
    * enforcement; integration decides what to pass.
@@ -702,8 +739,11 @@ const runCapturedCommand = (options: {
  * then W discarded warm-up spawns (identical command and environment; their
  * outputs never reach the distribution), then N sequential measured samples —
  * each stamped by the immutable timer bootstrap and rejected/re-collected
- * when the stamp is tampered, zero-elapsed, or non-monotonic — reduced to a
- * full BenchmarkDistribution with robust MAD/IQR spread statistics.
+ * when the stamp is tampered, zero-elapsed, or non-monotonic, and
+ * rejected/re-collected when its published `blackhole` checksum fails
+ * verification or is absent under `requireChecksum` (FLAW-10 / ticket #54) —
+ * reduced to a full BenchmarkDistribution with robust MAD/IQR spread
+ * statistics plus the `suspect` / `dceSusceptible` visibility flags.
  */
 export const runBenchmark = (
   options: BenchmarkRunOptions
@@ -777,18 +817,23 @@ export const runBenchmark = (
     }
 
     // 3. N sequential measured samples, recorded in capture order. A sample
-    //    with a tampered / zero-elapsed / non-monotonic bootstrap stamp is
-    //    rejected and re-collected; the re-collection budget is the sample
-    //    budget itself (at most `sampleCount` rejections per run), so a
-    //    persistently cheating command fails loudly instead of looping.
+    //    with a tampered / zero-elapsed / non-monotonic bootstrap stamp — or
+    //    with a failing checksum (FLAW-10 / ticket #54) — is rejected and
+    //    re-collected; the re-collection budget is the sample budget itself
+    //    (at most `sampleCount` rejections per run), so a persistently
+    //    cheating command fails loudly instead of looping.
     const collected: number[] = [];
     let rejectedSamples = 0;
+    let stampRejections = 0;
+    let checksumRejections = 0;
+    let verifiedChecksumSamples = 0;
     while (collected.length < sampleCount) {
       const captured = yield* execute;
 
       // Tripwire first: a tampered clock invalidates whatever stdout says.
       if (!areTimerStampsValid(captured.stderr)) {
         rejectedSamples += 1;
+        stampRejections += 1;
         if (rejectedSamples > sampleCount) {
           return yield* Effect.fail(
             benchmarkFailure(
@@ -819,9 +864,57 @@ export const runBenchmark = (
           )
         );
       }
+
+      // Checksum verification (FLAW-10): a PUBLISHED checksum must hash to
+      // the reported metric value, and under `requireChecksum` a checksum
+      // must be published at all. Either failure rejects the sample into the
+      // SAME re-collection budget as the timer tripwire — an invalid sample
+      // is never counted toward the distribution.
+      const checksumVerdict = verifyChecksum(captured.stderr, parsed.value);
+      if (
+        checksumVerdict === "mismatch" ||
+        (checksumVerdict === "missing" && options.requireChecksum === true)
+      ) {
+        rejectedSamples += 1;
+        checksumRejections += 1;
+        if (rejectedSamples > sampleCount) {
+          return yield* Effect.fail(
+            benchmarkFailure(
+              options.command,
+              "checksum verification failed",
+              `Benchmark command "${options.command}" produced ${rejectedSamples} samples that ` +
+                "failed checksum verification — the re-collection budget " +
+                `(${sampleCount} within the sample budget) is exhausted. ` +
+                (options.requireChecksum === true
+                  ? "require_checksum is set but no checksum was published: consume the " +
+                    'reported metric value with blackhole(result) from "@perfgym/core/bench".'
+                  : "The sink consumed a different value than the benchmark reported: " +
+                    'blackhole(result) must receive the reported metric value from ' +
+                    '"@perfgym/core/bench".') +
+                (stampRejections > 0
+                  ? ` (${stampRejections} further rejection(s) were tampered timer stamps.)`
+                  : ""),
+              captured.stderr.trim()
+            )
+          );
+        }
+        continue; // rejected as invalid — never counted toward the distribution
+      }
+      if (checksumVerdict === "verified") {
+        verifiedChecksumSamples += 1;
+      }
       collected.push(parsed.value);
     }
 
-    return computeBenchmarkDistribution(collected, unit);
+    const distribution = computeBenchmarkDistribution(collected, unit);
+    // DCE visibility (ticket #54): all samples verified ⇒ the sink is
+    // adopted; otherwise at least one sample published no checksum and the
+    // distribution must carry the DCE-susceptible warning into the reports.
+    return {
+      ...distribution,
+      ...(verifiedChecksumSamples === collected.length
+        ? { checksumVerified: true }
+        : { dceSusceptible: true }),
+    };
   });
 };

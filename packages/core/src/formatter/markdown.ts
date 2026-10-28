@@ -156,6 +156,7 @@ const renderDistributionSection = (
     "| Metric | Baseline | Current Mutation | Delta |",
     "|---|---|---|---|",
     ...rows,
+    ...distributionWarnings(current),
   ];
 };
 
@@ -184,6 +185,28 @@ const hasMemory = (
   memory: readonly NegativeMemoryEntry[] | null | undefined,
 ): memory is readonly NegativeMemoryEntry[] =>
   memory !== undefined && memory !== null && memory.length > 0;
+
+/**
+ * Ticket #54 (FLAW-10): warnings carried by a distribution's `suspect`
+ * and `dceSusceptible` flags. Returns markdown lines (empty when clean).
+ */
+const distributionWarnings = (distribution: BenchmarkDistribution): string[] => {
+  const warnings: string[] = [];
+
+  if (distribution.suspect === true) {
+    warnings.push(
+      "> ⚠️ **SUSPECT** — every sample is ~0; the metric looks degenerate (broken counter?).",
+    );
+  }
+
+  if (distribution.dceSusceptible === true) {
+    warnings.push(
+      "> ⚠️ **DCE-susceptible** — no `blackhole()` checksum was published; V8 may have eliminated the computation. Consume the metric value with `blackhole()`.",
+    );
+  }
+
+  return warnings;
+};
 
 export class MarkdownFormatter {
   readonly format = "markdown" as const;
@@ -253,6 +276,7 @@ export class MarkdownFormatter {
       `| **MAD** | \`${formatValue(distribution.mad, unit)}\` |`,
       `| **IQR** | \`${formatValue(distribution.iqr, unit)}\` |`,
       `| **Samples** | \`${distribution.sampleCount}\` |`,
+      ...distributionWarnings(distribution),
     ].join("\n");
   }
 
@@ -351,6 +375,7 @@ export class MarkdownFormatter {
         "| Metric | Current |",
         "|---|---|",
         ...rows,
+        ...distributionWarnings(distribution),
       ].join("\n");
     }
 
@@ -375,6 +400,7 @@ export class MarkdownFormatter {
         distribution.max,
         unit,
       )}\` | ${formatDelta(distribution.max, baseline.max, null)} |`,
+      ...distributionWarnings(distribution),
     ].join("\n");
   }
 

@@ -4,6 +4,7 @@ import { resolve } from "path";
 export default defineConfig({
   resolve: {
     alias: {
+      "@perfgym/core/bench": resolve(__dirname, "packages/core/src/bench/blackhole.ts"),
       "@perfgym/core": resolve(__dirname, "packages/core/src/index.ts"),
       "@perfgym/cli": resolve(__dirname, "packages/cli/src/index.ts"),
       "@perfgym/linter": resolve(__dirname, "packages/linter/src/index.ts"),

@@ -604,6 +604,8 @@ export class McpServerCoordinator {
           warmup: this.config.benchmark?.warmupIterations,
           unit: metric.unit ?? "count",
           ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
+          // Ticket #54 (FLAW-10): strict per-metric checksum opt-in.
+          ...(metric.requireChecksum === true ? { requireChecksum: true } : {}),
         })
       );
 
@@ -1053,6 +1055,8 @@ export class McpServerCoordinator {
           : metricConfig.timeoutMs !== undefined
           ? { timeoutMs: metricConfig.timeoutMs }
           : {}),
+        // Ticket #54 (FLAW-10): strict per-metric checksum opt-in.
+        ...(metricConfig.requireChecksum === true ? { requireChecksum: true } : {}),
       })
     );
 

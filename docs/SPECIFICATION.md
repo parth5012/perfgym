@@ -27,6 +27,7 @@ metrics:
     command: string
     goal: "minimize" | "maximize"
     weight: number
+    require_checksum?: boolean  # strict opt-in: re-collect/fail on a missing or mismatched blackhole() checksum (FLAW-10)
 
 agent_budget:
   max_iterations?: number
@@ -52,6 +53,21 @@ in-process V8 warm-up cannot be imposed on an arbitrary user command (JIT
 warm-up inside one process stays the harness's responsibility), and non-Node
 benchmark commands are unaffected by the timer bootstrap because
 `NODE_OPTIONS` only reaches Node.js processes.
+
+**Black-hole sink & checksum verification (FLAW-10).** A benchmark command whose
+metric value is never consumed may be eliminated by V8's dead-code elimination,
+silently reporting a wrong (often all-zero) number. Metric scripts can defend
+against this by consuming the value through `blackhole(value)` (exported from
+`@perfgym/core/bench` and the main entry): the sink returns the value
+unchanged and, on process exit, publishes an FNV-1a checksum of it on stderr
+(`__perfgym_checksum__{...}`). The runner verifies the published checksum
+against the value parsed from stdout and re-collects a mismatching or missing
+sample within the same budget as a bad timer stamp. Set
+`metrics[].require_checksum: true` to enforce this strictly (the run fails
+with a clear error when the budget is exhausted); without it, a sample with no
+checksum still runs but is reported as `dceSusceptible` (surfaced in markdown
+and JSON reports), and a distribution whose samples all collapse to ~0 is
+flagged `suspect`.
 
 ---
 
