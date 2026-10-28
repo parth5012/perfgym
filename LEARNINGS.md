@@ -180,3 +180,7 @@
 ### 41. `gh pr edit` Can Die on Deprecated GraphQL Fields
 * **Problem**: `gh pr edit 85 --body-file ...` failed with `GraphQL: Projects (classic) is being deprecated... (repository.pullRequest.projectCards)` and the body was NOT updated, despite a seemingly unrelated flag set.
 * **Solution**: update the body through the REST API instead: `gh api -X PATCH repos/OWNER/REPO/pulls/NN --input body.md` (or `-F body=@file.md`). Verify with `gh pr view --json body` afterwards — the CLI can fail after partial work or print the error only on stderr.
+
+### 42. OCR `--exclude` Negation After `**` Does Not Re-include
+* **Problem**: `ocr review --exclude '**,!packages/.../fitness.ts'` produced "Review skipped: no items were selected" — the gitignore-style `!` negation does not re-include paths excluded by an earlier `**` in the same list (v1.13.3).
+* **Solution**: build explicit exclude lists instead: pass every file EXCEPT the group's targets (`--exclude "a.ts,b.ts,..."`). Verify selection with `--preview` before spending LLM tokens. `!**` alone resets to everything (including default-path test files), which is rarely what you want.
