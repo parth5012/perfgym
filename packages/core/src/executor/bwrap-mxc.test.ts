@@ -19,7 +19,7 @@ describe("MxcExecutor & BwrapExecutor (Capability-Probed)", () => {
 
       // Binary present on Linux
       expect(probeBwrap(mockPresentRunner, "linux")).toBe(true);
-      expect(mockPresentRunner).toHaveBeenCalledWith("bwrap", ["--version"]);
+      expect(mockPresentRunner).toHaveBeenCalledWith("bwrap", ["--ro-bind", "/", "/", "--unshare-net", "--", "true"]);
 
       // Binary absent on Linux
       expect(probeBwrap(mockAbsentRunner, "linux")).toBe(false);

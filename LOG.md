@@ -392,8 +392,8 @@ Status: Done. Red→green TDD for the 4 testable CRs; 4 red tests confirmed fail
 ## MAP #72 wayfinder-ship — Tickets #55, #56, #57, #58 — 2026-10-29 — Done
 - Map #72: CommandExecutor OS Sandbox Seam (#55, #56, #57, #58)
 - Ticket #55 (8c7aafe): CommandExecutor interface seam, CommandCapabilities, ExecResult, and PlainExecutor with process tree isolation and capability policy validation.
-- Ticket #56 (b7dd9fd): NodePermissionExecutor implementation for Node 20+ --permission flags, resolveCommandExecutor auto-resolution hierarchy (bwrap -> mxc -> node-permissions -> plain).
-- Ticket #57 (53b3266): MxcExecutor (macOS sandbox-exec) and BwrapExecutor (Linux bubblewrap) with read-only root, tmpfs mounts, unshared network, and capability verification.
+- Ticket #56 (b7dd9fd): NodePermissionExecutor implementation for Node 20+ --permission flags, resolveCommandExecutor auto-resolution hierarchy (mxc -> bwrap -> node-permission -> plain).
+- Ticket #57 (53b3266): MxcExecutor (Windows process containers via wxc-exec) and BwrapExecutor (Linux bubblewrap) with read-only root, tmpfs mounts, unshared network, and capability verification.
 - Ticket #58:
   - Route all 4 command types through CommandExecutor: invariants (`invariants.ts`), benchmarks (`benchmark.ts`), typecheck (`TypecheckGate.tier2Run` in `typecheck.ts`), and agent CLI driver (`CliAgentSubprocessDriver` in `cli-driver.ts`).
   - Blocked semantics enforced:

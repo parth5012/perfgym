@@ -3,10 +3,14 @@ import type { CommandCapabilities, CommandExecutor, ExecOptions, ExecResult } fr
 import { CapabilityRefusedError, PlainExecutor } from "./plain.js";
 
 function hasShellMeta(command: string): boolean {
-  // Strip single-quoted and double-quoted strings before checking for shell metacharacters
-  const withoutStrings = command.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "");
+  let substitutionInDoubleQuotes = false;
+  // Single quotes are literal in POSIX sh. Double quotes still allow `$(...)` and backticks.
+  const withoutStrings = command.replace(/'[^']*'|"((?:[^"\\]|\\.)*)"/g, (_m, dq?: string) => {
+    if (dq !== undefined && /`|\$\(/.test(dq)) substitutionInDoubleQuotes = true;
+    return "";
+  });
   // Detect chaining (&, |, ;, \n), redirection (>, <), and command substitutions (`, $()
-  return /[&|;\n><`]|\$\(/.test(withoutStrings);
+  return substitutionInDoubleQuotes || /[&|;\n><`]|\$\(/.test(withoutStrings);
 }
 
 export function parseCommandBinary(command: string): { binary: string; rest: string; rawToken: string } | null {
