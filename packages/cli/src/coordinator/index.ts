@@ -29,6 +29,8 @@ import {
   computeMetricResult,
   matchesGlob,
   SandboxLockBusyError,
+  CommandExecutor,
+  resolveCommandExecutor,
 } from "../../../core/src/index.js";
 import {
   AstLinterEngine,
@@ -80,6 +82,7 @@ export interface McpServerCoordinatorOptions {
   config?: PerfGymConfig;
   lockDir?: string;
   staleThresholdMs?: number;
+  executor?: CommandExecutor;
 }
 
 export class McpServerCoordinator {
@@ -92,6 +95,7 @@ export class McpServerCoordinator {
   private config: PerfGymConfig;
   private typecheckGate: TypecheckGate;
   private astLinter: AstLinterEngine;
+  private executor: CommandExecutor;
   private history: StepHistoryEntry[] = [];
   private stepSnapshots: Map<number, Map<string, string>> = new Map();
   /** F8: pre-mutation host-disk state, restored when the step is rejected. */
@@ -138,11 +142,12 @@ export class McpServerCoordinator {
       }
     }
 
-    this.typecheckGate = new TypecheckGate();
-    this.astLinter = new AstLinterEngine(this.config.rules ?? DEFAULT_RULES, this.rootDir);
+    this.executor = options.executor ?? resolveCommandExecutor();
+    this.typecheckGate = new TypecheckGate(undefined, this.executor);
+    this.astLinter = new AstLinterEngine(this.config.rules ?? DEFAULT_RULES, this.rootDir, this.executor);
     this.pipeline =
       options.pipeline ??
-      new EvaluationPipeline(this.config, this.astLinter, this.typecheckGate);
+      new EvaluationPipeline(this.config, this.astLinter, this.typecheckGate, this.executor);
 
     // Initial sync of driver files if running with in-memory driver on a real directory
     if (this.driver instanceof InMemorySandboxDriver) {
@@ -243,8 +248,8 @@ export class McpServerCoordinator {
 
   public updateConfig(newConfig: PerfGymConfig): void {
     this.config = newConfig;
-    this.astLinter = new AstLinterEngine(this.config.rules ?? DEFAULT_RULES, this.rootDir);
-    this.pipeline = new EvaluationPipeline(this.config, this.astLinter, this.typecheckGate);
+    this.astLinter = new AstLinterEngine(this.config.rules ?? DEFAULT_RULES, this.rootDir, this.executor);
+    this.pipeline = new EvaluationPipeline(this.config, this.astLinter, this.typecheckGate, this.executor);
   }
 
   public getWorkingDir(): string {

@@ -8,6 +8,8 @@ const TRUNCATION_MARKER = "\n[truncated]";
 const FORCE_SETTLE_TIMEOUT_MS = 500;
 
 export class CapabilityRefusedError extends Error {
+  readonly _tag = "CapabilityRefusedError";
+  readonly code = "ERR_CAPABILITY_REFUSED";
   readonly capability: string;
   constructor(message: string, capability: string) {
     super(message);
@@ -69,14 +71,18 @@ export class PlainExecutor implements CommandExecutor {
       return { granted: true };
     }
 
-    if (capabilities.needsNetwork === true && this.allowedCapabilities.needsNetwork !== true) {
+    const needsNetwork = capabilities.needsNetwork ?? capabilities.network;
+    const allowedNetwork = this.allowedCapabilities.needsNetwork ?? this.allowedCapabilities.network;
+    if (needsNetwork === true && allowedNetwork !== true) {
       return {
         granted: false,
         reason: "Backend 'plain' policy denies network access (needsNetwork not granted)",
       };
     }
 
-    if (capabilities.needsChildProcess === true && this.allowedCapabilities.needsChildProcess !== true) {
+    const needsChildProcess = capabilities.needsChildProcess ?? capabilities.allowSubprocesses;
+    const allowedChildProcess = this.allowedCapabilities.needsChildProcess ?? this.allowedCapabilities.allowSubprocesses;
+    if (needsChildProcess === true && allowedChildProcess !== true) {
       return {
         granted: false,
         reason: "Backend 'plain' policy denies child process execution (needsChildProcess not granted)",
@@ -172,8 +178,14 @@ export class PlainExecutor implements CommandExecutor {
         detached: true,
         cwd: options?.cwd,
         env: options?.env ? { ...process.env, ...options.env } : process.env,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [options?.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
       });
+
+      if (options?.stdin !== undefined) {
+        child.stdin?.on("error", () => {});
+        child.stdin?.write(options.stdin);
+        child.stdin?.end();
+      }
 
       child.stdout?.on("data", (chunk: Buffer) => {
         if (stdoutTruncated) return;

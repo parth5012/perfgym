@@ -135,6 +135,9 @@ export class InvariantFailureError extends Data.TaggedError("InvariantFailureErr
   readonly stderr: string;
   readonly retriesUsed: number;
   readonly message: string;
+  readonly blocked?: boolean;
+  readonly deniedCapability?: string;
+  readonly backend?: string;
 }> {}
 
 export class BenchmarkExecutionError extends Data.TaggedError("BenchmarkExecutionError")<{
@@ -142,6 +145,8 @@ export class BenchmarkExecutionError extends Data.TaggedError("BenchmarkExecutio
   readonly error: string;
   readonly rawOutput?: string;
   readonly message: string;
+  readonly blocked?: boolean;
+  readonly backend?: string;
 }> {}
 
 export class TailGuardRegressionError extends Data.TaggedError("TailGuardRegressionError")<{

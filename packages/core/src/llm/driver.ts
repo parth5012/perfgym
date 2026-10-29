@@ -1,4 +1,5 @@
 import type { MutationPayload } from "./schema.js";
+import type { CommandExecutor } from "../executor/index.js";
 
 export interface LlmUsage {
   promptTokens: number;
@@ -13,6 +14,7 @@ export interface LlmResult {
   estimatedCostUsd?: number | null;
   error?: string;
   skipped?: boolean;
+  blocked?: boolean;
 }
 
 export interface TargetFileContent {
@@ -37,6 +39,7 @@ export interface DriverOptions {
   pricing?: Record<string, { promptPerMillion: number; completionPerMillion: number }>;
   cliCommand?: string;
   cliArgs?: string[];
+  executor?: CommandExecutor;
 }
 
 export interface LlmDriver {

@@ -1,8 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import type { CommandCapabilities, CommandExecutor, ExecOptions, ExecResult } from "./index.js";
 import { CapabilityRefusedError, PlainExecutor } from "./plain.js";
 import type { ProbeCheckRunner } from "./bwrap.js";
 import { defaultProbeCheckRunner } from "./bwrap.js";
+
+const MAX_CAPTURE_BYTES = 2 * 1024 * 1024; // 2MB
+const TRUNCATION_MARKER = "\n[truncated]";
 
 export function probeMxc(
   runner: ProbeCheckRunner = defaultProbeCheckRunner,
@@ -175,9 +179,16 @@ export class MxcExecutor implements CommandExecutor {
     return new Promise<ExecResult>((resolve) => {
       let stdout = "";
       let stderr = "";
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let stdoutTruncated = false;
+      let stderrTruncated = false;
       let timedOut = false;
       let timer: NodeJS.Timeout | undefined;
       let settled = false;
+
+      const stdoutDecoder = new StringDecoder("utf8");
+      const stderrDecoder = new StringDecoder("utf8");
 
       const safeResolve = (res: ExecResult) => {
         if (settled) return;
@@ -190,8 +201,14 @@ export class MxcExecutor implements CommandExecutor {
         cwd: options?.cwd,
         env: options?.env ? { ...process.env, ...options.env } : process.env,
         detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [options?.stdin !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
       });
+
+      if (options?.stdin !== undefined) {
+        child.stdin?.on("error", () => {});
+        child.stdin?.write(options.stdin);
+        child.stdin?.end();
+      }
 
       if (timeoutMs > 0) {
         timer = setTimeout(() => {
@@ -201,11 +218,29 @@ export class MxcExecutor implements CommandExecutor {
       }
 
       child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
+        if (stdoutTruncated) return;
+        const remaining = MAX_CAPTURE_BYTES - stdoutBytes;
+        if (chunk.length <= remaining) {
+          stdout += stdoutDecoder.write(chunk);
+          stdoutBytes += chunk.length;
+        } else {
+          stdout += stdoutDecoder.write(chunk.subarray(0, remaining)) + stdoutDecoder.end() + TRUNCATION_MARKER;
+          stdoutBytes = MAX_CAPTURE_BYTES;
+          stdoutTruncated = true;
+        }
       });
 
       child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
+        if (stderrTruncated) return;
+        const remaining = MAX_CAPTURE_BYTES - stderrBytes;
+        if (chunk.length <= remaining) {
+          stderr += stderrDecoder.write(chunk);
+          stderrBytes += chunk.length;
+        } else {
+          stderr += stderrDecoder.write(chunk.subarray(0, remaining)) + stderrDecoder.end() + TRUNCATION_MARKER;
+          stderrBytes = MAX_CAPTURE_BYTES;
+          stderrTruncated = true;
+        }
       });
 
       child.on("error", (err: Error) => {

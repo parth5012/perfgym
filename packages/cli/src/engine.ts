@@ -21,6 +21,7 @@ import {
   stripAnsiDeep,
   type SessionLoadOutcome,
   type SerializedSessionState,
+  resolveCommandExecutor,
 } from "../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../linter/src/index.js";
 import { liveSessionFor } from "./live-session.js";
@@ -738,9 +739,10 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
     );
   }
 
-  const linter = new AstLinterEngine(DEFAULT_RULES, cwd);
-  const typechecker = new TypecheckGate(cwd);
-  const pipeline = new EvaluationPipeline(config, linter, typechecker);
+  const executor = resolveCommandExecutor();
+  const linter = new AstLinterEngine(DEFAULT_RULES, cwd, executor);
+  const typechecker = new TypecheckGate(cwd, executor);
+  const pipeline = new EvaluationPipeline(config, linter, typechecker, executor);
 
   const context: WorkspaceContext = {
     runId: `step-${Date.now()}`,

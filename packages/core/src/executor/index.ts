@@ -12,6 +12,8 @@ export interface CommandCapabilities {
   writePaths?: string[];
   needsNetwork?: boolean;
   needsChildProcess?: boolean;
+  network?: boolean;
+  allowSubprocesses?: boolean;
 }
 
 export interface ExecOptions {
@@ -20,6 +22,7 @@ export interface ExecOptions {
   readonly timeoutMs?: number;
   readonly capabilities?: CommandCapabilities;
   readonly throwOnRefusal?: boolean;
+  readonly stdin?: string;
 }
 
 export interface ExecResult {

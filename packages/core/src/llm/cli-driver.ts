@@ -1,21 +1,32 @@
-import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 import type { DriverOptions, LlmDriver, LlmRequest, LlmResult } from "./driver.js";
 import { MutationSchema } from "./schema.js";
+import type { CommandCapabilities, CommandExecutor } from "../executor/index.js";
+import { resolveCommandExecutor } from "../executor/resolve.js";
 
 export const DEFAULT_CLI_COMMAND = "opencode";
 export const DEFAULT_CLI_ARGS = ["run"];
 export const DEFAULT_CLI_TIMEOUT_MS = 120_000;
+
+function quoteArg(arg: string): string {
+  if (/^[a-zA-Z0-9_./:-]+$/.test(arg)) {
+    return arg;
+  }
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
 
 export class CliAgentSubprocessDriver implements LlmDriver {
   public readonly name = "cli";
   private readonly command: string;
   private readonly args: string[];
   private readonly timeoutMs: number;
+  private readonly executor: CommandExecutor;
 
   constructor(options: DriverOptions = {}) {
     this.command = options.cliCommand || DEFAULT_CLI_COMMAND;
-    this.args = options.cliArgs || DEFAULT_CLI_ARGS;
+    this.args = options.cliArgs ?? (options.cliCommand ? [] : DEFAULT_CLI_ARGS);
     this.timeoutMs = options.timeoutMs ?? DEFAULT_CLI_TIMEOUT_MS;
+    this.executor = options.executor ?? resolveCommandExecutor();
   }
 
   public async complete(request: LlmRequest): Promise<LlmResult> {
@@ -34,6 +45,17 @@ export class CliAgentSubprocessDriver implements LlmDriver {
       : prompt;
 
     const runResult = await this.runProcess(effectivePrompt, timeoutMs);
+
+    if (runResult.blocked) {
+      return {
+        mutations: [],
+        error: `CLI process execution blocked by sandbox (${runResult.backend}): ${
+          runResult.stderr || "Operation denied"
+        } - the driver could not start`,
+        skipped: true,
+        blocked: true,
+      };
+    }
 
     if (runResult.timedOut) {
       return {
@@ -100,74 +122,45 @@ export class CliAgentSubprocessDriver implements LlmDriver {
   }
 
   /**
-   * Spawns the CLI child process, writes prompt to stdin, and enforces timeout.
-   * Kills whole process tree on timeout.
+   * Executes the CLI command through CommandExecutor, passing prompt on stdin.
    */
-  private runProcess(
+  private async runProcess(
     prompt: string,
     timeoutMs: number
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
-    return new Promise((resolve) => {
-      const isWindows = process.platform === "win32";
-      const child = spawn(this.command, this.args, {
-        detached: !isWindows, // On POSIX, detach to create new process group
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+  ): Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    blocked: boolean;
+    backend: string;
+  }> {
+    const fullCmd = [quoteArg(this.command), ...this.args.map(quoteArg)].filter(Boolean).join(" ");
+    const cwd = process.cwd();
+    const capabilities: CommandCapabilities = {
+      needsNetwork: true,
+      network: true,
+      writePaths: [tmpdir(), cwd],
+      readPaths: [tmpdir(), cwd],
+      needsChildProcess: true,
+      allowSubprocesses: true,
+    };
 
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      let settled = false;
-
-      const finish = (exitCode: number | null) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ stdout, stderr, exitCode, timedOut });
-      };
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        this.killProcessTree(child.pid, isWindows);
-        finish(null);
-      }, timeoutMs);
-
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk.toString();
-      });
-
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString();
-      });
-
-      child.on("error", (err) => {
-        stderr += err.message;
-        finish(1);
-      });
-
-      child.on("close", (code) => {
-        finish(code);
-      });
-
-      // Attach error listener to avoid crashing on EPIPE if process exits prematurely
-      child.stdin.on("error", () => {});
-      child.stdin.write(prompt);
-      child.stdin.end();
+    const res = await this.executor.exec(fullCmd, {
+      stdin: prompt,
+      timeoutMs,
+      capabilities,
+      cwd,
     });
-  }
 
-  private killProcessTree(pid: number | undefined, isWindows: boolean): void {
-    if (!pid) return;
-    try {
-      if (isWindows) {
-        spawn("taskkill", ["/pid", pid.toString(), "/T", "/F"], { stdio: "ignore" });
-      } else {
-        // POSIX: kill process group
-        process.kill(-pid, "SIGKILL");
-      }
-    } catch {
-      // Process might have already exited
-    }
+    return {
+      stdout: res.stdout,
+      stderr: res.stderr,
+      exitCode: res.code,
+      timedOut: res.timedOut,
+      blocked: res.blocked,
+      backend: res.backend,
+    };
   }
 
   /**

@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { LintViolation } from "@perfgym/core";
+import type { CommandCapabilities, CommandExecutor } from "@perfgym/core";
 
 export interface ConfigIntegrityResult {
   ok: boolean;
@@ -198,12 +199,14 @@ export class TypecheckGate {
   protected root: string | null;
   protected baseline: HashRecord;
   protected protectedFiles: string[];
+  protected executor?: CommandExecutor;
 
-  constructor(baselineFiles?: string[] | string) {
+  constructor(baselineFiles?: string[] | string, executor?: CommandExecutor) {
     this.disqualified = false;
     this.root = null;
     this.baseline = {};
     this.protectedFiles = [];
+    this.executor = executor;
 
     if (typeof baselineFiles === "string") {
       this.initBaseline(baselineFiles);
@@ -444,8 +447,77 @@ export class TypecheckGate {
     };
   }
 
-  public tier2Run(projectRoot?: string): Tier2Result {
+  public tier2Run(projectRoot?: string, executor?: CommandExecutor): Tier2Result & Promise<Tier2Result> {
     const root = projectRoot ?? this.root ?? process.cwd();
+    const effectiveExecutor = executor ?? this.executor;
+
+    if (effectiveExecutor) {
+      const candidatePaths = [
+        path.join(root, "node_modules", "typescript", "bin", "tsc"),
+        path.join(process.cwd(), "node_modules", "typescript", "bin", "tsc"),
+      ];
+      let tscCmd = "tsc --noEmit";
+      for (const c of candidatePaths) {
+        if (existsSync(c)) {
+          tscCmd = `"${process.execPath}" "${c}" --noEmit`;
+          break;
+        }
+      }
+
+      const nodeModulesPath = path.join(root, "node_modules");
+      const readPaths = [root];
+      if (existsSync(nodeModulesPath)) {
+        readPaths.push(nodeModulesPath);
+      }
+
+      const capabilities: CommandCapabilities = {
+        needsNetwork: false,
+        network: false,
+        writePaths: [],
+        readPaths,
+        needsChildProcess: false,
+        allowSubprocesses: false,
+      };
+
+      const p = (async (): Promise<Tier2Result> => {
+        try {
+          const result = await effectiveExecutor.exec(tscCmd, {
+            cwd: root,
+            timeoutMs: 180000,
+            capabilities,
+          });
+
+          if (result.blocked) {
+            return {
+              passed: false,
+              errors: [
+                `Typecheck blocked by sandbox (${result.backend}): ${
+                  result.stderr || "Operation denied"
+                }`,
+              ],
+            };
+          }
+
+          const stdout = (result.stdout ?? "").toString();
+          const stderr = (result.stderr ?? "").toString();
+          const combined = `${stdout}\n${stderr}`.trim();
+          const errors = combined
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter((l) => l.length > 0);
+
+          const passed = result.code === 0;
+          return { passed, errors: passed ? [] : errors };
+        } catch (err) {
+          return { passed: false, errors: [String(err)] };
+        }
+      })();
+
+      const placeholder: Tier2Result = { passed: false, errors: [] };
+      Object.assign(p, placeholder);
+      return p as any;
+    }
+
     const candidatePaths = [
       path.join(root, "node_modules", "typescript", "bin", "tsc"),
       path.join(process.cwd(), "node_modules", "typescript", "bin", "tsc"),
@@ -477,7 +549,10 @@ export class TypecheckGate {
         });
       }
     } catch (err) {
-      return { passed: false, errors: [String(err)] };
+      const errRes = { passed: false, errors: [String(err)] };
+      const promise = Promise.resolve(errRes);
+      Object.assign(promise, errRes);
+      return promise as any;
     }
 
     const stdout = (result.stdout ?? "").toString();
@@ -489,11 +564,17 @@ export class TypecheckGate {
       .filter((l) => l.length > 0);
 
     if (result.error) {
-      return { passed: false, errors: [result.error.message, ...errors] };
+      const errRes = { passed: false, errors: [result.error.message, ...errors] };
+      const promise = Promise.resolve(errRes);
+      Object.assign(promise, errRes);
+      return promise as any;
     }
 
     const passed = result.status === 0;
-    return { passed, errors: passed ? [] : errors };
+    const syncRes = { passed, errors: passed ? [] : errors };
+    const promise = Promise.resolve(syncRes);
+    Object.assign(promise, syncRes);
+    return promise as any;
   }
 }
 

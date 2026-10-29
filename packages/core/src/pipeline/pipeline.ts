@@ -11,6 +11,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Cause, Effect, Exit } from "effect";
 import type { AstLinterEngine, ScanResult, TypecheckGate } from "../../../linter/src/index.js";
+import type { CommandExecutor } from "../executor/index.js";
 import type {
   BenchmarkDistribution,
   InvariantResult,
@@ -131,12 +132,14 @@ export class EvaluationPipeline {
   readonly #config: PerfGymConfig;
   readonly #linter: AstLinterEngine;
   readonly #typechecker: TypecheckGate | null;
+  readonly #executor?: CommandExecutor;
   #frozenHarnessDir: string | null = null;
 
   constructor(
     config: PerfGymConfig,
     linter: AstLinterEngine,
-    typechecker?: TypecheckGate
+    typechecker?: TypecheckGate | null,
+    executor?: CommandExecutor
   ) {
     if (!config || typeof config.invariants?.command !== "string" || config.invariants.command.trim() === "") {
       throw new Error(
@@ -152,6 +155,7 @@ export class EvaluationPipeline {
     this.#config = config;
     this.#linter = linter;
     this.#typechecker = typechecker ?? null;
+    this.#executor = executor;
   }
 
   /**
@@ -259,24 +263,45 @@ export class EvaluationPipeline {
           command: pipeline.#config.invariants.command,
           cwd: context.workingDir,
           timeoutMs: pipeline.#config.invariants.timeoutMs, // seam clamps (10s/30s policy)
+          executor: pipeline.#executor,
           // `invariants.retries` is legacy and ignored (ADR-020: zero retries).
         }),
         () => true,
-        (failure: { readonly message: string }) =>
-          Effect.succeed(
+        (failure: {
+          readonly message: string;
+          readonly blocked?: boolean;
+          readonly backend?: string;
+          readonly rawOutput?: string;
+          readonly error?: string;
+          readonly deniedCapability?: string;
+        }) => {
+          const isBlocked = failure.blocked === true;
+          if (isBlocked) {
+            console.warn(
+              `[Sandbox Blocked] Invariant execution blocked: ${
+                failure.deniedCapability || failure.error || failure.message
+              }`
+            );
+          }
+          return Effect.succeed(
             envelopedRejected(
               rejectedStep({
                 ...meta,
-                revertReason: `invariants failed: ${truncate(failure.message)}`,
+                revertReason: isBlocked
+                  ? "sandbox-blocked"
+                  : `invariants failed: ${truncate(failure.message)}`,
                 invariants: {
                   passed: false,
-                  output: truncate(failure.message),
+                  output: truncate(failure.rawOutput ?? failure.message),
                   durationMs: Date.now() - startedAt,
                   retriesUsed: 0,
+                  blocked: isBlocked,
+                  backend: failure.backend,
                 },
               })
             )
-          )
+          );
+        }
       );
       if (isRejectedEnveloped(stage1)) {
         return stage1.step;
@@ -368,19 +393,25 @@ export class EvaluationPipeline {
             ...(harnessEnforcementDir !== null && harnessEnforcementDir !== ""
               ? { harnessDir: harnessEnforcementDir }
               : {}),
+            ...(pipeline.#executor !== undefined ? { executor: pipeline.#executor } : {}),
           }),
           () => true,
-          (failure: { readonly message: string }) =>
-            Effect.succeed(
+          (failure: { readonly message: string; readonly blocked?: boolean; readonly backend?: string }) => {
+            const isBlocked = failure.blocked === true;
+            if (isBlocked) {
+              console.warn(`[Sandbox Blocked] Benchmark execution blocked: ${failure.message}`);
+            }
+            return Effect.succeed(
               envelopedRejected(
                 rejectedStep({
                   ...meta,
-                  revertReason: `benchmark failed: ${truncate(failure.message)}`,
+                  revertReason: isBlocked ? "unmeasurable" : `benchmark failed: ${truncate(failure.message)}`,
                   invariants,
                   violations,
                 })
               )
-            )
+            );
+          }
         );
         if (isRejectedEnveloped(stage3)) {
           return stage3.step;
