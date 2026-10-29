@@ -198,5 +198,9 @@ describe("NodePermissionExecutor & Backend Auto-Resolution", () => {
     );
     expect(emptyReadRes.blocked).toBe(true);
     expect(emptyReadRes.backend).toBe("node-permission");
+
+    // Command substitutions inside double quotes fall back to plain
+    const substitution = await executor.exec('node -e "console.log(\\"$(echo test)\\")"');
+    expect(substitution.backend).toBe("plain");
   });
 });

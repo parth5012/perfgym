@@ -24,7 +24,7 @@ export function probeBwrap(
   platform: NodeJS.Platform = process.platform
 ): boolean {
   if (platform !== "linux") return false;
-  return runner("bwrap", ["--version"]);
+  return runner("bwrap", ["--ro-bind", "/", "/", "--unshare-net", "--", "true"]);
 }
 
 export function buildBwrapArgs(
