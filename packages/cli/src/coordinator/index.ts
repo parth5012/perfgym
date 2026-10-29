@@ -142,7 +142,11 @@ export class McpServerCoordinator {
       }
     }
 
-    this.executor = options.executor ?? resolveCommandExecutor();
+    this.executor =
+      options.executor ??
+      resolveCommandExecutor({
+        backend: this.config.sandbox?.commandBackend ?? this.config.sandbox?.command_backend,
+      });
     this.typecheckGate = new TypecheckGate(undefined, this.executor);
     this.astLinter = new AstLinterEngine(this.config.rules ?? DEFAULT_RULES, this.rootDir, this.executor);
     this.pipeline =
@@ -248,6 +252,10 @@ export class McpServerCoordinator {
 
   public updateConfig(newConfig: PerfGymConfig): void {
     this.config = newConfig;
+    this.executor = resolveCommandExecutor({
+      backend: newConfig.sandbox?.commandBackend ?? newConfig.sandbox?.command_backend,
+    });
+    this.typecheckGate = new TypecheckGate(undefined, this.executor);
     this.astLinter = new AstLinterEngine(this.config.rules ?? DEFAULT_RULES, this.rootDir, this.executor);
     this.pipeline = new EvaluationPipeline(this.config, this.astLinter, this.typecheckGate, this.executor);
   }

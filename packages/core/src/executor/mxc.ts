@@ -7,6 +7,7 @@ import { defaultProbeCheckRunner } from "./bwrap.js";
 
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024; // 2MB
 const TRUNCATION_MARKER = "\n[truncated]";
+const FORCE_SETTLE_TIMEOUT_MS = 500;
 
 export function probeMxc(
   runner: ProbeCheckRunner = defaultProbeCheckRunner,
@@ -29,7 +30,8 @@ export function buildMxcArgs(
 ): string[] {
   const args: string[] = ["--tier=BaseContainer"];
 
-  if (!capabilities?.needsNetwork) {
+  const needsNet = capabilities?.needsNetwork ?? capabilities?.network ?? false;
+  if (!needsNet) {
     args.push("--isolate-network");
   }
 
@@ -58,7 +60,7 @@ export interface MxcExecutorOptions {
 }
 
 function killProcessGroup(pid: number | undefined): void {
-  if (pid === undefined) return;
+  if (pid === undefined || pid <= 0) return;
   if (process.platform === "win32") {
     try {
       spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore" });
@@ -148,7 +150,7 @@ export class MxcExecutor implements CommandExecutor {
 
     // Check capability grants
     if (this.allowedCapabilities || options?.capabilities) {
-      const check = this.canGrant(options?.capabilities, { cwd: options?.cwd });
+      const check = this.canGrant(effectiveCapabilities, { cwd: options?.cwd });
       if (!check.granted) {
         const reason = check.reason ?? "Requested capabilities cannot be granted by backend 'mxc'";
         if (options?.throwOnRefusal) {
@@ -214,6 +216,19 @@ export class MxcExecutor implements CommandExecutor {
         timer = setTimeout(() => {
           timedOut = true;
           killProcessGroup(child.pid);
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          setTimeout(() => {
+            safeResolve({
+              code: null,
+              stdout,
+              stderr,
+              durationMs: Date.now() - start,
+              timedOut: true,
+              blocked: false,
+              backend: this.backend,
+            });
+          }, FORCE_SETTLE_TIMEOUT_MS).unref();
         }, timeoutMs);
       }
 
@@ -256,9 +271,15 @@ export class MxcExecutor implements CommandExecutor {
       });
 
       child.on("close", (code) => {
+        if (!stdoutTruncated) {
+          stdout += stdoutDecoder.end();
+        }
+        if (!stderrTruncated) {
+          stderr += stderrDecoder.end();
+        }
         const blocked = code !== 0 && MXC_BLOCK_PATTERN.test(stderr);
         safeResolve({
-          code,
+          code: timedOut ? null : code,
           stdout,
           stderr,
           durationMs: Date.now() - start,

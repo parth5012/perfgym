@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";

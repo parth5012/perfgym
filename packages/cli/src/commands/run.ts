@@ -314,7 +314,11 @@ export function runOptimizationLoop(
     const resolvedTimeoutMs = options.llmTimeoutMs ?? config.llm?.timeoutMs;
     const maxCostUsd = options.maxCostUsd;
     const maxTokens = options.maxTokens;
-    const executor = options.executor ?? resolveCommandExecutor();
+    const executor =
+      options.executor ??
+      resolveCommandExecutor({
+        backend: config.sandbox?.commandBackend ?? config.sandbox?.command_backend,
+      });
 
     // Instantiate LLM driver if no explicit generator was provided
     let activeLlmDriver: LlmDriver | undefined = options.llmDriver;

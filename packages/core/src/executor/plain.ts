@@ -139,8 +139,9 @@ export class PlainExecutor implements CommandExecutor {
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
     const startedAt = Date.now();
 
+    const effectiveCapabilities = options?.capabilities ?? this.allowedCapabilities;
     if (this.allowedCapabilities || options?.capabilities) {
-      const check = this.canGrant(options?.capabilities, { cwd: options?.cwd });
+      const check = this.canGrant(effectiveCapabilities, { cwd: options?.cwd });
       if (!check.granted) {
         const reason = check.reason ?? "Requested capabilities cannot be granted by backend 'plain'";
         if (options?.throwOnRefusal) {
