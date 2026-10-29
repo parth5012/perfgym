@@ -739,7 +739,9 @@ export async function runStep(options: StepOptions = {}): Promise<StepResult> {
     );
   }
 
-  const executor = resolveCommandExecutor();
+  const executor = resolveCommandExecutor({
+    backend: config.sandbox?.commandBackend ?? config.sandbox?.command_backend,
+  });
   const linter = new AstLinterEngine(DEFAULT_RULES, cwd, executor);
   const typechecker = new TypecheckGate(cwd, executor);
   const pipeline = new EvaluationPipeline(config, linter, typechecker, executor);

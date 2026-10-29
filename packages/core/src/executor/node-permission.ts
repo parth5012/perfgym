@@ -96,7 +96,7 @@ export function wrapWithNodePermission(
     }
   }
 
-  if (capabilities?.needsChildProcess === true) {
+  if (capabilities?.needsChildProcess === true || capabilities?.allowSubprocesses === true) {
     flags.push("--allow-child-process");
   }
 

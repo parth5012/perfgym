@@ -198,8 +198,8 @@ export interface PerfGymConfig {
      * Active command confinement backend (ticket #56).
      * Probes mxc -> bwrap -> node-permission -> plain.
      */
-    command_backend?: "auto" | "node-permission" | "mxc" | "bwrap" | "none";
-    commandBackend?: "auto" | "node-permission" | "mxc" | "bwrap" | "none";
+    command_backend?: "auto" | "node-permission" | "mxc" | "bwrap" | "none" | "plain";
+    commandBackend?: "auto" | "node-permission" | "mxc" | "bwrap" | "none" | "plain";
   };
 }
 

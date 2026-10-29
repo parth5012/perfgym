@@ -6,6 +6,7 @@ import { CapabilityRefusedError, PlainExecutor } from "./plain.js";
 
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024; // 2MB
 const TRUNCATION_MARKER = "\n[truncated]";
+const FORCE_SETTLE_TIMEOUT_MS = 500;
 
 export type ProbeCheckRunner = (binary: string, args: string[]) => boolean;
 
@@ -81,7 +82,7 @@ export interface BwrapExecutorOptions {
 }
 
 function killProcessGroup(pid: number | undefined): void {
-  if (pid === undefined) return;
+  if (pid === undefined || pid <= 0) return;
   try {
     process.kill(-pid, "SIGKILL");
   } catch {
@@ -163,7 +164,7 @@ export class BwrapExecutor implements CommandExecutor {
 
     // Check capability grants
     if (this.allowedCapabilities || options?.capabilities) {
-      const check = this.canGrant(options?.capabilities, { cwd: options?.cwd });
+      const check = this.canGrant(effectiveCapabilities, { cwd: options?.cwd });
       if (!check.granted) {
         const reason = check.reason ?? "Requested capabilities cannot be granted by backend 'bwrap'";
         if (options?.throwOnRefusal) {
@@ -229,6 +230,19 @@ export class BwrapExecutor implements CommandExecutor {
         timer = setTimeout(() => {
           timedOut = true;
           killProcessGroup(child.pid);
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          setTimeout(() => {
+            safeResolve({
+              code: null,
+              stdout,
+              stderr,
+              durationMs: Date.now() - start,
+              timedOut: true,
+              blocked: false,
+              backend: this.backend,
+            });
+          }, FORCE_SETTLE_TIMEOUT_MS).unref();
         }, timeoutMs);
       }
 
@@ -271,9 +285,15 @@ export class BwrapExecutor implements CommandExecutor {
       });
 
       child.on("close", (code) => {
+        if (!stdoutTruncated) {
+          stdout += stdoutDecoder.end();
+        }
+        if (!stderrTruncated) {
+          stderr += stderrDecoder.end();
+        }
         const blocked = code !== 0 && BWRAP_BLOCK_PATTERN.test(stderr);
         safeResolve({
-          code,
+          code: timedOut ? null : code,
           stdout,
           stderr,
           durationMs: Date.now() - start,

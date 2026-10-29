@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -725,11 +724,16 @@ export const runBenchmark = (
   if (existsSync(nodeModulesPath)) {
     readPaths.push(nodeModulesPath);
   }
-  const capabilities: CommandCapabilities = options.capabilities ?? {
+  const realNodeModules = existsSync(nodeModulesPath) ? realpathSync(nodeModulesPath) : undefined;
+  if (realNodeModules && !readPaths.includes(realNodeModules)) {
+    readPaths.push(realNodeModules);
+  }
+  const capabilities: CommandCapabilities = {
     needsNetwork: false,
     writePaths: [tmpdir(), cwd],
     readPaths,
     needsChildProcess: true,
+    ...options.capabilities,
   };
 
   const executionOptions = {
@@ -772,7 +776,21 @@ export const runBenchmark = (
     //    in the samples. Their stamps are ignored too: only measured samples
     //    are tripwire-checked.
     for (let i = 0; i < warmupCount; i++) {
-      yield* Effect.asVoid(execute);
+      const warmupResult = yield* execute;
+      if (warmupResult.blocked) {
+        return yield* Effect.fail(
+          benchmarkFailure(
+            options.command,
+            "sandbox blocked",
+            `Benchmark command "${options.command}" was blocked by sandbox backend (${warmupResult.backend}) during warm-up: ${
+              warmupResult.stderr.trim() || "Operation denied by sandbox"
+            }.`,
+            warmupResult.stderr.trim(),
+            true,
+            warmupResult.backend
+          )
+        );
+      }
     }
 
     // 3. N sequential measured samples, recorded in capture order. A sample

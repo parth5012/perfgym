@@ -12,6 +12,9 @@ function quoteArg(arg: string): string {
   if (/^[a-zA-Z0-9_./:-]+$/.test(arg)) {
     return arg;
   }
+  if (process.platform === "win32") {
+    return `"${arg.replace(/(\\*)(")/g, '$1$1\\$2').replace(/(\\+)$/, "$1$1")}"`;
+  }
   return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
@@ -24,7 +27,7 @@ export class CliAgentSubprocessDriver implements LlmDriver {
 
   constructor(options: DriverOptions = {}) {
     this.command = options.cliCommand || DEFAULT_CLI_COMMAND;
-    this.args = options.cliArgs ?? (options.cliCommand ? [] : DEFAULT_CLI_ARGS);
+    this.args = options.cliArgs ?? DEFAULT_CLI_ARGS;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_CLI_TIMEOUT_MS;
     this.executor = options.executor ?? resolveCommandExecutor();
   }
