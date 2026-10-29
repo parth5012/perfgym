@@ -1,10 +1,13 @@
-import { spawn, spawnSync } from "node:child_process";
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { Effect } from "effect";
 import { verifyChecksum } from "../bench/blackhole.js";
 import { BenchmarkExecutionError } from "../errors.js";
 import type { BenchmarkDistribution, MetricResult } from "../index.js";
+import type { CommandCapabilities, CommandExecutor, ExecResult } from "../executor/index.js";
+import { resolveCommandExecutor } from "../executor/resolve.js";
 import {
   areTimerStampsValid,
   hasNodeRequirePreload,
@@ -552,191 +555,109 @@ export interface BenchmarkRunOptions {
    * enforcement; integration decides what to pass.
    */
   readonly harnessDir?: string;
+  readonly executor?: CommandExecutor;
+  readonly capabilities?: CommandCapabilities;
 }
 
 interface CapturedOutput {
   readonly stdout: string;
   readonly stderr: string;
   readonly durationMs: number;
-}
-
-function killProcessGroup(pid: number | undefined): void {
-  if (pid === undefined || pid <= 0) return;
-  if (process.platform === "win32") {
-    // taskkill /T /F reliably kills Windows trees (process-group negative pid is unsupported there).
-    try {
-      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    // Group kill failed (e.g. Windows without negative pid support, or ESRCH).
-    // Attempt single-pid kill fallback.
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Process already gone (ESRCH) or unsupported — swallow error.
-    }
-  }
+  readonly blocked: boolean;
+  readonly backend: string;
 }
 
 const benchmarkFailure = (
   command: string,
   error: string,
   message: string,
-  rawOutput?: string
+  rawOutput?: string,
+  blocked?: boolean,
+  backend?: string
 ): BenchmarkExecutionError =>
-  new BenchmarkExecutionError({ command, error, rawOutput, message });
+  new BenchmarkExecutionError({ command, error, rawOutput, message, blocked, backend });
 
 /**
- * One measured execution of the benchmark command with the identical
- * spawn hygiene of the invariant gate: detached process group so the kill
- * reaches worker children, 2MB per-stream capture caps with truncation
- * marker, SIGKILL process-group kill on deadline, a 500ms force-settle
- * fallback if the killed process refuses to exit, and interruption cleanup.
- * Exit-code protocol: 0 = success, nonzero/timeout = BenchmarkExecutionError.
+ * One measured execution of the benchmark command routed through CommandExecutor.
+ * Exit-code protocol: 0 = success, nonzero/timeout = BenchmarkExecutionError,
+ * blocked = CapturedOutput marked blocked for the sampling loop's blocked semantics.
  */
 const runCapturedCommand = (options: {
   readonly command: string;
   readonly cwd?: string;
   readonly timeoutMs: number;
   readonly env?: Readonly<Record<string, string>>;
+  readonly executor: CommandExecutor;
+  readonly capabilities: CommandCapabilities;
 }): Effect.Effect<CapturedOutput, BenchmarkExecutionError> =>
-  Effect.callback<CapturedOutput, BenchmarkExecutionError>((resume) => {
-    const startedAt = Date.now();
-    let stdout = "";
-    let stderr = "";
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
-    let settled = false;
-    let timedOut = false;
-    let forceSettleTimer: NodeJS.Timeout | undefined;
-
-    const child = spawn(options.command, {
-      shell: true,
-      detached: true,
-      cwd: options.cwd,
-      env: { ...process.env, ...options.env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdoutTruncated) return;
-      const remaining = MAX_CAPTURE_BYTES - stdoutBytes;
-      if (chunk.length <= remaining) {
-        stdout += chunk.toString();
-        stdoutBytes += chunk.length;
-      } else {
-        stdout += chunk.subarray(0, remaining).toString() + TRUNCATION_MARKER;
-        stdoutBytes = MAX_CAPTURE_BYTES;
-        stdoutTruncated = true;
+  Effect.tryPromise<ExecResult, BenchmarkExecutionError>({
+    try: () =>
+      options.executor.exec(options.command, {
+        cwd: options.cwd,
+        timeoutMs: options.timeoutMs,
+        env: options.env,
+        capabilities: options.capabilities,
+      }),
+    catch: (cause: unknown): BenchmarkExecutionError =>
+      benchmarkFailure(
+        options.command,
+        cause instanceof Error ? cause.message : String(cause),
+        `Benchmark command "${options.command}" could not spawn: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`
+      ),
+  }).pipe(
+    Effect.flatMap((result: ExecResult): Effect.Effect<CapturedOutput, BenchmarkExecutionError> => {
+      if (result.blocked) {
+        return Effect.succeed<CapturedOutput>({
+          stdout: result.stdout,
+          stderr: result.stderr,
+          durationMs: result.durationMs,
+          blocked: true,
+          backend: result.backend,
+        });
       }
-    });
 
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderrTruncated) return;
-      const remaining = MAX_CAPTURE_BYTES - stderrBytes;
-      if (chunk.length <= remaining) {
-        stderr += chunk.toString();
-        stderrBytes += chunk.length;
-      } else {
-        stderr += chunk.subarray(0, remaining).toString() + TRUNCATION_MARKER;
-        stderrBytes = MAX_CAPTURE_BYTES;
-        stderrTruncated = true;
-      }
-    });
-
-    const settle = (result: Effect.Effect<CapturedOutput, BenchmarkExecutionError>): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      if (forceSettleTimer !== undefined) {
-        clearTimeout(forceSettleTimer);
-      }
-      resume(result);
-    };
-
-    const timeoutResult = (why: string): Effect.Effect<CapturedOutput, BenchmarkExecutionError> =>
-      Effect.fail(
-        benchmarkFailure(
-          options.command,
-          why,
-          `Benchmark command "${options.command}" timed out after ${options.timeoutMs}ms ` +
-            `(exit ${TIMEOUT_EXIT_CODE}). The command was killed with SIGKILL along with its whole ` +
-            "process group; raise `metrics[].timeout_ms` in .perfgym.yaml if this benchmark is " +
-            `legitimately slow (hard cap: ${MAX_BENCHMARK_TIMEOUT_MS}ms).`
-        )
-      );
-
-    const deadline = setTimeout(() => {
-      timedOut = true;
-      killProcessGroup(child.pid);
-
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-
-      forceSettleTimer = setTimeout(() => {
-        settle(timeoutResult(`process did not exit after SIGKILL (force-settled after ${FORCE_SETTLE_TIMEOUT_MS}ms)`));
-      }, FORCE_SETTLE_TIMEOUT_MS);
-      forceSettleTimer.unref();
-    }, options.timeoutMs);
-
-    child.on("error", (cause: Error) => {
-      settle(
-        Effect.fail(
+      if (result.timedOut) {
+        return Effect.fail(
           benchmarkFailure(
             options.command,
-            cause.message,
-            `Benchmark command "${options.command}" could not spawn: ${cause.message}`
-          )
-        )
-      );
-    });
-
-    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-      if (timedOut) {
-        settle(timeoutResult("deadline exceeded"));
-        return;
-      }
-      if (code !== 0) {
-        const reason = signal !== null && code === null ? `killed by ${signal}` : `exit ${code ?? -1}`;
-        settle(
-          Effect.fail(
-            benchmarkFailure(
-              options.command,
-              `exit code ${code ?? -1}`,
-              `Benchmark command "${options.command}" failed (${reason}): ` +
-                `${(stdout + stderr).trim().slice(0, 2000)}`
-            )
+            "deadline exceeded",
+            `Benchmark command "${options.command}" timed out after ${options.timeoutMs}ms ` +
+              `(exit ${TIMEOUT_EXIT_CODE}). The command was killed with SIGKILL along with its whole ` +
+              "process group; raise `metrics[].timeout_ms` in .perfgym.yaml if this benchmark is " +
+              `legitimately slow (hard cap: ${MAX_BENCHMARK_TIMEOUT_MS}ms).`,
+            result.stdout + result.stderr,
+            false,
+            result.backend
           )
         );
-        return;
       }
-      settle(
-        Effect.succeed({
-          stdout,
-          stderr,
-          durationMs: Date.now() - startedAt,
-        })
-      );
-    });
 
-    // If the fiber is interrupted (test harness, pipeline shutdown, ...),
-    // make sure no process group is left behind either.
-    return Effect.sync(() => {
-      clearTimeout(deadline);
-      if (forceSettleTimer !== undefined) {
-        clearTimeout(forceSettleTimer);
+      if (result.code !== 0) {
+        const reason = `exit code ${result.code ?? -1}`;
+        return Effect.fail(
+          benchmarkFailure(
+            options.command,
+            reason,
+            `Benchmark command "${options.command}" failed (${reason}): ` +
+              `${(result.stdout + result.stderr).trim().slice(0, 2000)}`,
+            (result.stdout + result.stderr).trim(),
+            false,
+            result.backend
+          )
+        );
       }
-      killProcessGroup(child.pid);
-    });
-  });
+
+      return Effect.succeed<CapturedOutput>({
+        stdout: result.stdout,
+        stderr: result.stderr,
+        durationMs: result.durationMs,
+        blocked: false,
+        backend: result.backend,
+      });
+    })
+  );
 
 /**
  * The deterministic benchmark seam: optional frozen-harness verification,
@@ -797,6 +718,20 @@ export const runBenchmark = (
     );
   }
 
+  const executor = options.executor ?? resolveCommandExecutor();
+  const cwd = resolvedCwd ?? process.cwd();
+  const nodeModulesPath = resolve(cwd, "node_modules");
+  const readPaths = [tmpdir(), cwd];
+  if (existsSync(nodeModulesPath)) {
+    readPaths.push(nodeModulesPath);
+  }
+  const capabilities: CommandCapabilities = options.capabilities ?? {
+    needsNetwork: false,
+    writePaths: [tmpdir(), cwd],
+    readPaths,
+    needsChildProcess: true,
+  };
+
   const executionOptions = {
     command: options.command,
     cwd: resolvedCwd,
@@ -807,6 +742,8 @@ export const runBenchmark = (
       // runs before user code in every (Node) spawn, warm-up or measured.
       NODE_OPTIONS: withTimerBootstrap(inheritedNodeOptions),
     },
+    executor,
+    capabilities,
   };
 
   return Effect.gen(function* () {
@@ -848,9 +785,31 @@ export const runBenchmark = (
     let rejectedSamples = 0;
     let stampRejections = 0;
     let checksumRejections = 0;
+    let blockedRejections = 0;
     let verifiedChecksumSamples = 0;
     while (collected.length < sampleCount) {
       const captured = yield* execute;
+
+      // Sandbox blocked check: attempt re-collection within the existing sample budget.
+      if (captured.blocked) {
+        rejectedSamples += 1;
+        blockedRejections += 1;
+        if (rejectedSamples > sampleCount) {
+          return yield* Effect.fail(
+            benchmarkFailure(
+              options.command,
+              "sandbox blocked",
+              `Benchmark command "${options.command}" was blocked by sandbox backend (${captured.backend}): ${
+                captured.stderr.trim() || "Operation denied by sandbox"
+              }. Re-collection budget (${sampleCount} within the sample budget) is exhausted.`,
+              captured.stderr.trim(),
+              true,
+              captured.backend
+            )
+          );
+        }
+        continue;
+      }
 
       // Tripwire first: a tampered clock invalidates whatever stdout says.
       if (!areTimerStampsValid(captured.stderr)) {

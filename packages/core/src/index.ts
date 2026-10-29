@@ -37,6 +37,8 @@ export interface InvariantResult {
   output: string;
   durationMs: number;
   retriesUsed?: number;
+  blocked?: boolean;
+  backend?: string;
 }
 
 export interface LintViolation {

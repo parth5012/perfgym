@@ -5,7 +5,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { extname, join } from "node:path";
-import type { LintViolation } from "@perfgym/core";
+import type { LintViolation, CommandExecutor } from "@perfgym/core";
 import type { AstRule } from "./index.js";
 import { parseAndMatch } from "./matcher.js";
 import { totalPenalty, hasDisqualifier } from "./rules.js";
@@ -40,10 +40,10 @@ export class AstLinterEngine {
   private typecheck: TypecheckGate;
   private projectRoot: string | null;
 
-  constructor(rules: AstRule[] = [], projectRoot?: string) {
+  constructor(rules: AstRule[] = [], projectRoot?: string, executor?: CommandExecutor) {
     this.rules = [...rules];
     this.projectRoot = projectRoot ?? null;
-    this.typecheck = new TypecheckGate();
+    this.typecheck = new TypecheckGate(undefined, executor);
     if (this.projectRoot) {
       this.typecheck.initBaseline(this.projectRoot);
     }
@@ -111,7 +111,7 @@ export class AstLinterEngine {
     if (this.projectRoot) {
       const tsconfig = join(this.projectRoot, "tsconfig.json");
       if (existsSync(tsconfig)) {
-        const tier2 = this.typecheck.tier2Run(this.projectRoot);
+        const tier2 = await this.typecheck.tier2Run(this.projectRoot);
         if (!tier2.passed) {
           for (const e of tier2.errors) {
             typeErrors.push(e);

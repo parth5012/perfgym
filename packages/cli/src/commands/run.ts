@@ -29,6 +29,8 @@ import {
   type LlmDriver,
   type TargetFileContent,
   matchesGlob,
+  CommandExecutor,
+  resolveCommandExecutor,
 } from "../../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../../linter/src/index.js";
 import {
@@ -82,6 +84,7 @@ export interface RunLoopOptions {
   minSignificanceDelta?: number;
   plateauThreshold?: number;
   quiet?: boolean;
+  executor?: CommandExecutor;
 }
 
 export interface RunLoopResult {
@@ -311,6 +314,7 @@ export function runOptimizationLoop(
     const resolvedTimeoutMs = options.llmTimeoutMs ?? config.llm?.timeoutMs;
     const maxCostUsd = options.maxCostUsd;
     const maxTokens = options.maxTokens;
+    const executor = options.executor ?? resolveCommandExecutor();
 
     // Instantiate LLM driver if no explicit generator was provided
     let activeLlmDriver: LlmDriver | undefined = options.llmDriver;
@@ -324,6 +328,7 @@ export function runOptimizationLoop(
         baseUrl: config.llm?.baseUrl,
         apiKey: config.llm?.apiKeyEnv ? process.env[config.llm.apiKeyEnv] : undefined,
         pricing: config.llm?.pricing,
+        executor,
       });
     }
 
@@ -400,9 +405,9 @@ export function runOptimizationLoop(
         // — the lock file stays the single authority; this is only a snapshot.
         live.beginRun(runId, targetBranch, serializeLock());
 
-        const linter = new AstLinterEngine(DEFAULT_RULES, sandboxDir);
-        const typechecker = new TypecheckGate(sandboxDir);
-        const pipeline = new EvaluationPipeline(config, linter, typechecker);
+        const linter = new AstLinterEngine(DEFAULT_RULES, sandboxDir, executor);
+        const typechecker = new TypecheckGate(sandboxDir, executor);
+        const pipeline = new EvaluationPipeline(config, linter, typechecker, executor);
 
         // The run's mutable session state — never null (seeded above).
         let state = initialSession;
@@ -419,6 +424,7 @@ export function runOptimizationLoop(
 
         log(chalk.bold.cyan(`\n🚀 Starting PerfGym Autonomous Optimization Loop (${maxIterations} iterations)`));
         log(chalk.dim(`   Sandbox worktree: ${sandboxDir}`));
+        log(chalk.dim(`   Guard backend:    ${executor.backend}`));
         log(chalk.dim(`   Target: ${config.target.name} (${config.target.language}) | Baseline Score: ${bestFitness}\n`));
 
         for (let i = 1; i <= maxIterations; i++) {
@@ -505,6 +511,13 @@ export function runOptimizationLoop(
                 }),
               catch: (error: unknown) => error,
             });
+
+            // Check if LLM call was blocked by sandbox (before budget checks)
+            if (llmResult.blocked) {
+              log(chalk.red(`  Agent CLI driver blocked by sandbox: ${llmResult.error}`));
+              stoppedReason = "blocked";
+              break;
+            }
 
             // Accumulate usage & cost
             if (llmResult.usage) {

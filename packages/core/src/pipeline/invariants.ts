@@ -1,9 +1,12 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Effect } from "effect";
 import { InvariantFailureError } from "../errors.js";
 import type { InvariantResult } from "../index.js";
+import type { CommandCapabilities, CommandExecutor } from "../executor/index.js";
+import { resolveCommandExecutor } from "../executor/resolve.js";
 
 /**
  * ============================================================================
@@ -52,6 +55,8 @@ export interface InvariantGateOptions {
   readonly cwd?: string;
   readonly timeoutMs?: number;
   readonly env?: Readonly<Record<string, string>>;
+  readonly executor?: CommandExecutor;
+  readonly capabilities?: CommandCapabilities;
 }
 
 const TIMEOUT_EXIT_CODE = 124; // GNU timeout convention: killed after the deadline.
@@ -59,41 +64,10 @@ const FORCE_SETTLE_TIMEOUT_MS = 500;
 const TRUNCATION_MARKER = "\n[truncated]";
 
 /**
- * SIGKILL the entire process group the child was spawned into so that
- * worker-pool children (e.g. vitest forks) cannot survive their parent.
- */
-function killProcessGroup(pid: number | undefined): void {
-  if (pid === undefined || pid <= 0) return;
-  if (process.platform === "win32") {
-    // taskkill /T /F reliably kills Windows trees (process-group negative pid is unsupported there).
-    try {
-      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
-    } catch {
-      /* ignore */
-    }
-    return;
-  }
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-    // Group kill failed (e.g. Windows without negative pid support, or ESRCH).
-    // Attempt single-pid kill fallback.
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Process already gone (ESRCH) or unsupported — swallow error.
-    }
-  }
-}
-
-/**
  * The non-negotiable correctness barrier of the evaluation pipeline.
  *
- * Exit-code protocol: 0 = pass, nonzero = fail, timeout kill = fail.
+ * Exit-code protocol: 0 = pass, nonzero = fail, timeout kill = fail, sandbox blocked = fail.
  * Raw stdout/stderr are captured verbatim and surfaced on failure.
- *
- * The process spawn, capture, timeout and process-group kill are all hidden
- * behind this single small surface.
  */
 export const runInvariantGate = (
   options: InvariantGateOptions
@@ -123,166 +97,95 @@ export const runInvariantGate = (
     }
   }
 
-  return Effect.callback<InvariantResult, InvariantFailureError>((resume) => {
-    const startedAt = Date.now();
-    let stdout = "";
-    let stderr = "";
-    let stdoutBytes = 0;
-    let stderrBytes = 0;
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
-    let settled = false;
-    let timedOut = false;
-    let forceSettleTimer: NodeJS.Timeout | undefined;
+  const executor = options.executor ?? resolveCommandExecutor();
+  const cwd = resolvedCwd ?? process.cwd();
+  const capabilities: CommandCapabilities = {
+    readPaths: [cwd, tmpdir()],
+    writePaths: [cwd, tmpdir()],
+    needsNetwork: false,
+    needsChildProcess: true,
+    ...options.capabilities,
+  };
 
-    const child = spawn(options.command, {
-      shell: true,
-      detached: true, // /bin/sh -c becomes its own process-group leader.
-      cwd: resolvedCwd,
-      env: { ...process.env, ...options.env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdoutTruncated) return;
-      const remaining = MAX_CAPTURE_BYTES - stdoutBytes;
-      if (chunk.length <= remaining) {
-        stdout += chunk.toString();
-        stdoutBytes += chunk.length;
-      } else {
-        stdout += chunk.subarray(0, remaining).toString() + TRUNCATION_MARKER;
-        stdoutBytes = MAX_CAPTURE_BYTES;
-        stdoutTruncated = true;
-      }
-    });
-
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderrTruncated) return;
-      const remaining = MAX_CAPTURE_BYTES - stderrBytes;
-      if (chunk.length <= remaining) {
-        stderr += chunk.toString();
-        stderrBytes += chunk.length;
-      } else {
-        stderr += chunk.subarray(0, remaining).toString() + TRUNCATION_MARKER;
-        stderrBytes = MAX_CAPTURE_BYTES;
-        stderrTruncated = true;
-      }
-    });
-
-    const settle = (result: Effect.Effect<InvariantResult, InvariantFailureError>): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      if (forceSettleTimer !== undefined) {
-        clearTimeout(forceSettleTimer);
-      }
-      resume(result);
-    };
-
-    const deadline = setTimeout(() => {
-      timedOut = true;
-      killProcessGroup(child.pid);
-
-      child.stdout?.destroy();
-      child.stderr?.destroy();
-
-      forceSettleTimer = setTimeout(() => {
-        settle(
-          Effect.fail(
-            new InvariantFailureError({
-              command: options.command,
-              exitCode: TIMEOUT_EXIT_CODE,
-              stdout,
-              stderr,
-              retriesUsed: 0,
-              message:
-                `Invariant gate timed out after ${timeoutMs}ms (exit ${TIMEOUT_EXIT_CODE}). ` +
-                `Process did not exit after SIGKILL; force-settled after ${FORCE_SETTLE_TIMEOUT_MS}ms fallback. ` +
-                `The command "${options.command}" was killed with SIGKILL along with its whole process group. ` +
-                "A hung test suite is a correctness bug — fix the hang, or raise `" +
-                "invariants.timeout_ms` in .perfgym.yaml (hard cap: 30000ms).",
-            })
-          )
-        );
-      }, FORCE_SETTLE_TIMEOUT_MS);
-      forceSettleTimer.unref();
-    }, timeoutMs);
-
-    child.on("error", (cause: Error) => {
-      if (timedOut) return;
-      settle(
-        Effect.fail(
+  return Effect.tryPromise({
+    try: () =>
+      executor.exec(options.command, {
+        cwd: resolvedCwd,
+        timeoutMs,
+        env: options.env,
+        capabilities,
+      }),
+    catch: (cause: unknown) => {
+      const err = cause instanceof Error ? cause : new Error(String(cause));
+      return new InvariantFailureError({
+        command: options.command,
+        exitCode: -1,
+        stdout: "",
+        stderr: err.message,
+        retriesUsed: 0,
+        message: `Invariant gate could not spawn the command "${options.command}": ${err.message}`,
+      });
+    },
+  }).pipe(
+    Effect.flatMap((result) => {
+      if (result.blocked) {
+        return Effect.fail(
           new InvariantFailureError({
             command: options.command,
-            exitCode: -1,
-            stdout,
-            stderr,
+            exitCode: result.code ?? -1,
+            stdout: result.stdout,
+            stderr: result.stderr,
             retriesUsed: 0,
-            message: `Invariant gate could not spawn the command "${options.command}": ${cause.message}`,
-          })
-        )
-      );
-    });
-
-    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-      const rawOutput = (stdout + stderr).trim();
-      const durationMs = Date.now() - startedAt;
-
-      if (timedOut) {
-        settle(
-          Effect.fail(
-            new InvariantFailureError({
-              command: options.command,
-              exitCode: TIMEOUT_EXIT_CODE,
-              stdout,
-              stderr,
-              retriesUsed: 0,
-              message:
-                `Invariant gate timed out after ${timeoutMs}ms (exit ${TIMEOUT_EXIT_CODE}). ` +
-                `The command "${options.command}" was killed with SIGKILL along with its whole process group. ` +
-                "A hung test suite is a correctness bug — fix the hang, or raise `" +
-                "invariants.timeout_ms` in .perfgym.yaml (hard cap: 30000ms).",
-            })
-          )
-        );
-        return;
-      }
-
-      if (code === 0) {
-        settle(
-          Effect.succeed({
-            passed: true,
-            output: rawOutput,
-            durationMs,
-            retriesUsed: 0,
+            blocked: true,
+            backend: result.backend,
+            deniedCapability: result.stderr,
+            message: `Invariant gate blocked by sandbox backend '${result.backend}': ${result.stderr}`,
           })
         );
-        return;
       }
 
-      const reason = signal !== null && code === null ? `killed by ${signal}` : `exit ${code ?? -1}`;
-      settle(
-        Effect.fail(
+      if (result.timedOut) {
+        return Effect.fail(
           new InvariantFailureError({
             command: options.command,
-            exitCode: code ?? -1,
-            stdout,
-            stderr,
+            exitCode: TIMEOUT_EXIT_CODE,
+            stdout: result.stdout,
+            stderr: result.stderr,
             retriesUsed: 0,
-            message: `Invariant gate failed (${reason}): ${rawOutput.slice(0, 2000)}`,
+            backend: result.backend,
+            message:
+              `Invariant gate timed out after ${timeoutMs}ms (exit ${TIMEOUT_EXIT_CODE}). ` +
+              `The command "${options.command}" was killed with SIGKILL along with its whole process group. ` +
+              "A hung test suite is a correctness bug — fix the hang, or raise `" +
+              "invariants.timeout_ms` in .perfgym.yaml (hard cap: 30000ms).",
           })
-        )
-      );
-    });
-
-    // If the fiber is interrupted (test harness, pipeline shutdown, ...),
-    // make sure no process group is left behind either.
-    return Effect.sync(() => {
-      clearTimeout(deadline);
-      if (forceSettleTimer !== undefined) {
-        clearTimeout(forceSettleTimer);
+        );
       }
-      killProcessGroup(child.pid);
-    });
-  });
+
+      const rawOutput = (result.stdout + result.stderr).trim();
+      if (result.code === 0) {
+        return Effect.succeed({
+          passed: true,
+          output: rawOutput,
+          durationMs: result.durationMs,
+          retriesUsed: 0,
+          blocked: false,
+          backend: result.backend,
+        });
+      }
+
+      const reason = `exit ${result.code ?? -1}`;
+      return Effect.fail(
+        new InvariantFailureError({
+          command: options.command,
+          exitCode: result.code ?? -1,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          retriesUsed: 0,
+          backend: result.backend,
+          message: `Invariant gate failed (${reason}): ${rawOutput.slice(0, 2000)}`,
+        })
+      );
+    })
+  );
 };
