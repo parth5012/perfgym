@@ -405,3 +405,23 @@ Status: Done. Red→green TDD for the 4 testable CRs; 4 red tests confirmed fail
   - Test suite: `packages/core/src/executor/executor-routing.test.ts` (9 tests verifying AC1–AC5 end-to-end).
 - Verification: `pnpm tsc --noEmit` clean (0 errors); full test suite `pnpm vitest run` green (49 test files, 671 tests passed).
 - Post-code-change pipeline: code-simplifier (applied to benchmark/invariants/typecheck), code-review (parallel subagents on standards and spec axes; findings addressed), ocr-review (skipped: purely backend/CLI/OS sandbox changes, no UI), repo-quality-orchestrator (lint clean, full test suite pass), retro (recorded here).
+
+## MAP #73 wayfinder-ship — Tickets #59, #60, #61 — 2026-11-01 — Done
+- Map #73: Enforce ADR-004 2GB Worktree Disk Budget & LRU Eviction (#59, #60, #61)
+- Ticket #59 (79a1499): Implement DiskBudgetManager Accounting & Usage Manifest
+  - Recursive size accounting over `.perfgym/worktrees` ignoring metadata files and symlinks.
+  - Durable `.usage.json` manifest recording `lastUsedAt` and `sizeBytes` with atomic write (temp write + rename with cross-platform fallback).
+  - Graceful degradation on missing or corrupt manifest (falls back to directory mtime, never throws).
+  - Test suite: `packages/core/src/gc/disk-budget.test.ts`.
+- Ticket #60 (bae5e33): Implement LRU Worktree Eviction & Pre-Flight Budget Enforcement
+  - `evictLruToFit()` whole-worktree LRU eviction via `git worktree remove` and `git worktree prune`.
+  - Active worktree and in-progress runs protected from eviction.
+  - Fail-fast enforcement with `WorktreeDiskBudgetExceededError` naming current usage, cap, and actionable remedy.
+  - Optional branch pruning for unmerged branches via `gc.prune_branches` (default false).
+- Ticket #61 (ef83a73): Wire Disk Budget into Worktree Creation, Config & Run-End Reclamation
+  - Config: `sandbox.disk_budget_mb` (default 2048 MB), `gc.enabled` (default true), and `gc.prune_branches` (default false) in `packages/core/src/index.ts` and `packages/cli/src/engine.ts`.
+  - Pre-flight budget enforcement in `GitWorktreeDriver.initialize()`.
+  - Run-end reclamation pass in `packages/cli/src/commands/run.ts` (`runOptimizationLoop`) with usage reporting and GC disabled handling.
+  - Test suite: `packages/cli/tests/disk-budget-wiring.test.ts`.
+- Full verification: `npx tsc --noEmit` clean (0 errors); full test suite `npx vitest run` green (51 test files, 690 tests passed).
+
