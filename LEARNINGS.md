@@ -184,3 +184,8 @@
 ### 42. OCR `--exclude` Negation After `**` Does Not Re-include
 * **Problem**: `ocr review --exclude '**,!packages/.../fitness.ts'` produced "Review skipped: no items were selected" — the gitignore-style `!` negation does not re-include paths excluded by an earlier `**` in the same list (v1.13.3).
 * **Solution**: build explicit exclude lists instead: pass every file EXCEPT the group's targets (`--exclude "a.ts,b.ts,..."`). Verify selection with `--preview` before spending LLM tokens. `!**` alone resets to everything (including default-path test files), which is rarely what you want.
+
+### 43. Worktree Root Metadata Files and Pre-Flight Stale Cleanup
+* **Problem**: Storing `.usage.json` inside `.perfgym/worktrees/` causes naive `fs.readdirSync(worktreesDir)` assertions in lifecycle tests to count the metadata file as a worktree directory. Furthermore, if a stale worktree for the current `runId` exists from an aborted run or crash, shielding `runId` from eviction before cleaning up the stale directory causes `totalSizeBytes` to count the stale directory, prematurely triggering `WorktreeDiskBudgetExceededError`.
+* **Solution**: Always filter entries in `worktreesDir` (`!entry.startsWith(".")` and `isDirectory()`). Clean up any stale worktree directory for the current `runId` *before* loading `DiskBudgetManager` and evaluating pre-flight LRU eviction.
+
