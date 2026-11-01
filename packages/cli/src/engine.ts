@@ -16,6 +16,7 @@ import {
   type WorkspaceContext,
   type BenchmarkDistribution,
   type NegativeMemoryEntry,
+  type CertificationResult,
   matchesGlob,
   SessionFileStore,
   stripAnsiDeep,
@@ -54,6 +55,14 @@ export interface PerfGymState {
    * "no live session".
    */
   session?: SerializedSessionState | null;
+  /**
+   * ADR-020 (map #74): the most recent E2E certification pass of the last
+   * run — the pre-loop pass, or the pre-promotion pass when it ran. Absent
+   * when no `certification` block is configured. The result can only BLOCK
+   * (never a fitness term), so reports render it from this record without
+   * re-running anything.
+   */
+  certification?: CertificationResult;
 }
 
 export type SupportedLanguage = "typescript" | "javascript" | "python" | "go" | "kotlin" | "rust";

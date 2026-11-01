@@ -85,6 +85,31 @@ describe("runCertification", () => {
     expect(result.blocked).toBe(false);
   });
 
+  it("strips ANSI escapes from the captured output before it can reach the durable state (learnings #11/#34)", async () => {
+    const executor = stubExecutor("colourised", () => ({
+      code: 1,
+      stdout: "\u001b[31m✖ 3 e2e specs failed\u001b[0m",
+      stderr: "\u001b[2m(at blob.spec.ts:12)\u001b[0m",
+      durationMs: 40,
+      timedOut: false,
+      blocked: false,
+      backend: "colourised",
+    }));
+
+    const result = await Effect.runPromise(
+      runCertification({
+        command: "e2e-runner --colour",
+        cwd: tmpdir(),
+        timeoutMs: 5_000,
+        executor,
+      }),
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.output).toBe("✖ 3 e2e specs failed(at blob.spec.ts:12)");
+    expect(result.output).not.toContain("\u001b");
+  });
+
   it("reports a timeout as failed with timedOut=true and no exit code", async () => {
     const startedAt = Date.now();
     const result = await runPass({

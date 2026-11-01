@@ -33,6 +33,11 @@ import {
   resolveCommandExecutor,
   DiskBudgetManager,
   formatBytes,
+  runCertification,
+  resolveCertificationTimeoutMs,
+  CertificationError,
+  ERR_CERTIFICATION_FAILURE,
+  type CertificationResult,
 } from "../../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../../linter/src/index.js";
 import {
@@ -98,6 +103,12 @@ export interface RunLoopResult {
   evaluations: StepEvaluation[];
   totalCostUsd?: number | null;
   totalTokens?: number;
+  /**
+   * ADR-020 (map #74): the most recent certification pass of this run — the
+   * pre-loop pass, or the pre-promotion pass when it ran. Absent when no
+   * `certification` block is configured.
+   */
+  certification?: CertificationResult;
 }
 
 // ============================================================================
@@ -449,6 +460,49 @@ export function runOptimizationLoop(
         }
         log(chalk.dim(`   Target: ${config.target.name} (${config.target.language}) | Baseline Score: ${bestFitness}\n`));
 
+        // ---- ADR-020 (map #74): the pre-flight certification gate ----------
+        // The E2E suite certifies the state AS-IS before the loop mutates
+        // anything. It is its own run-level gate — never a per-step check and
+        // never a fitness term (Score stays Δ% − Σpenalties, ADR-010) — so a
+        // failure can only BLOCK, and with `required` (the default) it aborts
+        // the whole run before iteration 1 with a distinct, non-invariant
+        // error.
+        const certBlock = config.certification;
+        let lastCertification: CertificationResult | undefined;
+
+        if (certBlock !== undefined) {
+          log(chalk.bold.cyan("\n🛡  Pre-flight certification: running the E2E suite before the loop..."));
+          const preLoop = yield* runCertification({
+            command: certBlock.command,
+            cwd: sandboxDir,
+            timeoutMs: resolveCertificationTimeoutMs(certBlock.timeoutMs),
+            executor,
+          });
+          lastCertification = preLoop;
+          state.certification = preLoop;
+          saveSession(cwd, legacyStateCopy(state));
+          if (preLoop.passed) {
+            log(chalk.green(`  ✔ Certification passed (${preLoop.durationMs}ms).`));
+          } else if (certBlock.required !== false) {
+            const why = preLoop.blocked
+              ? "the sandbox denied the certification command"
+              : preLoop.timedOut
+                ? `the pass timed out after ${resolveCertificationTimeoutMs(certBlock.timeoutMs)}ms`
+                : `exit code ${preLoop.exitCode}`;
+            log(chalk.red(`  ✖ Pre-flight certification failed (${why}) — aborting the run before iteration 1.`));
+            return yield* Effect.fail(
+              new CertificationError({
+                code: ERR_CERTIFICATION_FAILURE,
+                command: certBlock.command,
+                phase: "pre-loop",
+                message: `Pre-flight certification failed: ${why} — the run aborts before any mutation`,
+              }),
+            );
+          } else {
+            log(chalk.yellow("  ⚠ Pre-flight certification failed — continuing ('required: false' advisory)."));
+          }
+        }
+
         for (let i = 1; i <= maxIterations; i++) {
           log(chalk.bold.blue(`▶ Iteration ${i}/${maxIterations}:`));
 
@@ -719,20 +773,55 @@ export function runOptimizationLoop(
 
         let promoted = false;
         if (acceptedCount > 0) {
-          log(chalk.green(`\n✔ Promoting winning worktree commits to '${targetBranch}'...`));
-          yield* coordinator.promoteAndCleanup(targetBranch);
-          promoted = true;
-
-          // Update state — through the detached legacy snapshot (the `session`
-          // blob is owned by the live-session path and must not regress).
-          state.bestFitnessScore = bestFitness;
-          if (live.state.bestStep !== null) {
-            state.bestStep = live.state.bestStep;
+          // ---- ADR-020 (map #74): the pre-promotion certification gate -----
+          // Certify the WINNING state before it lands on the target branch. A
+          // required failure blocks promotion but keeps the winning commit —
+          // the accepted steps stay on the eval branch, so nothing is lost.
+          let promotionBlocked = false;
+          if (certBlock !== undefined && certBlock.beforePromotion !== false) {
+            log(chalk.bold.cyan("\n🛡  Pre-promotion certification: certifying the winning state..."));
+            const gate = yield* runCertification({
+              command: certBlock.command,
+              cwd: sandboxDir,
+              timeoutMs: resolveCertificationTimeoutMs(certBlock.timeoutMs),
+              executor,
+            });
+            lastCertification = gate;
+            state.certification = gate;
+            saveSession(cwd, legacyStateCopy(state));
+            if (gate.passed) {
+              log(chalk.green(`  ✔ Certification passed (${gate.durationMs}ms).`));
+            } else if (certBlock.required !== false) {
+              promotionBlocked = true;
+            } else {
+              log(chalk.yellow("  ⚠ Pre-promotion certification failed — promoting anyway ('required: false' advisory)."));
+            }
           }
-          state.acceptedStepCount += acceptedCount;
-          state.totalStepCount += evaluations.length;
-          state.updatedAt = Date.now();
-          saveSession(cwd, legacyStateCopy(state));
+
+          if (promotionBlocked) {
+            stoppedReason = "certification-failed";
+            log(chalk.red("\n✖ Promotion blocked by certification — the winning commit is preserved on the eval branch."));
+            // Release here (as in the no-winner branch) so the final lock
+            // snapshot already reflects the released lock; teardown removes
+            // the worktree but keeps the `perfgym/eval-<runId>` branch ref.
+            yield* asEffect(coordinator.release());
+            yield* asEffect(worktreeDriver.teardown());
+          } else {
+            log(chalk.green(`\n✔ Promoting winning worktree commits to '${targetBranch}'...`));
+            yield* coordinator.promoteAndCleanup(targetBranch);
+            promoted = true;
+
+            // Update state — through the detached legacy snapshot (the `session`
+            // blob is owned by the live-session path and must not regress).
+            state.bestFitnessScore = bestFitness;
+            if (live.state.bestStep !== null) {
+              state.bestStep = live.state.bestStep;
+            }
+            state.acceptedStepCount += acceptedCount;
+            state.totalStepCount += evaluations.length;
+            state.updatedAt = Date.now();
+            saveSession(cwd, legacyStateCopy(state));
+          }
         } else {
           log(chalk.yellow("\n⚠ No mutations improved fitness. Worktree torn down cleanly without changes."));
           // Release here (not only in the finalizer) so the "completed" lock
@@ -801,6 +890,7 @@ export function runOptimizationLoop(
           evaluations,
           totalCostUsd: cumulativeCostUsd,
           totalTokens: cumulativeTokens,
+          ...(lastCertification !== undefined ? { certification: lastCertification } : {}),
         };
       })
     );
