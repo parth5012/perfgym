@@ -466,6 +466,7 @@ export class McpServerCoordinator {
         targetName: this.config?.target?.name,
         lastUpdatedAt: null,
         liveSession: null,
+        certification: null,
       };
     }
 
@@ -542,6 +543,8 @@ export class McpServerCoordinator {
       targetName: state.targetName,
       lastUpdatedAt: state.lastUpdatedAt ?? null,
       liveSession,
+      // ADR-020 (map #74): the most recent certification pass of the last run.
+      certification: state.certification ?? null,
     };
   }
 

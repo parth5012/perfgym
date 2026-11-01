@@ -6,7 +6,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { BenchmarkDistribution, LintViolation, MetricResult, MutationFile, NegativeMemoryEntry, LlmUsage, StepEvaluation, SessionLockState, SessionStatus } from "../../../core/src/index.js";
+import type { BenchmarkDistribution, CertificationResult, LintViolation, MetricResult, MutationFile, NegativeMemoryEntry, LlmUsage, StepEvaluation, SessionLockState, SessionStatus } from "../../../core/src/index.js";
 import type { AstRule } from "../../../linter/src/index.js";
 import type { PerfGymState } from "../engine.js";
 
@@ -63,6 +63,11 @@ export interface StatusReport {
    * SessionStore — `null` when the state file carries no live session.
    */
   readonly liveSession: LiveSessionReport | null;
+  /**
+   * ADR-020 (map #74): the most recent E2E certification pass recorded on the
+   * session state — `null` when no certification ran (or none is configured).
+   */
+  readonly certification: CertificationResult | null;
 }
 
 /**

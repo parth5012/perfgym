@@ -267,6 +267,67 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
     expect(fs.existsSync(path.join(dir, STATE_FILE))).toBe(false);
   });
 
+  it("status reports the latest E2E certification result under its own label (map #74, ADR-020)", async () => {
+    const dir = track(setupGymDir());
+    saveSession(dir, {
+      version: "1.0",
+      initializedAt: 1,
+      updatedAt: 2,
+      targetName: "commands-test",
+      baselineMetrics: { instructions: 100 },
+      invariantsPassed: true,
+      bestFitnessScore: 0,
+      acceptedStepCount: 0,
+      totalStepCount: 0,
+      certification: {
+        command: "node cert-probe.js",
+        passed: false,
+        exitCode: 1,
+        durationMs: 1234,
+        output: "\u001b[31m✖ e2e broke\u001b[0m",
+        timedOut: false,
+        blocked: false,
+      },
+    } as unknown as Parameters<typeof saveSession>[1]);
+
+    const json = JSON.parse((await runStatusCommand({ cwd: dir, format: "json" })).text) as {
+      certification: Record<string, unknown> | null;
+    };
+    expect(json.certification).not.toBeNull();
+    expect(json.certification?.command).toBe("node cert-probe.js");
+    expect(json.certification?.passed).toBe(false);
+    expect(json.certification?.exitCode).toBe(1);
+    // The recorded output reaches the consumer ANSI-free.
+    expect(json.certification?.output).toBe("✖ e2e broke");
+
+    const md = (await runStatusCommand({ cwd: dir, format: "markdown" })).text;
+    expect(md).toContain("#### E2E Certification (pre-flight pass)");
+    expect(md).toContain("`node cert-probe.js`");
+    expect(md).toContain("✖ e2e broke");
+    // A certification failure is never rendered as an invariant failure (AC4).
+    expect(md).not.toContain("Invariant");
+  });
+
+  it("status reports certification as null when no pass has run (map #74)", async () => {
+    const dir = track(setupGymDir());
+    saveSession(dir, {
+      version: "1.0",
+      initializedAt: 1,
+      updatedAt: 2,
+      targetName: "commands-test",
+      baselineMetrics: { instructions: 100 },
+      invariantsPassed: true,
+      bestFitnessScore: 0,
+      acceptedStepCount: 0,
+      totalStepCount: 0,
+    } as unknown as Parameters<typeof saveSession>[1]);
+
+    const json = JSON.parse((await runStatusCommand({ cwd: dir, format: "json" })).text) as {
+      certification: unknown;
+    };
+    expect(json.certification).toBeNull();
+  });
+
   it("rollback restores the sandbox worktree to the remaining accepted commit, keeps the history log, and marks the step ROLLED_BACK", async () => {
     const dir = track(setupGymDir());
 

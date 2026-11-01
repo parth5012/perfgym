@@ -511,3 +511,46 @@ describe("JsonFormatter — suspect flag & DCE warning (ticket #54)", () => {
     expect(clean.dceSusceptible).toBe(false);
   });
 });
+
+describe("JsonFormatter.formatCertification (map #74, ADR-020)", () => {
+  it("emits a structured certification object, correctly typed, with the LLD §6.1 step schema untouched", () => {
+    const parsed = parse(
+      formatter.formatCertification({
+        command: "node e2e/run.js",
+        passed: false,
+        exitCode: 1,
+        durationMs: 9_800,
+        output: "\u001b[31m✖ 3 specs failed\u001b[0m",
+        timedOut: false,
+        blocked: false,
+      }),
+    );
+
+    expect(parsed.status).toBe("CERTIFICATION");
+    const cert = parsed.certification as Record<string, unknown>;
+    expect(cert.command).toBe("node e2e/run.js");
+    expect(cert.passed).toBe(false);
+    expect(cert.exitCode).toBe(1);
+    expect(typeof cert.durationMs).toBe("number");
+    expect(cert.output).toBe("✖ 3 specs failed");
+    expect(cert.timedOut).toBe(false);
+    expect(cert.blocked).toBe(false);
+  });
+
+  it("reports a null exit code for a timed-out pass and never an invariant label", () => {
+    const doc = formatter.formatCertification({
+      command: "node e2e/run.js",
+      passed: false,
+      exitCode: null,
+      durationMs: 120_000,
+      output: "",
+      timedOut: true,
+      blocked: false,
+    });
+    const cert = (JSON.parse(doc) as { certification: Record<string, unknown> }).certification;
+
+    expect(cert.exitCode).toBeNull();
+    expect(cert.timedOut).toBe(true);
+    expect(doc).not.toContain("Invariant");
+  });
+});

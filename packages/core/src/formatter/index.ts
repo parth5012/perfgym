@@ -17,6 +17,7 @@
 import { Data } from "effect";
 import type {
   BenchmarkDistribution,
+  CertificationResult,
   InvariantResult,
   LintViolation,
   PerfGymConfig,
@@ -58,6 +59,12 @@ export interface OutputFormatter {
 
   /** Invariant-gate outcome. */
   formatTest(result: InvariantResult): string;
+
+  /**
+   * The run-level E2E certification pass (ADR-020, map #74) — its own gate
+   * with its own label, never rendered as an invariant result.
+   */
+  formatCertification(result: CertificationResult): string;
 
   /** AST linter violations (empty array = clean). */
   formatLint(violations: readonly LintViolation[], scanErrors?: readonly string[]): string;
@@ -108,7 +115,8 @@ export function createFormatter(
 }
 
 export { JsonFormatter } from "./json.js";
-export type { StepEvaluationJson } from "./json.js";
+export type { CertificationJson, StepEvaluationJson } from "./json.js";
+export { toCertificationJson } from "./json.js";
 export { MarkdownFormatter } from "./markdown.js";
 export type { MarkdownFormatterOptions } from "./markdown.js";
 export {
