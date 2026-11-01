@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Cause, Effect, Exit } from "effect";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -224,5 +224,50 @@ ${certBlock}`,
     // The failed passes are still recorded honestly.
     const certification = readState(testDir).certification as { passed: boolean } | undefined;
     expect(certification?.passed).toBe(false);
+  });
+
+  it("AC6: the run summary prints the certification outcome on its own labelled line", async () => {
+    setupRepo(`certification:\n  command: "node -e 'process.exit(1)'"\n  required: false\n`);
+
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(" "));
+    });
+
+    try {
+      await Effect.runPromise(
+        runOptimizationLoop({ cwd: testDir, maxIterations: 1, generator: improvingMutation, samples: 1 }),
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const certLine = logs.find((line) => line.includes("E2E Certification"));
+    expect(certLine).toBeDefined();
+    expect(certLine).toContain("FAILED");
+    // The summary never folds certification into an invariant (AC4).
+    expect(certLine).not.toContain("Invariant");
+  });
+
+  it("AC7: without a certification block the summary says so and no pass runs", async () => {
+    setupRepo("");
+
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(" "));
+    });
+
+    try {
+      await Effect.runPromise(
+        runOptimizationLoop({ cwd: testDir, maxIterations: 1, generator: improvingMutation, samples: 1 }),
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    const certLine = logs.find((line) => line.includes("E2E Certification"));
+    expect(certLine).toBeDefined();
+    expect(certLine).toContain("not configured");
+    expect(readCounter()).toBe(0);
   });
 });

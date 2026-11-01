@@ -878,6 +878,7 @@ export function runOptimizationLoop(
             bestFitnessScore: bestFitness,
             stoppedReason,
             promoted,
+            ...(lastCertification !== undefined ? { certification: lastCertification } : {}),
           });
         }
 
@@ -943,6 +944,7 @@ function printSummaryTable(summary: {
   bestFitnessScore: number;
   stoppedReason: string;
   promoted: boolean;
+  certification?: CertificationResult;
 }): void {
   console.log(chalk.bold.cyan("\n================================================================================"));
   console.log(chalk.bold.cyan("                     PERFGYM OPTIMIZATION RUN SUMMARY                           "));
@@ -952,5 +954,18 @@ function printSummaryTable(summary: {
   console.log(`  Peak Fitness Improvement:    ${chalk.green.bold(`+${summary.bestFitnessScore.toFixed(2)}`)}`);
   console.log(`  Status / Termination Reason: ${chalk.yellow(summary.stoppedReason)}`);
   console.log(`  Promoted to Target Branch:   ${summary.promoted ? chalk.green("YES") : chalk.gray("NO")}`);
+  // ADR-020 (map #74): the E2E certification outcome is its own summary line —
+  // a separate gate, never blended into the invariant/fitness story.
+  const certification = summary.certification;
+  if (certification === undefined) {
+    console.log(`  E2E Certification:           ${chalk.gray("not configured")}`);
+  } else {
+    const verdict = certification.passed
+      ? chalk.green(`PASSED (${certification.durationMs}ms)`)
+      : certification.blocked
+        ? chalk.red("BLOCKED (sandbox denied the command)")
+        : chalk.red("FAILED");
+    console.log(`  E2E Certification:           ${verdict}`);
+  }
   console.log(chalk.bold.cyan("================================================================================\n"));
 }

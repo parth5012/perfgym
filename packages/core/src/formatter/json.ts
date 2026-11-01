@@ -10,6 +10,7 @@
 
 import type {
   BenchmarkDistribution,
+  CertificationResult,
   InvariantResult,
   LintViolation,
   MetricGoal,
@@ -140,6 +141,32 @@ export const toStepEvaluationJson = (
   };
 };
 
+/**
+ * The run-level E2E certification pass (ADR-020, map #74) as a structured
+ * document. Deliberately NOT folded into a step evaluation (the pass is never
+ * per-step) and never rendered under an invariant label — it is its own gate.
+ */
+export interface CertificationJson {
+  command: string;
+  passed: boolean;
+  exitCode: number | null;
+  durationMs: number;
+  output: string;
+  timedOut: boolean;
+  blocked: boolean;
+}
+
+export const toCertificationJson = (result: CertificationResult): CertificationJson => ({
+  command: result.command,
+  passed: result.passed,
+  exitCode: result.exitCode,
+  durationMs: result.durationMs,
+  // E2E runners colourise by default; consumers must never receive escapes.
+  output: stripAnsi(result.output),
+  timedOut: result.timedOut,
+  blocked: result.blocked,
+});
+
 export class JsonFormatter {
   readonly format = "json" as const;
 
@@ -193,6 +220,18 @@ export class JsonFormatter {
         retriesUsed: result.retriesUsed ?? null,
         // Test-runner output is often colourized; consumers must never see ANSI.
         output: stripAnsi(result.output),
+      },
+      null,
+      2,
+    );
+  }
+
+  /** The run-level E2E certification pass — its own gate, its own label. */
+  formatCertification(result: CertificationResult): string {
+    return JSON.stringify(
+      {
+        status: "CERTIFICATION",
+        certification: toCertificationJson(result),
       },
       null,
       2,

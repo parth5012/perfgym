@@ -10,6 +10,7 @@
 
 import type {
   BenchmarkDistribution,
+  CertificationResult,
   InvariantResult,
   LintViolation,
   MetricGoal,
@@ -321,6 +322,36 @@ export class MarkdownFormatter {
       "```text",
       output.length === 0 ? "(no output)" : output,
       "```",
+    ].join("\n");
+  }
+
+  /**
+   * The run-level E2E certification pass (ADR-020, map #74). A first-class
+   * section with its OWN label — never "Invariant Tests" — because
+   * certification is a separate gate that can only block, and a human must be
+   * able to tell the two apart at a glance. The captured output is rendered
+   * only when the pass failed (a passing suite's transcript is noise).
+   */
+  formatCertification(result: CertificationResult): string {
+    const output = stripAnsi(result.output).trim();
+    const verdict = result.passed
+      ? "✅ Passed"
+      : result.blocked
+        ? "❌ Blocked — the sandbox denied the certification command"
+        : result.timedOut
+          ? "❌ Failed — the pass timed out"
+          : "❌ Failed";
+
+    return [
+      `### 🛡 E2E Certification ${result.passed ? "Passed" : "Failed"} (${result.durationMs}ms)`,
+      "",
+      `- **Command:** \`${result.command}\``,
+      `- **Verdict:** ${verdict}`,
+      `- **Exit code:** ${result.exitCode === null ? "—" : result.exitCode}`,
+      `- **Duration:** ${result.durationMs}ms`,
+      ...(result.passed
+        ? []
+        : ["", "```text", output.length === 0 ? "(no output)" : output, "```"]),
     ].join("\n");
   }
 

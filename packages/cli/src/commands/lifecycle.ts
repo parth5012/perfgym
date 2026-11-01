@@ -20,8 +20,10 @@ import * as path from "node:path";
 import {
   createFormatter,
   toDistributionJson,
+  toCertificationJson,
   createStepHistoryTable,
   renderStepTable,
+  stripAnsi,
   type OutputFormat,
 } from "../../../core/src/index.js";
 import { GitWorktreeDriver } from "../../../core/src/sandbox/git-worktree-driver.js";
@@ -150,6 +152,9 @@ const statusJson = (report: StatusReport): Record<string, unknown> => ({
     step: entry.step,
     timestamp: entry.timestamp,
   })),
+  // ADR-020 (map #74): the most recent E2E certification pass of the last run
+  // — `null` when none ran. Its own object, never folded into an invariant.
+  certification: report.certification ? toCertificationJson(report.certification) : null,
   llmUsage: report.llmUsage ?? null,
   // #48: the serialized live-session store view (the run in progress).
   liveSession: report.liveSession
@@ -240,6 +245,32 @@ const renderStatusMarkdown = (report: StatusReport): string => {
     lines.push(
       `- **LLM usage:** ${report.llmUsage.promptTokens} prompt + ${report.llmUsage.completionTokens} completion = ${report.llmUsage.totalTokens} tokens`,
     );
+  }
+
+  // ADR-020 (map #74): the certification outcome is a first-class status line
+  // with its OWN label — never rendered as an invariant result.
+  const certification = report.certification;
+  if (certification !== undefined && certification !== null) {
+    const verdict = certification.passed
+      ? "✅ Passed"
+      : certification.blocked
+        ? "❌ Blocked — the sandbox denied the command"
+        : certification.timedOut
+          ? "❌ Failed — the pass timed out"
+          : "❌ Failed";
+    lines.push(
+      "",
+      "#### E2E Certification (pre-flight pass)",
+      "",
+      `- **Verdict:** ${verdict} — exit code ${
+        certification.exitCode === null ? "—" : certification.exitCode
+      } (${certification.durationMs}ms)`,
+      `- **Command:** \`${certification.command}\``,
+    );
+    if (!certification.passed) {
+      const output = stripAnsi(certification.output).trim();
+      lines.push("", "```text", output.length === 0 ? "(no output)" : output, "```");
+    }
   }
 
   const metricNames = Object.keys(report.baselineMetrics);

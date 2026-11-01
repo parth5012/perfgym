@@ -420,3 +420,52 @@ describe("MarkdownFormatter — suspect flag & DCE warning (ticket #54)", () => 
     expect(formatter.formatStep(acceptedStep)).not.toContain("DCE-susceptible");
   });
 });
+
+describe("MarkdownFormatter.formatCertification (map #74, ADR-020)", () => {
+  const passResult = {
+    command: "node e2e/run.js",
+    passed: true,
+    exitCode: 0,
+    durationMs: 41_200,
+    output: "e2e: 42 specs green",
+    timedOut: false,
+    blocked: false,
+  };
+  const failResult = {
+    command: "node e2e/run.js",
+    passed: false,
+    exitCode: 1,
+    durationMs: 9_800,
+    output: "\u001b[31m✖ checkout flow broken\u001b[0m",
+    timedOut: false,
+    blocked: false,
+  };
+
+  it("renders the command, the verdict and the exit code for a passing pass — with no transcript", () => {
+    const out = formatter.formatCertification(passResult);
+
+    expect(out).toContain("### 🛡 E2E Certification Passed");
+    expect(out).toContain("`node e2e/run.js`");
+    expect(out).toContain("✅ Passed");
+    expect(out).toContain("- **Exit code:** 0");
+    expect(out).toContain("- **Duration:** 41200ms");
+    // A passing suite's transcript is noise — render the verdict, not the log.
+    expect(out).not.toContain("```text");
+  });
+
+  it("renders the captured output only when the pass failed, ANSI-free", () => {
+    const out = formatter.formatCertification(failResult);
+
+    expect(out).toContain("### 🛡 E2E Certification Failed");
+    expect(out).toContain("- **Exit code:** 1");
+    expect(out).toContain("checkout flow broken");
+    expect(out).not.toContain("\u001b");
+  });
+
+  it("never renders a certification result under an invariant label (AC4)", () => {
+    const out = formatter.formatCertification(failResult);
+
+    expect(out).toContain("E2E Certification");
+    expect(out).not.toContain("Invariant");
+  });
+});
