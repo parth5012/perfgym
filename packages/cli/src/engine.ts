@@ -299,8 +299,20 @@ const normaliseCertification = (
   config: Record<string, unknown>,
   configPath: string,
 ): PerfGymConfig["certification"] => {
+  if (config.certification === undefined) return undefined;
   const block = asRecord(config.certification);
-  if (block === null) return undefined;
+  if (block === null) {
+    // A present-but-not-mapping block (`certification:` with empty contents
+    // parses to `null`) must fail loudly: silently returning `undefined`
+    // would leave the raw key on the spread config and crash the run loop
+    // with a TypeError instead of a `ConfigError`.
+    throw new ConfigError({
+      code: ERR_CONFIG,
+      configPath,
+      reason: "invalid",
+      message: `Invalid certification block in ${configPath}: 'certification' must be a mapping when present`,
+    });
+  }
   const command = block.command;
   if (typeof command !== "string" || command.trim() === "") {
     throw new ConfigError({

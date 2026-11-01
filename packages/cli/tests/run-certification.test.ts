@@ -153,6 +153,13 @@ ${certBlock}`,
     expect(res.promoted).toBe(false);
     expect(res.stoppedReason).toBe("certification-failed");
 
+    // The run's accepted steps are recorded even though promotion was blocked
+    // (OCR medium: status must not show stale counters after a blocked run).
+    const stateAfter = readState(testDir);
+    expect(stateAfter.acceptedStepCount).toBe(1);
+    expect(stateAfter.totalStepCount).toBe(1);
+    expect(stateAfter.bestFitnessScore).toBeGreaterThan(0);
+
     // The target branch is untouched.
     const mainHead = execFileSync("git", ["rev-parse", "main"], { cwd: testDir }).toString().trim();
     expect(mainHead).toBe(headBefore);
