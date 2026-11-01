@@ -127,39 +127,40 @@ export const runCertification = (
   options: CertificationOptions
 ): Effect.Effect<CertificationResult, never> => {
   const timeoutMs = resolveCertificationTimeoutMs(options.timeoutMs);
+  const executor = options.executor ?? resolveCommandExecutor();
 
-  let resolvedCwd: string | undefined;
-  if (options.cwd !== undefined) {
-    resolvedCwd = resolve(options.cwd);
-    let isDir = false;
-    try {
-      isDir = statSync(resolvedCwd).isDirectory();
-    } catch {
-      isDir = false;
-    }
-    if (!isDir) {
-      return Effect.succeed(
-        failedResult(
+  // The async body never rejects (spawn failures are folded in-band), so
+  // Effect.promise is exact: Effect<CertificationResult, never>. The cwd
+  // validation runs inside the body — at Effect execution time, not
+  // construction time — so a pipeline composed before the sandbox exists
+  // still observes the filesystem as of the run.
+  return Effect.promise(async (): Promise<CertificationResult> => {
+    let resolvedCwd: string | undefined;
+    if (options.cwd !== undefined) {
+      resolvedCwd = resolve(options.cwd);
+      let isDir = false;
+      try {
+        isDir = statSync(resolvedCwd).isDirectory();
+      } catch {
+        isDir = false;
+      }
+      if (!isDir) {
+        return failedResult(
           options.command,
           null,
           0,
           `Invalid working directory: ${options.cwd} — the certification command was not run.`,
           false
-        )
-      );
+        );
+      }
     }
-  }
 
-  const executor = options.executor ?? resolveCommandExecutor();
-  const cwd = resolvedCwd ?? process.cwd();
-  const capabilities: CommandCapabilities = {
-    ...DEFAULT_CAPABILITIES(cwd),
-    ...options.capabilities,
-  };
+    const cwd = resolvedCwd ?? process.cwd();
+    const capabilities: CommandCapabilities = {
+      ...DEFAULT_CAPABILITIES(cwd),
+      ...options.capabilities,
+    };
 
-  // The async body never rejects (spawn failures are folded in-band), so
-  // Effect.promise is exact: Effect<CertificationResult, never>.
-  return Effect.promise(async (): Promise<CertificationResult> => {
     let result: ExecResult;
     try {
       result = await executor.exec(options.command, {
