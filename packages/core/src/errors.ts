@@ -163,6 +163,21 @@ export class InsignificantDeltaError extends Data.TaggedError("InsignificantDelt
   readonly message: string;
 }> {}
 
+export const ERR_CERTIFICATION_FAILURE = "ERR_CERTIFICATION_FAILURE";
+
+/**
+ * ADR-020 (map #74): the E2E certification pre-flight pass failed and the
+ * gate is `required`. Deliberately NOT an `InvariantFailureError` —
+ * certification is its own run-level gate, and consumers must be able to
+ * tell an E2E-suite failure apart from a per-step invariant breach.
+ */
+export class CertificationError extends Data.TaggedError("CertificationError")<{
+  readonly code: typeof ERR_CERTIFICATION_FAILURE;
+  readonly command: string;
+  readonly phase: "pre-loop" | "pre-promotion";
+  readonly message: string;
+}> {}
+
 /**
  * ============================================================================
  * LLM Driver Errors
@@ -309,6 +324,7 @@ export type PerfGymDomainError =
   | BenchmarkExecutionError
   | TailGuardRegressionError
   | InsignificantDeltaError
+  | CertificationError
   | UnknownDriverError
   | MissingApiKeyError
   | LlmFatalError

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { Effect } from "effect";
 import type { CommandCapabilities, CommandExecutor, ExecResult } from "../executor/index.js";
 import { resolveCommandExecutor } from "../executor/resolve.js";
+import { stripAnsi } from "../formatter/shared.js";
 
 /**
  * ============================================================================
@@ -92,7 +93,9 @@ const blockedResult = (command: string, result: ExecResult): CertificationResult
   passed: false,
   exitCode: null,
   durationMs: result.durationMs,
-  output: (result.stdout + result.stderr).trim(),
+  // E2E runners colourise by default — escapes must never reach the durable
+  // state file (learnings #11/#34).
+  output: stripAnsi((result.stdout + result.stderr).trim()),
   timedOut: false,
   blocked: true,
 });
@@ -180,7 +183,7 @@ export const runCertification = (
       return blockedResult(options.command, result);
     }
 
-    const output = (result.stdout + result.stderr).trim();
+    const output = stripAnsi((result.stdout + result.stderr).trim());
 
     if (result.timedOut) {
       return failedResult(

@@ -14,6 +14,8 @@ import {
   FileNotFoundError,
   GitCommandError,
   InsignificantDeltaError,
+  CertificationError,
+  ERR_CERTIFICATION_FAILURE,
   InvariantFailureError,
   InvalidRunIdError,
   BenchmarkExecutionError,
@@ -260,6 +262,13 @@ describe("error vocabulary invariants", () => {
         deltaPercent: 0.4,
         minSignificanceThreshold: 2,
         message: "insignificant delta",
+      }),
+    () =>
+      new CertificationError({
+        code: ERR_CERTIFICATION_FAILURE,
+        command: "pnpm test:e2e",
+        phase: "pre-loop",
+        message: "pre-flight certification failed",
       }),
     () =>
       new UnknownDriverError({
