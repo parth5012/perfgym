@@ -798,6 +798,18 @@ export function runOptimizationLoop(
             }
           }
 
+          // Update state — through the detached legacy snapshot (the `session`
+          // blob is owned by the live-session path and must not regress). The
+          // steps DID happen and were accepted whether or not promotion is
+          // blocked, so the counters are recorded on both paths.
+          state.bestFitnessScore = bestFitness;
+          if (live.state.bestStep !== null) {
+            state.bestStep = live.state.bestStep;
+          }
+          state.acceptedStepCount += acceptedCount;
+          state.totalStepCount += evaluations.length;
+          state.updatedAt = Date.now();
+
           if (promotionBlocked) {
             stoppedReason = "certification-failed";
             log(chalk.red("\n✖ Promotion blocked by certification — the winning commit is preserved on the eval branch."));
@@ -806,20 +818,11 @@ export function runOptimizationLoop(
             // the worktree but keeps the `perfgym/eval-<runId>` branch ref.
             yield* asEffect(coordinator.release());
             yield* asEffect(worktreeDriver.teardown());
+            saveSession(cwd, legacyStateCopy(state));
           } else {
             log(chalk.green(`\n✔ Promoting winning worktree commits to '${targetBranch}'...`));
             yield* coordinator.promoteAndCleanup(targetBranch);
             promoted = true;
-
-            // Update state — through the detached legacy snapshot (the `session`
-            // blob is owned by the live-session path and must not regress).
-            state.bestFitnessScore = bestFitness;
-            if (live.state.bestStep !== null) {
-              state.bestStep = live.state.bestStep;
-            }
-            state.acceptedStepCount += acceptedCount;
-            state.totalStepCount += evaluations.length;
-            state.updatedAt = Date.now();
             saveSession(cwd, legacyStateCopy(state));
           }
         } else {

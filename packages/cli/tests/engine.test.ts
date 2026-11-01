@@ -390,4 +390,25 @@ ${certification}`;
     );
     expect(() => loadConfig(broken)).toThrow(/certification.command/);
   });
+
+  it("rejects a present-but-not-mapping block with a ConfigError (OCR: null block must not leak as a TypeError)", () => {
+    // `certification:` with empty contents parses to `null`.
+    const nullBlock = makeDir();
+    fs.writeFileSync(
+      path.join(nullBlock, ".perfgym.yaml"),
+      baseConfig(`certification:
+`),
+      "utf8"
+    );
+    expect(() => loadConfig(nullBlock)).toThrow(/'certification' must be a mapping/);
+
+    const scalarBlock = makeDir();
+    fs.writeFileSync(
+      path.join(scalarBlock, ".perfgym.yaml"),
+      baseConfig(`certification: "npx playwright test"
+`),
+      "utf8"
+    );
+    expect(() => loadConfig(scalarBlock)).toThrow(/'certification' must be a mapping/);
+  });
 });
