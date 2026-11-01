@@ -31,6 +31,8 @@ import {
   matchesGlob,
   CommandExecutor,
   resolveCommandExecutor,
+  DiskBudgetManager,
+  formatBytes,
 } from "../../../core/src/index.js";
 import { AstLinterEngine, DEFAULT_RULES, TypecheckGate } from "../../../linter/src/index.js";
 import {
@@ -364,10 +366,17 @@ export function runOptimizationLoop(
     // `PerfGymState` instead of re-proving a narrowing it cannot see.
     const initialSession: PerfGymState = loadedState;
 
+    const diskBudgetMb = config.sandbox?.disk_budget_mb ?? config.sandbox?.diskBudgetMb ?? 2048;
+    const gcEnabled = config.gc?.enabled !== false;
+    const pruneBranches = config.gc?.prune_branches ?? config.gc?.pruneBranches ?? false;
+
     // The worktree driver & sandbox coordinator
     const worktreeDriver = new GitWorktreeDriver({
       repoRoot: cwd,
       allowedGlobs: config.target.files,
+      diskBudgetMb,
+      gcEnabled,
+      pruneBranches,
     });
 
     const coordinator = new GitSandboxCoordinator(worktreeDriver, {
@@ -429,6 +438,15 @@ export function runOptimizationLoop(
         log(chalk.bold.cyan(`\n🚀 Starting PerfGym Autonomous Optimization Loop (${maxIterations} iterations)`));
         log(chalk.dim(`   Sandbox worktree: ${sandboxDir}`));
         log(chalk.dim(`   Guard backend:    ${executor.backend}`));
+        const initialWorktreesDir = path.resolve(cwd, ".perfgym", "worktrees");
+        const initialBudgetMgr = DiskBudgetManager.load(initialWorktreesDir);
+        const initialUsageBytes = initialBudgetMgr.totalSizeBytes();
+        const capBytes = diskBudgetMb * 1024 * 1024;
+        if (gcEnabled) {
+          log(chalk.dim(`   Disk budget:      ${formatBytes(initialUsageBytes)} used / ${formatBytes(capBytes)} cap`));
+        } else {
+          log(chalk.dim(`   Disk budget:      ${formatBytes(initialUsageBytes)} (GC disabled)`));
+        }
         log(chalk.dim(`   Target: ${config.target.name} (${config.target.language}) | Baseline Score: ${bestFitness}\n`));
 
         for (let i = 1; i <= maxIterations; i++) {
@@ -722,6 +740,40 @@ export function runOptimizationLoop(
           // scoped release then repeats it idempotently.
           yield* asEffect(coordinator.release());
           yield* asEffect(worktreeDriver.teardown());
+        }
+
+        // Run-end GC reclamation pass (Ticket #61)
+        const worktreesDir = path.resolve(cwd, ".perfgym", "worktrees");
+        const budgetMgr = DiskBudgetManager.load(worktreesDir);
+        if (gcEnabled) {
+          try {
+            const reclamation = budgetMgr.evictLruToFit({
+              capBytes,
+              estimatedNewBytes: 0,
+              repoRoot: cwd,
+              pruneBranches,
+              baseRef: targetBranch,
+            });
+            if (reclamation.evictedRunIds.length > 0) {
+              log(
+                chalk.cyan(
+                  `\n🧹 GC run-end reclamation: evicted ${reclamation.evictedRunIds.length} worktrees (${formatBytes(reclamation.freedBytes)} reclaimed)`
+                )
+              );
+            }
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log(chalk.yellow(`\n⚠ GC run-end reclamation warning: ${msg}`));
+          }
+          const finalUsage = budgetMgr.totalSizeBytes();
+          log(chalk.dim(`   Worktree disk usage: ${formatBytes(finalUsage)} used / ${formatBytes(capBytes)} cap`));
+        } else {
+          const finalUsage = budgetMgr.totalSizeBytes();
+          log(
+            chalk.dim(
+              `\n🧹 GC disabled: skipping reclamation (current usage: ${formatBytes(finalUsage)} / ${formatBytes(capBytes)} cap)`
+            )
+          );
         }
 
         // The run's final transitions: completed, and the lock snapshot resolved

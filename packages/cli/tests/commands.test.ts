@@ -334,7 +334,7 @@ describe("CLI lifecycle commands (Ticket #44)", () => {
     // The sandbox worktree holds the restored (step 1) content.
     const worktreesDir = path.join(dir, ".perfgym", "worktrees");
     expect(fs.existsSync(worktreesDir)).toBe(true);
-    const worktreeDirs = fs.readdirSync(worktreesDir);
+    const worktreeDirs = fs.readdirSync(worktreesDir).filter((d) => !d.startsWith("."));
     expect(worktreeDirs.length).toBe(1);
     const restored = fs.readFileSync(
       path.join(worktreesDir, worktreeDirs[0]!, "src", "index.ts"),
