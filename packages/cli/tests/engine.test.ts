@@ -306,3 +306,88 @@ metrics:
     expect(config.metrics[2]?.timeoutMs).toBeUndefined();
   });
 });
+
+describe("loadConfig — certification block (map #74, ADR-020 pre-flight pass)", () => {
+  const baseConfig = (certification: string): string => `
+version: "1.0"
+target:
+  name: "certified"
+  language: "typescript"
+  files: ["src/**/*"]
+invariants:
+  command: "node -e 'process.exit(0)'"
+metrics:
+  - name: "latency"
+    command: "node -e 'console.log(1)'"
+    goal: "minimize"
+    weight: 1
+${certification}`;
+
+  it("an absent block leaves certification undefined — the pass is off, never defaulted into enforcement", () => {
+    const dir = makeDir();
+    fs.writeFileSync(path.join(dir, ".perfgym.yaml"), baseConfig(""), "utf8");
+
+    expect(loadConfig(dir).certification).toBeUndefined();
+  });
+
+  it("parses with the documented defaults: required true, beforePromotion true, snake_case spellings accepted", () => {
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, ".perfgym.yaml"),
+      baseConfig(`certification:
+  command: "npx playwright test"
+  timeout_ms: 90000
+`),
+      "utf8"
+    );
+
+    const config = loadConfig(dir);
+    expect(config.certification?.command).toBe("npx playwright test");
+    expect(config.certification?.timeoutMs).toBe(90000);
+    expect(config.certification?.required).toBe(true);
+    expect(config.certification?.beforePromotion).toBe(true);
+  });
+
+  it("accepts explicit overrides and the camelCase spellings", () => {
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, ".perfgym.yaml"),
+      baseConfig(`certification:
+  command: "npm run e2e"
+  timeoutMs: 30000
+  required: false
+  before_promotion: false
+`),
+      "utf8"
+    );
+
+    const config = loadConfig(dir);
+    expect(config.certification?.timeoutMs).toBe(30000);
+    expect(config.certification?.required).toBe(false);
+    expect(config.certification?.beforePromotion).toBe(false);
+  });
+
+  it("carries the block's other fields through verbatim and rejects an empty command", () => {
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, ".perfgym.yaml"),
+      baseConfig(`certification:
+  command: "npm run e2e"
+  extra_note: "nightly suite"
+`),
+      "utf8"
+    );
+    const config = loadConfig(dir);
+    expect((config.certification as Record<string, unknown>).extra_note).toBe("nightly suite");
+
+    const broken = makeDir();
+    fs.writeFileSync(
+      path.join(broken, ".perfgym.yaml"),
+      baseConfig(`certification:
+  command: ""
+`),
+      "utf8"
+    );
+    expect(() => loadConfig(broken)).toThrow(/certification.command/);
+  });
+});

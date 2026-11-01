@@ -276,6 +276,46 @@ const normaliseGc = (config: Record<string, unknown>): PerfGymConfig["gc"] => {
   };
 };
 
+/**
+ * Normalise the ADR-020 certification block (map #74). The YAML spells it
+ * `certification` with `timeout_ms` / `before_promotion` (snake_case,
+ * matching the `agent_budget` convention); both spellings are accepted.
+ * Absent block ⇒ `undefined` — the pass is disabled, never defaulted into
+ * enforcement. A present block resolves the documented defaults: `required:
+ * true`, `beforePromotion: true`, `timeoutMs` 120000 (applied by
+ * `resolveCertificationTimeoutMs` at the gate). The block's other fields are
+ * carried through verbatim — a normaliser adds fields; it never deletes them.
+ */
+const normaliseCertification = (
+  config: Record<string, unknown>,
+  configPath: string,
+): PerfGymConfig["certification"] => {
+  const block = asRecord(config.certification);
+  if (block === null) return undefined;
+  const command = block.command;
+  if (typeof command !== "string" || command.trim() === "") {
+    throw new ConfigError({
+      code: ERR_CONFIG,
+      configPath,
+      reason: "invalid",
+      message: `Invalid certification block in ${configPath}: 'certification.command' must be a non-empty string when the block is present`,
+    });
+  }
+  const timeout = block.timeoutMs ?? block.timeout_ms;
+  const required = typeof block.required === "boolean" ? block.required : true;
+  const rawBeforePromotion = block.beforePromotion ?? block.before_promotion;
+  const beforePromotion =
+    typeof rawBeforePromotion === "boolean" ? rawBeforePromotion : true;
+
+  return {
+    ...block,
+    command,
+    ...(typeof timeout === "number" ? { timeoutMs: timeout } : {}),
+    required,
+    beforePromotion,
+  } as PerfGymConfig["certification"];
+};
+
 export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   const configPath = path.join(rootDir, CONFIG_FILE_NAME);
   if (!fs.existsSync(configPath)) {
@@ -321,6 +361,7 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   const normalisedMetrics = normaliseMetrics(parsed);
   const normalisedSandbox = normaliseSandbox(parsed);
   const normalisedGc = normaliseGc(parsed);
+  const normalisedCertification = normaliseCertification(parsed, configPath);
 
   return {
     ...(parsed as unknown as PerfGymConfig),
@@ -328,6 +369,7 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
     agentBudget: normaliseAgentBudget(parsed),
     sandbox: normalisedSandbox,
     gc: normalisedGc,
+    ...(normalisedCertification ? { certification: normalisedCertification } : {}),
     ...(normalisedLlm ? { llm: normalisedLlm } : {}),
     ...(normalisedBenchmark ? { benchmark: normalisedBenchmark } : {}),
     // `floorCoefficient` (ticket #52) is a top-level typed field; the YAML
