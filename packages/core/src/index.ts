@@ -201,6 +201,22 @@ export interface PerfGymConfig {
      */
     command_backend?: "auto" | "node-permission" | "mxc" | "bwrap" | "none" | "plain";
     commandBackend?: "auto" | "node-permission" | "mxc" | "bwrap" | "none" | "plain";
+    /**
+     * Maximum disk budget in megabytes for .perfgym/worktrees (defaults to 2048 = 2GB per ADR-004).
+     */
+    disk_budget_mb?: number;
+    diskBudgetMb?: number;
+  };
+  gc?: {
+    /**
+     * Whether LRU worktree garbage collection and pre-flight budget enforcement are active (defaults to true).
+     */
+    enabled?: boolean;
+    /**
+     * Whether unmerged worktree branches are pruned on eviction (defaults to false).
+     */
+    prune_branches?: boolean;
+    pruneBranches?: boolean;
   };
 }
 

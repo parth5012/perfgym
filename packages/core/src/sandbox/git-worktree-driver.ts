@@ -10,16 +10,21 @@ import {
   GitCommandError,
   InvalidRunIdError,
   WorktreeNotFoundError,
+  WorktreeDiskBudgetExceededError,
   ERR_PATH_OUTSIDE_TARGET,
   ERR_PATH_TRAVERSAL,
   ERR_FILE_NOT_FOUND,
   ERR_INVALID_RUN_ID,
 } from "../errors.js";
+import { DiskBudgetManager } from "../gc/disk-budget.js";
 
 export interface GitWorktreeDriverOptions {
   repoRoot?: string;
   worktreesDir?: string;
   allowedGlobs?: string[];
+  diskBudgetMb?: number;
+  gcEnabled?: boolean;
+  pruneBranches?: boolean;
 }
 
 export function matchesGlob(pattern: string, targetPath: string): boolean {
@@ -68,6 +73,9 @@ export class GitWorktreeDriver implements WorkspaceDriver {
   private repoRoot: string;
   private worktreesDir: string;
   private allowedGlobs: string[];
+  private diskBudgetMb: number;
+  private gcEnabled: boolean;
+  private pruneBranches: boolean;
   private context: WorkspaceContext | null = null;
   private tornDown = false;
 
@@ -77,6 +85,9 @@ export class GitWorktreeDriver implements WorkspaceDriver {
       options.worktreesDir ?? path.join(this.repoRoot, ".perfgym", "worktrees")
     );
     this.allowedGlobs = options.allowedGlobs ?? ["src/**/*"];
+    this.diskBudgetMb = options.diskBudgetMb ?? 2048;
+    this.gcEnabled = options.gcEnabled ?? true;
+    this.pruneBranches = options.pruneBranches ?? false;
   }
 
   private execGit(args: string[], cwd: string): Effect.Effect<string, GitCommandError, never> {
@@ -116,7 +127,11 @@ export class GitWorktreeDriver implements WorkspaceDriver {
   public initialize(
     runId: string,
     baseRef: string
-  ): Effect.Effect<WorkspaceContext, InvalidRunIdError | PathTraversalError | GitCommandError, never> {
+  ): Effect.Effect<
+    WorkspaceContext,
+    InvalidRunIdError | PathTraversalError | GitCommandError | WorktreeDiskBudgetExceededError,
+    never
+  > {
     const self = this;
     return Effect.gen(function* () {
       if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
@@ -142,11 +157,11 @@ export class GitWorktreeDriver implements WorkspaceDriver {
         );
       }
 
-      const branchName = `perfgym/eval-${runId}`;
-
       fs.mkdirSync(self.worktreesDir, { recursive: true });
 
-      // Clean up any stale worktree at this path
+      const branchName = `perfgym/eval-${runId}`;
+
+      // Clean up any stale worktree at this path before budget enforcement
       if (fs.existsSync(worktreePath)) {
         const removed = yield* Effect.match(
           self.execGit(["worktree", "remove", "--force", worktreePath], self.repoRoot),
@@ -162,11 +177,45 @@ export class GitWorktreeDriver implements WorkspaceDriver {
         });
       }
 
+      // Pre-flight disk budget enforcement & LRU eviction (tickets #60 & #61)
+      const manager = DiskBudgetManager.load(self.worktreesDir);
+      if (self.gcEnabled) {
+        const capBytes = self.diskBudgetMb * 1024 * 1024;
+        let evictionError: unknown = null;
+        try {
+          manager.evictLruToFit({
+            capBytes,
+            estimatedNewBytes: 0,
+            repoRoot: self.repoRoot,
+            pruneBranches: self.pruneBranches,
+            baseRef,
+            protectedRunIds: [runId],
+          });
+        } catch (err: unknown) {
+          evictionError = err;
+        }
+
+        if (evictionError !== null) {
+          if (evictionError instanceof WorktreeDiskBudgetExceededError) {
+            return yield* Effect.fail(evictionError);
+          }
+          return yield* Effect.die(evictionError);
+        }
+      }
+
       // Allocate worktree directly off baseRef without touching developer's working directory
       yield* self.execGit(
         ["worktree", "add", "-B", branchName, worktreePath, baseRef],
         self.repoRoot
       );
+
+      // Register newly created worktree in usage manifest
+      manager.recordUse(runId);
+      try {
+        manager.save();
+      } catch {
+        // Best effort manifest save
+      }
 
       const context: WorkspaceContext = {
         runId,

@@ -123,6 +123,11 @@ export function generateStarterConfig(language: SupportedLanguage = "typescript"
     ],
     sandbox: {
       command_backend: "auto",
+      disk_budget_mb: 2048,
+    },
+    gc: {
+      enabled: true,
+      prune_branches: false,
     },
   };
 }
@@ -225,9 +230,10 @@ const normaliseMetrics = (config: Record<string, unknown>): PerfGymConfig["metri
 };
 
 /**
- * Normalise the documented `sandbox.command_backend` config (ticket #56).
+ * Normalise the documented `sandbox` config (tickets #56 and #61).
  * Accepts both snake_case `command_backend` and camelCase `commandBackend`.
  * Defaults to "auto".
+ * Accepts `disk_budget_mb` / `diskBudgetMb` defaulting to 2048 MB.
  */
 const normaliseSandbox = (config: Record<string, unknown>): PerfGymConfig["sandbox"] => {
   const block = asRecord(config.sandbox);
@@ -236,10 +242,37 @@ const normaliseSandbox = (config: Record<string, unknown>): PerfGymConfig["sandb
   const backend = typeof raw === "string" && (valid as readonly string[]).includes(raw)
     ? (raw as NonNullable<PerfGymConfig["sandbox"]>["command_backend"])
     : "auto";
+
+  const rawBudget = block ? (block.diskBudgetMb ?? block.disk_budget_mb) : undefined;
+  const diskBudgetMb =
+    typeof rawBudget === "number" && Number.isFinite(rawBudget) && rawBudget > 0
+      ? rawBudget
+      : 2048;
+
   return {
     ...(block ?? {}),
     commandBackend: backend,
     command_backend: backend,
+    diskBudgetMb,
+    disk_budget_mb: diskBudgetMb,
+  };
+};
+
+/**
+ * Normalise the documented `gc` config block (ticket #61).
+ * Accepts `enabled` (default true) and `prune_branches` / `pruneBranches` (default false).
+ */
+const normaliseGc = (config: Record<string, unknown>): PerfGymConfig["gc"] => {
+  const block = asRecord(config.gc);
+  const enabled = block && typeof block.enabled === "boolean" ? block.enabled : true;
+  const rawPrune = block?.pruneBranches ?? block?.prune_branches;
+  const pruneBranches = typeof rawPrune === "boolean" ? rawPrune : false;
+
+  return {
+    ...(block ?? {}),
+    enabled,
+    pruneBranches,
+    prune_branches: pruneBranches,
   };
 };
 
@@ -287,12 +320,14 @@ export function loadConfig(rootDir: string = process.cwd()): PerfGymConfig {
   const normalisedBenchmark = normaliseBenchmark(parsed);
   const normalisedMetrics = normaliseMetrics(parsed);
   const normalisedSandbox = normaliseSandbox(parsed);
+  const normalisedGc = normaliseGc(parsed);
 
   return {
     ...(parsed as unknown as PerfGymConfig),
     metrics: normalisedMetrics,
     agentBudget: normaliseAgentBudget(parsed),
     sandbox: normalisedSandbox,
+    gc: normalisedGc,
     ...(normalisedLlm ? { llm: normalisedLlm } : {}),
     ...(normalisedBenchmark ? { benchmark: normalisedBenchmark } : {}),
     // `floorCoefficient` (ticket #52) is a top-level typed field; the YAML

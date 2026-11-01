@@ -625,7 +625,9 @@ llm:
   const lockDir = (): string => path.join(testDir, ".perfgym", ".lock.d");
   const worktreesDir = (): string => path.join(testDir, ".perfgym", "worktrees");
   const worktreeEntries = (): string[] =>
-    fs.existsSync(worktreesDir()) ? fs.readdirSync(worktreesDir()) : [];
+    fs.existsSync(worktreesDir())
+      ? fs.readdirSync(worktreesDir()).filter((entry) => !entry.startsWith("."))
+      : [];
 
   const sleep = (ms: number): Promise<void> =>
     new Promise((resolve) => setTimeout(resolve, ms));
