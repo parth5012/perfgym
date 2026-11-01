@@ -13,6 +13,7 @@ export * from "./sandbox/in-memory-driver.js";
 export * from "./sandbox/git-worktree-driver.js";
 export * from "./sandbox/coordinator.js";
 export * from "./pipeline/invariants.js";
+export * from "./pipeline/certification.js";
 export * from "./pipeline/benchmark.js";
 export * from "./bench/blackhole.js";
 export * from "./pipeline/bootstrap.js";
@@ -217,6 +218,28 @@ export interface PerfGymConfig {
      */
     prune_branches?: boolean;
     pruneBranches?: boolean;
+  };
+  /**
+   * ADR-020 (map #74): the E2E certification pre-flight pass. Runs once
+   * before the optimization loop and — with `beforePromotion` — once more
+   * before the winning worktree is promoted. Never per-step. The plain
+   * command + exit-code protocol of the invariant gate; a sandbox policy
+   * denial is reported `blocked`, never as a test failure. The result can
+   * only BLOCK — it never enters the fitness score.
+   *
+   * The YAML spells the block `certification` with `timeout_ms` /
+   * `before_promotion` (snake_case, matching the `agent_budget` convention);
+   * the CLI normalises both spellings. An absent block disables the pass.
+   */
+  certification?: {
+    /** The E2E suite command (e.g. `npx playwright test`). */
+    command: string;
+    /** Per-pass timeout in milliseconds (defaults to 120000). */
+    timeoutMs?: number;
+    /** A failed pass aborts the run / blocks promotion (defaults to true). */
+    required?: boolean;
+    /** Run a second pass before promoting the winner (defaults to true). */
+    beforePromotion?: boolean;
   };
 }
 
