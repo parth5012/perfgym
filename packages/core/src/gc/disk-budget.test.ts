@@ -2,11 +2,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { execSync } from "node:child_process";
 import {
   DiskBudgetManager,
   type WorktreeUsageEntry,
   type UsageManifest,
+  type EvictionOptions,
+  formatBytes,
 } from "./disk-budget.js";
+import {
+  WorktreeDiskBudgetExceededError,
+  ERR_WORKTREE_DISK_BUDGET_EXCEEDED,
+} from "../errors.js";
 
 describe("DiskBudgetManager (Ticket #59)", () => {
   let tempDir: string;
@@ -200,6 +207,245 @@ describe("DiskBudgetManager (Ticket #59)", () => {
         sizeBytes: 500,
       });
       expect(reloaded.usage()["run-second"]).toBeUndefined();
+    });
+  });
+
+  describe("LRU Eviction & Pre-Flight Budget Enforcement (Ticket #60)", () => {
+    let repoDir: string;
+    let gitWorktreesDir: string;
+
+    beforeEach(() => {
+      repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "perfgym-git-evict-test-"));
+      execSync("git init", { cwd: repoDir, stdio: "ignore" });
+      execSync("git config core.autocrlf false", { cwd: repoDir, stdio: "ignore" });
+      execSync('git config user.name "PerfGym Tester"', { cwd: repoDir, stdio: "ignore" });
+      execSync('git config user.email "test@perfgym.dev"', { cwd: repoDir, stdio: "ignore" });
+      execSync("git checkout -B main", { cwd: repoDir, stdio: "ignore" });
+
+      fs.writeFileSync(path.join(repoDir, ".gitignore"), ".perfgym/\n", "utf8");
+      fs.writeFileSync(path.join(repoDir, "README.md"), "# Test Repo\n", "utf8");
+      execSync("git add .gitignore README.md", { cwd: repoDir, stdio: "ignore" });
+      execSync('git commit -m "initial commit"', { cwd: repoDir, stdio: "ignore" });
+
+      gitWorktreesDir = path.join(repoDir, ".perfgym", "worktrees");
+      fs.mkdirSync(gitWorktreesDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      try {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    });
+
+    it("proves the LRU worktree is evicted first and the newest survives (AC1)", () => {
+      // Create three worktrees: wt-old (100 bytes), wt-mid (100 bytes), wt-new (100 bytes)
+      const wtOld = path.join(gitWorktreesDir, "run-old");
+      const wtMid = path.join(gitWorktreesDir, "run-mid");
+      const wtNew = path.join(gitWorktreesDir, "run-new");
+
+      execSync(`git worktree add -B perfgym/eval-run-old ${wtOld} HEAD`, { cwd: repoDir, stdio: "ignore" });
+      execSync(`git worktree add -B perfgym/eval-run-mid ${wtMid} HEAD`, { cwd: repoDir, stdio: "ignore" });
+      execSync(`git worktree add -B perfgym/eval-run-new ${wtNew} HEAD`, { cwd: repoDir, stdio: "ignore" });
+
+      fs.writeFileSync(path.join(wtOld, "data.bin"), Buffer.alloc(100, 1));
+      fs.writeFileSync(path.join(wtMid, "data.bin"), Buffer.alloc(100, 2));
+      fs.writeFileSync(path.join(wtNew, "data.bin"), Buffer.alloc(100, 3));
+
+      const manager = DiskBudgetManager.load(gitWorktreesDir);
+      manager.recordUse("run-old", 100, 1000);
+      manager.recordUse("run-mid", 100, 2000);
+      manager.recordUse("run-new", 100, 3000);
+      manager.save();
+
+      // Cap is 250 bytes. Total is ~300 bytes (plus metadata/git overhead).
+      // If we ask to evict to fit within 200 bytes:
+      const result = manager.evictLruToFit({
+        capBytes: 200,
+        estimatedNewBytes: 0,
+        repoRoot: repoDir,
+      });
+
+      expect(result.evictedRunIds).toContain("run-old");
+      expect(fs.existsSync(wtOld)).toBe(false);
+      expect(fs.existsSync(wtNew)).toBe(true);
+    });
+
+    it("proves the active worktree is never evicted, even when it is the oldest (AC2)", () => {
+      const wtOld = path.join(gitWorktreesDir, "run-old");
+      const wtNew = path.join(gitWorktreesDir, "run-new");
+
+      execSync(`git worktree add -B perfgym/eval-run-old ${wtOld} HEAD`, { cwd: repoDir, stdio: "ignore" });
+      execSync(`git worktree add -B perfgym/eval-run-new ${wtNew} HEAD`, { cwd: repoDir, stdio: "ignore" });
+
+      fs.writeFileSync(path.join(wtOld, "data.bin"), Buffer.alloc(100, 1));
+      fs.writeFileSync(path.join(wtNew, "data.bin"), Buffer.alloc(100, 2));
+
+      const manager = DiskBudgetManager.load(gitWorktreesDir);
+      manager.recordUse("run-old", 100, 1000);
+      manager.recordUse("run-new", 100, 3000);
+      manager.save();
+
+      // run-old is the active worktree (~178 bytes with git overhead). Both total ~350 bytes.
+      // Cap is 250 bytes: eviction is required, run-new must be evicted, active run-old must survive.
+      const result = manager.evictLruToFit({
+        capBytes: 250,
+        estimatedNewBytes: 0,
+        activeRunId: "run-old",
+        repoRoot: repoDir,
+      });
+
+      // run-old must survive; run-new was evicted instead
+      expect(result.evictedRunIds).toContain("run-new");
+      expect(result.evictedRunIds).not.toContain("run-old");
+      expect(fs.existsSync(wtOld)).toBe(true);
+      expect(fs.existsSync(wtNew)).toBe(false);
+    });
+
+    it("proves a worktree whose run is in progress is never evicted (AC3)", () => {
+      const wt1 = path.join(gitWorktreesDir, "run-progress");
+      const wt2 = path.join(gitWorktreesDir, "run-idle");
+
+      execSync(`git worktree add -B perfgym/eval-run-progress ${wt1} HEAD`, { cwd: repoDir, stdio: "ignore" });
+      execSync(`git worktree add -B perfgym/eval-run-idle ${wt2} HEAD`, { cwd: repoDir, stdio: "ignore" });
+
+      fs.writeFileSync(path.join(wt1, "data.bin"), Buffer.alloc(100, 1));
+      fs.writeFileSync(path.join(wt2, "data.bin"), Buffer.alloc(100, 2));
+
+      const manager = DiskBudgetManager.load(gitWorktreesDir);
+      manager.recordUse("run-progress", 100, 1000);
+      manager.recordUse("run-idle", 100, 2000);
+      manager.save();
+
+      // Cap is 250 bytes: run-idle is evicted, run-progress is protected and survives.
+      const result = manager.evictLruToFit({
+        capBytes: 250,
+        estimatedNewBytes: 0,
+        protectedRunIds: ["run-progress"],
+        repoRoot: repoDir,
+      });
+
+      expect(result.evictedRunIds).toContain("run-idle");
+      expect(result.evictedRunIds).not.toContain("run-progress");
+      expect(fs.existsSync(wt1)).toBe(true);
+      expect(fs.existsSync(wt2)).toBe(false);
+    });
+
+    it("proves eviction uses git worktree remove and keeps git metadata consistent (AC4)", () => {
+      const wt1 = path.join(gitWorktreesDir, "run-to-remove");
+      execSync(`git worktree add -B perfgym/eval-run-to-remove ${wt1} HEAD`, { cwd: repoDir, stdio: "ignore" });
+
+      const listBefore = execSync("git worktree list --porcelain", { cwd: repoDir, encoding: "utf8" });
+      expect(listBefore).toContain("run-to-remove");
+
+      const manager = DiskBudgetManager.load(gitWorktreesDir);
+      manager.recordUse("run-to-remove", 100, 1000);
+      manager.save();
+
+      manager.evictLruToFit({
+        capBytes: 10,
+        estimatedNewBytes: 0,
+        repoRoot: repoDir,
+      });
+
+      // git worktree list must no longer show run-to-remove
+      const listAfter = execSync("git worktree list --porcelain", { cwd: repoDir, encoding: "utf8" });
+      expect(listAfter).not.toContain("run-to-remove");
+
+      // git status in repoRoot must be pristine and worktree prune exits 0
+      const status = execSync("git status --porcelain", { cwd: repoDir, encoding: "utf8" });
+      expect(status.trim()).toBe("");
+      expect(() => execSync("git worktree prune", { cwd: repoDir })).not.toThrow();
+    });
+
+    it("proves the fail-fast error message names the usage, the cap, and the remedy (AC5)", () => {
+      const wtActive = path.join(gitWorktreesDir, "run-active");
+      execSync(`git worktree add -B perfgym/eval-run-active ${wtActive} HEAD`, { cwd: repoDir, stdio: "ignore" });
+      fs.writeFileSync(path.join(wtActive, "data.bin"), Buffer.alloc(200, 1));
+
+      const manager = DiskBudgetManager.load(gitWorktreesDir);
+      manager.recordUse("run-active", 200, 1000);
+      manager.save();
+
+      // Cap is 100 bytes, but active worktree is 200 bytes and protected -> nothing can be evicted
+      let thrown: WorktreeDiskBudgetExceededError | null = null;
+      try {
+        manager.evictLruToFit({
+          capBytes: 100,
+          estimatedNewBytes: 0,
+          activeRunId: "run-active",
+          repoRoot: repoDir,
+        });
+      } catch (err: unknown) {
+        if (err instanceof WorktreeDiskBudgetExceededError) {
+          thrown = err;
+        }
+      }
+
+      expect(thrown).not.toBeNull();
+      expect(thrown!.code).toBe(ERR_WORKTREE_DISK_BUDGET_EXCEEDED);
+      expect(thrown!.capBytes).toBe(100);
+      expect(thrown!.usedBytes).toBeGreaterThanOrEqual(200);
+
+      const msg = thrown!.message;
+      // Must name: "disk budget exceeded", usage ("... used"), cap ("cap ..."), remedy ("raise `sandbox.disk_budget_mb` or free space")
+      expect(msg).toContain("disk budget exceeded");
+      expect(msg).toContain("used");
+      expect(msg).toContain("cap");
+      expect(msg).toContain("nothing left to evict");
+      expect(msg).toContain("raise `sandbox.disk_budget_mb` or free space");
+    });
+
+    it("prunes the corresponding branch only if gc.prune_branches is true", () => {
+      const wt1 = path.join(gitWorktreesDir, "run-keep-branch");
+      execSync(`git worktree add -B perfgym/eval-run-keep-branch ${wt1} HEAD`, { cwd: repoDir, stdio: "ignore" });
+
+      const manager = DiskBudgetManager.load(gitWorktreesDir);
+      manager.recordUse("run-keep-branch", 100, 1000);
+      manager.save();
+
+      // pruneBranches false (default)
+      manager.evictLruToFit({
+        capBytes: 10,
+        repoRoot: repoDir,
+        pruneBranches: false,
+      });
+
+      const branchesAfter = execSync("git branch --list perfgym/eval-run-keep-branch", { cwd: repoDir, encoding: "utf8" });
+      expect(branchesAfter).toContain("perfgym/eval-run-keep-branch");
+
+      // Now create another worktree and evict with pruneBranches: true
+      const wt2 = path.join(gitWorktreesDir, "run-prune-branch");
+      execSync(`git worktree add -B perfgym/eval-run-prune-branch ${wt2} HEAD`, { cwd: repoDir, stdio: "ignore" });
+      manager.recordUse("run-prune-branch", 100, 2000);
+      manager.save();
+
+      manager.evictLruToFit({
+        capBytes: 10,
+        repoRoot: repoDir,
+        pruneBranches: true,
+      });
+
+      const branchesAfterPrune = execSync("git branch --list perfgym/eval-run-prune-branch", { cwd: repoDir, encoding: "utf8" });
+      expect(branchesAfterPrune.trim()).toBe("");
+
+      // Test with baseRef: if merged into baseRef, branch is preserved; if unmerged, pruned
+      const wtMerged = path.join(gitWorktreesDir, "run-merged-branch");
+      execSync(`git worktree add -B perfgym/eval-run-merged-branch ${wtMerged} HEAD`, { cwd: repoDir, stdio: "ignore" });
+      manager.recordUse("run-merged-branch", 100, 3000);
+      manager.save();
+
+      // Because perfgym/eval-run-merged-branch points to HEAD, it is an ancestor of main (merged)
+      manager.evictLruToFit({
+        capBytes: 10,
+        repoRoot: repoDir,
+        pruneBranches: true,
+        baseRef: "main",
+      });
+
+      const branchesMerged = execSync("git branch --list perfgym/eval-run-merged-branch", { cwd: repoDir, encoding: "utf8" });
+      expect(branchesMerged).toContain("perfgym/eval-run-merged-branch");
     });
   });
 });

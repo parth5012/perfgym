@@ -1,5 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
+import {
+  WorktreeDiskBudgetExceededError,
+  ERR_WORKTREE_DISK_BUDGET_EXCEEDED,
+} from "../errors.js";
 
 export interface WorktreeUsageEntry {
   lastUsedAt: number;
@@ -9,6 +14,46 @@ export interface WorktreeUsageEntry {
 export type UsageManifest = Record<string, WorktreeUsageEntry>;
 
 export const USAGE_MANIFEST_FILENAME = ".usage.json";
+
+export interface EvictionOptions {
+  capBytes: number;
+  estimatedNewBytes?: number;
+  protectedRunIds?: Iterable<string>;
+  activeRunId?: string;
+  repoRoot?: string;
+  pruneBranches?: boolean;
+  baseRef?: string;
+  gitExec?: (args: string[], cwd: string) => string;
+}
+
+export interface EvictionResult {
+  evictedRunIds: string[];
+  freedBytes: number;
+  totalSizeBytes: number;
+}
+
+/**
+ * Formats a byte quantity into a human-readable string (e.g. 2 GB, 2.1 GB, 500 MB).
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const gb = bytes / (1024 * 1024 * 1024);
+  if (gb >= 1) {
+    const formatted = gb.toFixed(1).replace(/\.0$/, "");
+    return `${formatted} GB`;
+  }
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1) {
+    const formatted = mb.toFixed(1).replace(/\.0$/, "");
+    return `${formatted} MB`;
+  }
+  const kb = bytes / 1024;
+  if (kb >= 1) {
+    const formatted = kb.toFixed(1).replace(/\.0$/, "");
+    return `${formatted} KB`;
+  }
+  return `${bytes} B`;
+}
 
 /**
  * DiskBudgetManager
@@ -158,6 +203,159 @@ export class DiskBudgetManager {
     return {
       lastUsedAt: 0,
       sizeBytes: 0,
+    };
+  }
+
+  /**
+   * Enforces the disk budget before creating a new worktree or during reclamation.
+   * Evicts least-recently-used worktrees until `totalSizeBytes + estimatedNewBytes <= capBytes`.
+   * Never evicts protected runIds or the active runId.
+   * If the budget cannot be met after evicting all eligible worktrees, fails fast with
+   * `WorktreeDiskBudgetExceededError`.
+   */
+  public evictLruToFit(options: EvictionOptions): EvictionResult {
+    const estimatedNew = options.estimatedNewBytes ?? 0;
+    let currentTotal = this.totalSizeBytes();
+
+    if (currentTotal + estimatedNew <= options.capBytes) {
+      return {
+        evictedRunIds: [],
+        freedBytes: 0,
+        totalSizeBytes: currentTotal,
+      };
+    }
+
+    const protectedSet = new Set<string>(options.protectedRunIds ?? []);
+    if (options.activeRunId) {
+      protectedSet.add(options.activeRunId);
+    }
+
+    // Discover candidate worktrees in worktreesDir
+    const candidateRunIds: string[] = [];
+    if (fs.existsSync(this.worktreesDir)) {
+      try {
+        const entries = fs.readdirSync(this.worktreesDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isSymbolicLink() && entry.isDirectory()) {
+            const runId = entry.name;
+            if (!protectedSet.has(runId)) {
+              candidateRunIds.push(runId);
+            }
+          }
+        }
+      } catch {
+        // Ignore read errors
+      }
+    }
+
+    // Sort candidate runIds by lastUsedAt ascending (oldest first)
+    candidateRunIds.sort((a, b) => {
+      const usageA = this.getWorktreeUsage(a);
+      const usageB = this.getWorktreeUsage(b);
+      return usageA.lastUsedAt - usageB.lastUsedAt;
+    });
+
+    const repoRoot = options.repoRoot ?? path.resolve(this.worktreesDir, "..", "..");
+    const gitExec =
+      options.gitExec ??
+      ((args: string[], cwd: string): string =>
+        execFileSync("git", args, {
+          cwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim());
+
+    const evictedRunIds: string[] = [];
+    let freedBytes = 0;
+
+    for (const runId of candidateRunIds) {
+      const wtPath = path.join(this.worktreesDir, runId);
+      const dirSize = this.getDirectorySize(wtPath);
+
+      // Evict using git worktree remove
+      try {
+        gitExec(["worktree", "remove", "--force", wtPath], repoRoot);
+      } catch {
+        // Fall back to deleting directory if git worktree remove encounters issues
+      }
+
+      // Ensure directory is completely removed
+      if (fs.existsSync(wtPath)) {
+        try {
+          fs.rmSync(wtPath, { recursive: true, force: true });
+        } catch {
+          // Ignore
+        }
+      }
+
+      // Prune git metadata
+      try {
+        gitExec(["worktree", "prune"], repoRoot);
+      } catch {
+        // Ignore prune failures
+      }
+
+      // Prune branch if enabled and (if baseRef is provided) unmerged
+      if (options.pruneBranches) {
+        const branchName = `perfgym/eval-${runId}`;
+        let shouldPrune = true;
+        if (options.baseRef) {
+          try {
+            gitExec(["merge-base", "--is-ancestor", branchName, options.baseRef], repoRoot);
+            // If branch is an ancestor of baseRef, it is merged
+            shouldPrune = false;
+          } catch {
+            // Not an ancestor -> unmerged
+            shouldPrune = true;
+          }
+        }
+
+        if (shouldPrune) {
+          try {
+            gitExec(["branch", "-D", branchName], repoRoot);
+          } catch {
+            // Ignore branch deletion errors
+          }
+        }
+      }
+
+      // Update manifest
+      delete this.manifestData[runId];
+      freedBytes += dirSize;
+      evictedRunIds.push(runId);
+
+      currentTotal = Math.max(0, currentTotal - dirSize);
+      if (currentTotal + estimatedNew <= options.capBytes) {
+        break;
+      }
+    }
+
+    if (currentTotal + estimatedNew > options.capBytes) {
+      // Save manifest before throwing to record any partial evictions
+      try {
+        this.save();
+      } catch {
+        // Ignore save error on throw
+      }
+
+      const totalUsed = currentTotal + estimatedNew;
+      const usedStr = formatBytes(totalUsed);
+      const capStr = formatBytes(options.capBytes);
+      throw new WorktreeDiskBudgetExceededError({
+        code: ERR_WORKTREE_DISK_BUDGET_EXCEEDED,
+        worktreeDir: this.worktreesDir,
+        capBytes: options.capBytes,
+        usedBytes: totalUsed,
+        message: `disk budget exceeded: ${usedStr} used, cap ${capStr}, nothing left to evict — raise \`sandbox.disk_budget_mb\` or free space`,
+      });
+    }
+
+    this.save();
+
+    return {
+      evictedRunIds,
+      freedBytes,
+      totalSizeBytes: currentTotal,
     };
   }
 
