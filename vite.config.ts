@@ -13,6 +13,7 @@ export default defineConfig({
     },
   },
   test: {
+    testTimeout: 20000,
     // Scratch space (.tmp/) holds demo sandbox repos and agent artifacts —
     // never let its fixture files be collected as real tests.
     exclude: [

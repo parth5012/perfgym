@@ -23,6 +23,7 @@ export * from "./memory/index.js";
 export * from "./formatter/index.js";
 export * from "./llm/index.js";
 export * from "./executor/index.js";
+export * from "./gc/index.js";
 
 export interface MetricResult {
   name: string;
