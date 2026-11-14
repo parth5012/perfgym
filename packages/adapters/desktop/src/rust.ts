@@ -1,6 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import type { MetricCollector, MetricResult, BenchmarkDistribution } from "@perfgym/core";
+import type { MetricCollector, BenchmarkDistribution } from "@perfgym/core";
+import { computeBenchmarkDistribution } from "@perfgym/core";
 
 const execAsync = promisify(exec);
 
@@ -18,16 +19,11 @@ export function parseCargoBenchJson(output: string): number[] {
 export class RustCargoBenchCollector implements MetricCollector {
   readonly name = "cargo-bench";
   constructor(private readonly command: string) {}
-  async collect(): Promise<MetricResult> {
-    try {
-      const { stdout } = await execAsync(this.command, { timeout: 30000 });
-      const samples = parseCargoBenchJson(stdout);
-      if (samples.length === 0) throw new Error("no cargo bench samples parsed");
-      const ns = samples.reduce((a, b) => a + b, 0) / samples.length;
-      const value = ns / 1e6;
-      return { name: "cargo_bench_ms", value, unit: "ms", improved: false, deltaPercent: 0 };
-    } catch (err) {
-      throw err;
-    }
+  async collect(): Promise<BenchmarkDistribution> {
+    const { stdout } = await execAsync(this.command, { timeout: 30000 });
+    const samples = parseCargoBenchJson(stdout);
+    if (samples.length === 0) throw new Error("no cargo bench samples parsed");
+    const msSamples = samples.map((s) => s / 1e6);
+    return computeBenchmarkDistribution(msSamples, "ms");
   }
 }

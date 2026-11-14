@@ -58,6 +58,6 @@ export function detectWebProfile(root: string): WebPlatformProfile {
     targetGlobs: globs,
     defaultInvariantCommand: invariantCmd,
     defaultMetricCommands: metricCommands.length ? metricCommands : [{ name: "bundle_bytes", command: `${pm} run build`, goal: "minimize", weight: 1, unit: "bytes" }],
-    rulePresets: ["no-await-in-loops", "no-fetch-in-loops", "no-unindexed-filter"],
+    rulePresets: ["no-await-in-loops", "no-unindexed-filter"],
   };
 }
