@@ -4,7 +4,6 @@ export class CdpMetricCollector implements MetricCollector {
   readonly name = "electron-cdp";
   constructor(private readonly options: { url?: string } = {}) {}
   async collect(): Promise<MetricResult> {
-    // Placeholder: real implementation connects over CDP.
-    return { name: "electron_heap_bytes", value: 0, unit: "bytes", improved: false, deltaPercent: 0 };
+    throw new Error("CdpMetricCollector not implemented: requires CDP connection");
   }
 }

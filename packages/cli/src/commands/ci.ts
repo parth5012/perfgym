@@ -23,6 +23,7 @@ export async function runCiCommand(): Promise<CiResult> {
   }
 
   const lines: string[] = ["### CI", "", `- Invariants: ${invariantPassed ? "✅ pass" : "❌ fail"}`];
+  if (!invariantPassed) lines.push("", "```", invariantOutput.trim(), "```");
   let passed = invariantPassed;
 
   if (Object.keys(baseline).length > 0) {
@@ -43,6 +44,10 @@ export async function runCiCommand(): Promise<CiResult> {
         const current = dist.p50;
         const delta = base && base > 0 ? (((metric.goal === "minimize" ? base - current : current - base) / base) * 100).toFixed(1) : "n/a";
         lines.push(`| ${metric.name} | ${base ?? "n/a"} | ${current} | ${delta}% |`);
+        if (base !== undefined) {
+          const regressed = metric.goal === "minimize" ? current > base : current < base;
+          if (regressed) passed = false;
+        }
       } catch (err: any) {
         passed = false;
         lines.push(`| ${metric.name} | ${base ?? "n/a"} | error | n/a |`);
