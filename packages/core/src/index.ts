@@ -19,6 +19,7 @@ export * from "./bench/blackhole.js";
 export * from "./pipeline/bootstrap.js";
 export * from "./pipeline/fitness.js";
 export * from "./pipeline/pipeline.js";
+export * from "./pipeline/component.js";
 export * from "./feedback/synthesizer.js";
 export * from "./memory/index.js";
 export * from "./formatter/index.js";
@@ -151,6 +152,11 @@ export interface PerfGymConfig {
      * accepting a possibly DCE-eliminated number.
      */
     requireChecksum?: boolean;
+    /**
+     * Ticket #86: require a timer stamp for this metric. A sample without
+     * any stamp (e.g. suppressed via removeAllListeners) is rejected.
+     */
+    requireTimerStamp?: boolean;
   }>;
   /**
    * Relative MAD floor of the tail guard (defaults to 0.01 = 1% of the
@@ -220,6 +226,16 @@ export interface PerfGymConfig {
     pruneBranches?: boolean;
   };
   /**
+   * Component-level budgets (Map 15). Each entry becomes a pass/fail gate
+   * feeding fitness penalties.
+   */
+  components?: Array<{
+    name: string;
+    selector: string;
+    metric: "render_duration_ms" | "wasted_renders" | "phase_count";
+    threshold: number;
+  }>;
+  /**
    * ADR-020 (map #74): the E2E certification pre-flight pass. Runs once
    * before the optimization loop and — with `beforePromotion` — once more
    * before the winning worktree is promoted. Never per-step. The plain
@@ -241,5 +257,15 @@ export interface PerfGymConfig {
     /** Run a second pass before promoting the winner (defaults to true). */
     beforePromotion?: boolean;
   };
+}
+
+/**
+ * Deep-module seam for platform adapters (Map 15). A collector hides its
+ * collection mechanics behind `collect()` and returns either a single
+ * `MetricResult` or a full `BenchmarkDistribution`.
+ */
+export interface MetricCollector {
+  readonly name: string;
+  collect(): Promise<MetricResult | BenchmarkDistribution>;
 }
 

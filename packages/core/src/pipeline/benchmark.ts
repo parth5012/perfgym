@@ -10,6 +10,7 @@ import { resolveCommandExecutor } from "../executor/resolve.js";
 import {
   areTimerStampsValid,
   hasNodeRequirePreload,
+  parseTimerStamps,
   withTimerBootstrap,
 } from "./bootstrap.js";
 
@@ -548,6 +549,7 @@ export interface BenchmarkRunOptions {
    * DCE-susceptible metric.
    */
   readonly requireChecksum?: boolean;
+  readonly requireTimerStamp?: boolean;
   /**
    * Provide to enforce frozen-harness tamper protection (existence, non-empty,
    * all files read-only). Omit for the plain benchmarking API with no
@@ -830,7 +832,9 @@ export const runBenchmark = (
       }
 
       // Tripwire first: a tampered clock invalidates whatever stdout says.
-      if (!areTimerStampsValid(captured.stderr)) {
+      const parsedStamps = parseTimerStamps(captured.stderr);
+      const missingRequiredStamp = options.requireTimerStamp === true && parsedStamps.length === 0;
+      if (!areTimerStampsValid(captured.stderr) || missingRequiredStamp) {
         rejectedSamples += 1;
         stampRejections += 1;
         if (rejectedSamples > sampleCount) {

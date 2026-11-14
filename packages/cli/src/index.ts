@@ -32,6 +32,9 @@ import {
   renderStructuredError,
 } from "./engine.js";
 import { runOptimizationLoop } from "./commands/run.js";
+import { runComponentCommand } from "./commands/component.js";
+import { runWatchCommand } from "./commands/watch.js";
+import { runCiCommand } from "./commands/ci.js";
 import {
   runStatusCommand,
   runRollbackCommand,
@@ -756,6 +759,50 @@ memoryCommand
     } catch (error: unknown) {
       fail(formatter, options, error);
     }
+  });
+
+program
+  .command("component")
+  .description("Show configured component budgets and monitoring status")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action((options: OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+    applyColorPolicy(formatter, options);
+    const res = runComponentCommand();
+    write(render(formatter, res.markdown, options));
+  });
+
+program
+  .command("watch")
+  .description("Watch target files and re-run evaluation on change (no commits)")
+  .action(() => {
+    runWatchCommand();
+  });
+
+program
+  .command("ci")
+  .description("One-shot baseline compare for CI/PR comments")
+  .option(...OUTPUT_OPTIONS[0])
+  .option(...OUTPUT_OPTIONS[1])
+  .action((options: OutputOptions) => {
+    let formatter: OutputFormatter;
+    try {
+      formatter = resolveFormatter(options);
+    } catch (error: unknown) {
+      fail(resolveFormatter({}), options, error);
+      return;
+    }
+    applyColorPolicy(formatter, options);
+    const res = runCiCommand();
+    write(render(formatter, res.markdown, options));
+    process.exitCode = res.exitCode;
   });
 
 export { program };

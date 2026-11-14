@@ -3,6 +3,18 @@
   "version": "0.1.0",
   "description": "Autonomous Code Optimization & Linting Gym for AI Coding Agents",
   "type": "module",
+  "main": "./dist/core.js",
+  "types": "./dist/core.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./bench": {
+      "types": "./dist/bench.d.ts",
+      "import": "./dist/bench.js"
+    }
+  },
   "bin": {
     "perfgym": "./bin/perfgym.js",
     "perfgym-mcp": "./bin/perfgym-mcp.js"
