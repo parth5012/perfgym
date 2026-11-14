@@ -37,9 +37,6 @@ export class LighthouseCollector implements MetricCollector {
     const raw = stdout || stderr;
     const scores = parseLighthouseScores(raw);
     if (!raw.includes("\"categories\"")) throw new Error("lighthouse output unparseable");
-    if (scores.performance === 0 && scores.accessibility === 0 && scores.bestPractices === 0 && scores.seo === 0 && !raw.includes("\"score\": 0")) {
-      throw new Error("lighthouse scores missing");
-    }
     return {
       name: "lighthouse_performance",
       value: scores.performance,

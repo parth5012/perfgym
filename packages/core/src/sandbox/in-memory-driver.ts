@@ -22,29 +22,10 @@ export interface InMemoryCommit {
   timestamp: number;
 }
 
+import { matchesGlob as sharedMatchesGlob } from "./git-worktree-driver.js";
+
 function matchesGlob(pattern: string, targetPath: string): boolean {
-  const normPattern = pattern.replace(/\\/g, "/");
-  const normPath = targetPath.replace(/\\/g, "/");
-
-  const isWin = process.platform === "win32";
-  if (isWin ? normPattern.toLowerCase() === normPath.toLowerCase() : normPattern === normPath) {
-    return true;
-  }
-
-  const regexStr = normPattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\?/g, "[^/]")
-    .replace(/\/\*\*\//g, "___SLASH_GLOBSTAR_SLASH___")
-    .replace(/\/\*\*$/g, "___SLASH_GLOBSTAR_END___")
-    .replace(/^\*\*\//g, "___GLOBSTAR_SLASH_START___")
-    .replace(/\*\*/g, "___GLOBSTAR___")
-    .replace(/\*/g, "[^/]*")
-    .replace(/___GLOBSTAR___/g, ".*")
-    .replace(/___SLASH_GLOBSTAR_SLASH___/g, "/(?:.*/)?")
-    .replace(/___SLASH_GLOBSTAR_END___/g, "(?:/.*)?")
-    .replace(/___GLOBSTAR_SLASH_START___/g, "(?:.*/)?");
-
-  return new RegExp(`^${regexStr}$`, isWin ? "i" : "").test(normPath);
+  return sharedMatchesGlob(pattern, targetPath);
 }
 
 export class InMemorySandboxDriver implements WorkspaceDriver {
