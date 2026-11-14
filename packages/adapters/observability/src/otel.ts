@@ -14,10 +14,6 @@ export class OtelSpanMetricCollector implements MetricCollector {
   async collect(): Promise<BenchmarkDistribution> {
     const durations = await this.provider();
     const dist = computeDistribution(durations, this.unit);
-    // Optional OTLP export via env var (stubbed; no network by default).
-    if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
-      // In a full implementation this would export dist via OTLP.
-    }
     return dist;
   }
 }

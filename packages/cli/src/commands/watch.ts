@@ -6,38 +6,6 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
-export function matchGlob(filename: string, pattern: string): boolean {
-  const placeholder = "\u0000";
-  // Expand brace groups {a,b} -> (a|b) using a placeholder so the later
-  // escaping pass does not mangle the alternation.
-  const braceMatch = pattern.match(/\{[^}]+\}/);
-  let working = pattern;
-  let braceAlt: string | null = null;
-  if (braceMatch) {
-    const options = braceMatch[0].slice(1, -1).split(",");
-    braceAlt = `(${options.map((o) => o.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|")})`;
-    working = working.replace(braceMatch[0], "\u0001");
-  }
-  const escaped = working.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  const withDouble = escaped
-    .replace(/\*\*\//g, `${placeholder}SLASH`)
-    .replace(/\/\*\*/g, `SLASH${placeholder}`)
-    .replace(/\*\*/g, placeholder)
-    .replace(/\u0001/g, braceAlt ?? "");
-  const regexSource =
-    "^" +
-    withDouble
-      .replace(/\*/g, "[^/]*")
-      .replace(new RegExp(`${placeholder}SLASH`, "g"), "(?:.*/)?")
-      .replace(new RegExp(`SLASH${placeholder}`, "g"), "(?:/.*)?")
-      .replace(new RegExp(placeholder, "g"), ".*") +
-    "$";
-  const regex = new RegExp(regexSource);
-  if (regex.test(filename)) return true;
-  const root = pattern.split("/")[0];
-  return regex.test(`${root}/${filename}`);
-}
-
 export interface WatchOptions {
   onEvent?: (msg: string) => void;
 }
