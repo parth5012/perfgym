@@ -842,13 +842,19 @@ export const runBenchmark = (
             benchmarkFailure(
               options.command,
               "invalid timer stamp",
-              `Benchmark command "${options.command}" produced ${stampRejections} sample(s) with ` +
-                "tampered, zero-elapsed, or non-monotonic timer stamps — out of " +
-                `${rejectedSamples} total rejection(s) (${checksumRejections} failed checksum ` +
-                "verification) — the immutable timer bootstrap rejected them and the " +
-                `re-collection budget (${sampleCount} within the sample budget) is exhausted. ` +
-                "Stop replacing Date/performance/hrtime in the benchmark; read time through " +
-                "globalThis.__perfgymOriginalTimers instead.",
+              (missingRequiredStamp
+                ? `Benchmark command "${options.command}" produced ${stampRejections} sample(s) with ` +
+                  "no required timer stamp — out of " +
+                  `${rejectedSamples} total rejection(s) (${checksumRejections} failed checksum ` +
+                  "verification) — require_timer_stamp is set but no __perfgym_stamp__ was published, " +
+                  `and the re-collection budget (${sampleCount} within the sample budget) is exhausted.`
+                : `Benchmark command "${options.command}" produced ${stampRejections} sample(s) with ` +
+                  "tampered, zero-elapsed, or non-monotonic timer stamps — out of " +
+                  `${rejectedSamples} total rejection(s) (${checksumRejections} failed checksum ` +
+                  "verification) — the immutable timer bootstrap rejected them and the " +
+                  `re-collection budget (${sampleCount} within the sample budget) is exhausted. ` +
+                  "Stop replacing Date/performance/hrtime in the benchmark; read time through " +
+                  "globalThis.__perfgymOriginalTimers instead."),
               captured.stderr.trim()
             )
           );

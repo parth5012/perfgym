@@ -734,6 +734,8 @@ export function runBaseline(
           ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
           // Ticket #54 (FLAW-10): strict per-metric checksum opt-in.
           ...(metric.requireChecksum === true ? { requireChecksum: true } : {}),
+          // Ticket #86: timer-stamp requirement.
+          ...(metric.requireTimerStamp === true ? { requireTimerStamp: true } : {}),
         }),
       );
 

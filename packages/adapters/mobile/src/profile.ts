@@ -10,11 +10,9 @@ export interface MobilePlatformProfile {
 }
 
 export function detectMobileProfile(root: string): MobilePlatformProfile {
-  let hasGradle = existsSync(join(root, "build.gradle")) || existsSync(join(root, "build.gradle.kts"));
-  let pkg = "";
-  try { pkg = readFileSync(join(root, "settings.gradle"), "utf8"); } catch {}
+  const hasGradle = existsSync(join(root, "build.gradle")) || existsSync(join(root, "build.gradle.kts"));
   return {
-    name: "android-mobile",
+    name: hasGradle ? "android-mobile" : "unknown-mobile",
     targetGlobs: ["app/src/main/**/*.kt", "app/src/main/**/*.java"],
     defaultInvariantCommand: "./gradlew test",
     defaultMetricCommands: [

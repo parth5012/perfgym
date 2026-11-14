@@ -20,13 +20,14 @@ export class RustCargoBenchCollector implements MetricCollector {
   constructor(private readonly command: string) {}
   async collect(): Promise<MetricResult> {
     try {
-      const { stdout } = await execAsync(this.command);
+      const { stdout } = await execAsync(this.command, { timeout: 30000 });
       const samples = parseCargoBenchJson(stdout);
-      const ns = samples.length ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
+      if (samples.length === 0) throw new Error("no cargo bench samples parsed");
+      const ns = samples.reduce((a, b) => a + b, 0) / samples.length;
       const value = ns / 1e6;
       return { name: "cargo_bench_ms", value, unit: "ms", improved: false, deltaPercent: 0 };
-    } catch (err: any) {
-      return { name: "cargo_bench_ns", value: 0, unit: "ms", improved: false, deltaPercent: 0 };
+    } catch (err) {
+      throw err;
     }
   }
 }

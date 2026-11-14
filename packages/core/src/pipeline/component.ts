@@ -10,6 +10,7 @@ export interface ComponentMetric {
   renderDurationMs: number;
   phase: "mount" | "update";
   wastedRenders: number;
+  phaseCount?: number;
 }
 
 export interface ComponentEvaluation {
@@ -29,7 +30,9 @@ export function evaluateComponentBudget(
       ? metric.renderDurationMs
       : budget.metric === "wasted_renders"
         ? metric.wastedRenders
-        : 1;
+        : budget.metric === "phase_count"
+          ? (metric.phaseCount ?? 1)
+          : metric.renderDurationMs;
   const passed = value <= budget.threshold;
   return { name: budget.name, passed, value, threshold: budget.threshold, penalty: passed ? 0 : 10 };
 }

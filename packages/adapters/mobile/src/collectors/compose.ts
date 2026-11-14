@@ -12,11 +12,8 @@ export class ComposeRecompositionCollector implements MetricCollector {
   readonly name = "compose";
   constructor(private readonly command: string) {}
   async collect(): Promise<MetricResult> {
-    try {
-      const { stdout, stderr } = await execAsync(this.command);
-      return { name: "recomposition_count", value: parseRecompositionCount(`${stdout}\n${stderr}`), unit: "count", improved: false, deltaPercent: 0 };
-    } catch (err: any) {
-      return { name: "recomposition_count", value: parseRecompositionCount(`${err?.stdout ?? ""}\n${err?.stderr ?? ""}`), unit: "count", improved: false, deltaPercent: 0 };
-    }
+    const { stdout, stderr } = await execAsync(this.command, { timeout: 30000 });
+    const value = parseRecompositionCount(`${stdout}\n${stderr}`);
+    return { name: "recomposition_count", value, unit: "count", improved: false, deltaPercent: 0 };
   }
 }
