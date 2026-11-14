@@ -7,8 +7,7 @@ export class ReactProfilerCollector implements MetricCollector {
 
   async collect(): Promise<MetricResult> {
     try {
-      // @ts-ignore
-      await import("playwright");
+      await import("playwright" as any);
     } catch {
       throw new Error("ReactProfilerCollector requires playwright; install it to enable component monitoring");
     }

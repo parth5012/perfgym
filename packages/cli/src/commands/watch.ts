@@ -1,5 +1,6 @@
 import { watch } from "node:fs";
 import { loadConfig } from "../engine.js";
+import { matchesGlob } from "@perfgym/core";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -82,7 +83,7 @@ export function runWatchCommand(options: WatchOptions = {}): { stop: () => void 
       if (!filename) return;
       const rel = filename.toString().replace(/\\/g, "/");
       const fullPath = root === "." ? rel : `${root}/${rel}`;
-      if (!files.some((f: string) => matchGlob(fullPath, f))) return;
+      if (!files.some((f: string) => matchesGlob(f, fullPath))) return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => void runInvariants(), 200);
     });
