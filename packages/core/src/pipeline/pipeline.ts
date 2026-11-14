@@ -390,6 +390,7 @@ export class EvaluationPipeline {
             ...(metricConfig.timeoutMs !== undefined ? { timeoutMs: metricConfig.timeoutMs } : {}),
             // Ticket #54 (FLAW-10): strict per-metric checksum opt-in.
             ...(metricConfig.requireChecksum === true ? { requireChecksum: true } : {}),
+            ...(metricConfig.requireTimerStamp === true ? { requireTimerStamp: true } : {}),
             ...(harnessEnforcementDir !== null && harnessEnforcementDir !== ""
               ? { harnessDir: harnessEnforcementDir }
               : {}),

@@ -622,6 +622,7 @@ export class McpServerCoordinator {
           ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
           // Ticket #54 (FLAW-10): strict per-metric checksum opt-in.
           ...(metric.requireChecksum === true ? { requireChecksum: true } : {}),
+          ...(metric.requireTimerStamp === true ? { requireTimerStamp: true } : {}),
         })
       );
 
@@ -1073,6 +1074,7 @@ export class McpServerCoordinator {
           : {}),
         // Ticket #54 (FLAW-10): strict per-metric checksum opt-in.
         ...(metricConfig.requireChecksum === true ? { requireChecksum: true } : {}),
+        ...(metricConfig.requireTimerStamp === true ? { requireTimerStamp: true } : {}),
       })
     );
 

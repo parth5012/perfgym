@@ -226,13 +226,12 @@ const normaliseMetrics = (config: Record<string, unknown>): PerfGymConfig["metri
   return metrics.map((entry) => {
     const metric = asRecord(entry) ?? {};
     const flag = metric.requireChecksum ?? metric.require_checksum;
-    // `timeout_ms` is the documented YAML spelling (SPECIFICATION.md); both
-    // spellings are accepted. A non-numeric value is dropped so the runner's
-    // default timeout applies.
+    const timerFlag = metric.requireTimerStamp ?? metric.require_timer_stamp;
     const timeout = metric.timeoutMs ?? metric.timeout_ms;
     return {
       ...metric,
       ...(typeof flag === "boolean" ? { requireChecksum: flag } : {}),
+      ...(typeof timerFlag === "boolean" ? { requireTimerStamp: timerFlag } : {}),
       ...(typeof timeout === "number" ? { timeoutMs: timeout } : {}),
     } as PerfGymConfig["metrics"][number];
   });

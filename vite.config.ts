@@ -9,6 +9,9 @@ export default defineConfig({
       "@perfgym/cli": resolve(__dirname, "packages/cli/src/index.ts"),
       "@perfgym/linter": resolve(__dirname, "packages/linter/src/index.ts"),
       "@perfgym/adapter-web": resolve(__dirname, "packages/adapters/web/src/index.ts"),
+      "@perfgym/adapter-observability": resolve(__dirname, "packages/adapters/observability/src/index.ts"),
+      "@perfgym/adapter-mobile": resolve(__dirname, "packages/adapters/mobile/src/index.ts"),
+      "@perfgym/adapter-desktop": resolve(__dirname, "packages/adapters/desktop/src/index.ts"),
       "@perfgym/mcp-server": resolve(__dirname, "packages/mcp-server/src/index.ts"),
     },
   },
@@ -33,6 +36,7 @@ export default defineConfig({
       entry: {
         cli: resolve(__dirname, "packages/cli/src/index.ts"),
         core: resolve(__dirname, "packages/core/src/index.ts"),
+        bench: resolve(__dirname, "packages/core/src/bench/blackhole.ts"),
         linter: resolve(__dirname, "packages/linter/src/index.ts"),
         "adapter-web": resolve(__dirname, "packages/adapters/web/src/index.ts")
       },
@@ -50,7 +54,8 @@ export default defineConfig({
         "commander",
         "yaml",
         "zod",
-        "chalk"
+        "chalk",
+        "playwright"
       ]
     }
   }
