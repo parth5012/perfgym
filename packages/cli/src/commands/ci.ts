@@ -1,5 +1,5 @@
 import { loadConfig, loadSession } from "../engine.js";
-import { runBenchmark } from "../../../core/src/index.js";
+import { runBenchmark, runInvariantGate } from "../../../core/src/index.js";
 import { execSync } from "node:child_process";
 import { Effect } from "effect";
 
@@ -16,17 +16,24 @@ export async function runCiCommand(): Promise<CiResult> {
   let invariantPassed = true;
   let invariantOutput = "";
   try {
-    invariantOutput = execSync(config.invariants.command, { timeout: config.invariants.timeoutMs ?? 10000, encoding: "utf8", maxBuffer: 1024 * 1024 });
+    const res = await Effect.runPromise(
+      runInvariantGate({ command: config.invariants.command, timeoutMs: config.invariants.timeoutMs ?? 10000 }),
+    );
+    invariantPassed = res.passed;
+    invariantOutput = res.output;
   } catch (err: any) {
     invariantPassed = false;
-    invariantOutput = err?.stdout ?? err?.stderr ?? err?.message ?? "";
+    invariantOutput = err?.stderr ?? err?.stdout ?? err?.message ?? "";
   }
 
   const lines: string[] = ["### CI", "", `- Invariants: ${invariantPassed ? "✅ pass" : "❌ fail"}`];
   if (!invariantPassed) lines.push("", "```", invariantOutput.trim(), "```");
   let passed = invariantPassed;
 
-  if (Object.keys(baseline).length > 0) {
+  if (Object.keys(baseline).length === 0) {
+    passed = false;
+    lines.push("", "⚠️ No baseline found. Run `perfgym baseline` first; nothing was compared.");
+  } else {
     lines.push("", "| Metric | Baseline | Current | Δ |", "|---|---:|---:|---:|");
     for (const metric of config.metrics) {
       const base = baseline[metric.name];
