@@ -61,9 +61,9 @@ silently reporting a wrong (often all-zero) number. Metric scripts can defend
 against this by consuming the value through `blackhole(value)` (exported from
 the core entry, `packages/core/src/index.ts`; benchmark scripts inside this
 repository import it as `import { blackhole } from "@perfgym/core"`, resolved
-by the TS/Vite path aliases — note the aliases are the ONLY resolution today:
-the root package has no `exports` map, so alias-free consumption from outside
-the repository is not yet packaged and is tracked as a follow-up): the sink
+by the TS/Vite path aliases — the root package now ships an `exports` map for
+`.` and `./bench`, but type declarations are not yet emitted by the build, so
+alias-free TypeScript consumption is still limited): the sink
 returns the value
 unchanged and, on process exit, publishes an FNV-1a checksum of it on stderr
 (`__perfgym_checksum__{...}`). The runner verifies the published checksum
