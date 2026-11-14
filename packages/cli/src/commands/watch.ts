@@ -1,6 +1,6 @@
 import { watch } from "node:fs";
 import { loadConfig } from "../engine.js";
-import { matchesGlob } from "@perfgym/core";
+import { matchesGlob } from "../../../core/src/index.js";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
