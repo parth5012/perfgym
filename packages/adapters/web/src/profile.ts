@@ -39,11 +39,11 @@ export function detectWebProfile(root: string): WebPlatformProfile {
   const pm = isBun ? "bun" : "npm";
 
   const invariantCmd =
-    scripts.test ? `${pm} test` : scripts["test:unit"] ? `${pm} run test:unit` : DEFAULT_INVARIANT;
+    scripts.test ? (pm === "bun" ? "bun run test" : `${pm} test`) : scripts["test:unit"] ? `${pm} run test:unit` : DEFAULT_INVARIANT;
 
   const metricCommands: WebMetricCommand[] = [];
   if (scripts.build) {
-    metricCommands.push({ name: "bundle_bytes", command: `${pm} run build`, goal: "minimize", weight: 0.6, unit: "bytes" });
+    metricCommands.push({ name: "bundle_bytes", command: pm === "bun" ? "bun run build" : `${pm} run build`, goal: "minimize", weight: 0.6, unit: "bytes" });
   }
   if (has("lighthouse") || has("@lhci/cli")) {
     metricCommands.push({ name: "lighthouse_performance", command: "npx lighthouse http://localhost:3000 --output=json --quiet", goal: "maximize", weight: 0.4, unit: "count" });

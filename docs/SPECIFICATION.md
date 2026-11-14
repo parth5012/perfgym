@@ -28,6 +28,7 @@ metrics:
     goal: "minimize" | "maximize"
     weight: number
     require_checksum?: boolean  # strict opt-in: re-collect/fail on a missing or mismatched blackhole() checksum (FLAW-10)
+    require_timer_stamp?: boolean  # strict opt-in: re-collect/fail when no __perfgym_stamp__ is published (FLAW-09)
 
 agent_budget:
   max_iterations?: number

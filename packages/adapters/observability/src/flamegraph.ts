@@ -6,8 +6,13 @@ import { computeDistribution } from "./stats.js";
 const execAsync = promisify(exec);
 
 export function parseDurations(output: string): number[] {
-  const matches = output.match(/-?\d+(?:\.\d+)?/g);
-  return matches ? matches.map((m) => parseFloat(m)).filter((n) => Number.isFinite(n)) : [];
+  const matches = output.match(/(?:duration_ms|ms)\s*[:=]\s*(-?\d+(?:\.\d+)?)/gi) ?? [];
+  return matches
+    .map((m) => {
+      const n = m.match(/(-?\d+(?:\.\d+)?)\s*$/);
+      return n ? parseFloat(n[1]) : NaN;
+    })
+    .filter((n) => Number.isFinite(n));
 }
 
 export class CpuFlameGraphCollector implements MetricCollector {
@@ -16,13 +21,9 @@ export class CpuFlameGraphCollector implements MetricCollector {
   constructor(private readonly command: string, private readonly unit: string = "ms") {}
 
   async collect(): Promise<BenchmarkDistribution> {
-    try {
-      const { stdout, stderr } = await execAsync(this.command);
-      const samples = parseDurations(`${stdout}\n${stderr}`);
-      return computeDistribution(samples, this.unit);
-    } catch (err: any) {
-      const samples = parseDurations(`${err?.stdout ?? ""}\n${err?.stderr ?? ""}`);
-      return computeDistribution(samples, this.unit);
-    }
+    const { stdout, stderr } = await execAsync(this.command, { timeout: 30000 });
+    const samples = parseDurations(`${stdout}\n${stderr}`);
+    if (samples.length === 0) throw new Error("no durations parsed");
+    return computeDistribution(samples, this.unit);
   }
 }

@@ -16,8 +16,7 @@ export function parseBundleSize(output: string): number {
     const multiplier = unit === "kb" ? 1024 : unit === "mb" ? 1024 * 1024 : 1024 * 1024 * 1024;
     return Math.round(value * multiplier);
   }
-  const fallback = output.match(/(\d+)/);
-  return fallback ? parseInt(fallback[1], 10) : 0;
+  return 0;
 }
 
 export class BundleCollector implements MetricCollector {
@@ -26,13 +25,9 @@ export class BundleCollector implements MetricCollector {
   constructor(private readonly command: string) {}
 
   async collect(): Promise<MetricResult> {
-    try {
-      const { stdout, stderr } = await execAsync(this.command);
-      const bytes = parseBundleSize(`${stdout}\n${stderr}`);
-      return { name: "bundle_bytes", value: bytes, unit: "bytes", improved: false, deltaPercent: 0 };
-    } catch (err: any) {
-      const bytes = parseBundleSize(`${err?.stdout ?? ""}\n${err?.stderr ?? ""}\n${err?.message ?? ""}`);
-      return { name: "bundle_bytes", value: bytes, unit: "bytes", improved: false, deltaPercent: 0 };
-    }
+    const { stdout, stderr } = await execAsync(this.command, { timeout: 30000 });
+    const bytes = parseBundleSize(`${stdout}\n${stderr}`);
+    if (bytes <= 0) throw new Error("bundle size not found");
+    return { name: "bundle_bytes", value: bytes, unit: "bytes", improved: false, deltaPercent: 0 };
   }
 }

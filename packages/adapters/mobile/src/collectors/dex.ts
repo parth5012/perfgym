@@ -12,11 +12,9 @@ export class DexSizeCollector implements MetricCollector {
   readonly name = "dex";
   constructor(private readonly command: string) {}
   async collect(): Promise<MetricResult> {
-    try {
-      const { stdout, stderr } = await execAsync(this.command);
-      return { name: "dex_size_bytes", value: parseDexSize(`${stdout}\n${stderr}`), unit: "bytes", improved: false, deltaPercent: 0 };
-    } catch (err: any) {
-      return { name: "dex_size_bytes", value: parseDexSize(`${err?.stdout ?? ""}\n${err?.stderr ?? ""}`), unit: "bytes", improved: false, deltaPercent: 0 };
-    }
+    const { stdout, stderr } = await execAsync(this.command, { timeout: 30000 });
+    const value = parseDexSize(`${stdout}\n${stderr}`);
+    if (value <= 0) throw new Error("dex size not found");
+    return { name: "dex_size_bytes", value, unit: "bytes", improved: false, deltaPercent: 0 };
   }
 }

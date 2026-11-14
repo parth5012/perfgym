@@ -33,25 +33,14 @@ export class LighthouseCollector implements MetricCollector {
   constructor(private readonly command: string) {}
 
   async collect(): Promise<MetricResult> {
-    try {
-      const { stdout, stderr } = await execAsync(this.command);
-      const scores = parseLighthouseScores(stdout || stderr);
-      return {
-        name: "lighthouse_performance",
-        value: scores.performance,
-        unit: "count",
-        improved: false,
-        deltaPercent: 0,
-      };
-    } catch (err: any) {
-      const scores = parseLighthouseScores(err?.stdout ?? err?.stderr ?? "");
-      return {
-        name: "lighthouse_performance",
-        value: scores.performance,
-        unit: "count",
-        improved: false,
-        deltaPercent: 0,
-      };
-    }
+    const { stdout, stderr } = await execAsync(this.command, { timeout: 60000 });
+    const scores = parseLighthouseScores(stdout || stderr);
+    return {
+      name: "lighthouse_performance",
+      value: scores.performance,
+      unit: "count",
+      improved: false,
+      deltaPercent: 0,
+    };
   }
 }

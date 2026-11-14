@@ -13,6 +13,6 @@ describe("otel collector", () => {
 
 describe("flamegraph parser", () => {
   it("parses durations", () => {
-    expect(parseDurations("a 1 2.5 x")).toEqual([1, 2.5]);
+    expect(parseDurations("duration_ms: 1\nduration_ms: 2.5")).toEqual([1, 2.5]);
   });
 });

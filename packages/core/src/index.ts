@@ -226,8 +226,7 @@ export interface PerfGymConfig {
     pruneBranches?: boolean;
   };
   /**
-   * Component-level budgets (Map 15). Each entry becomes a pass/fail gate
-   * feeding fitness penalties.
+   * Component-level budgets (Map 15). Model only; fitness integration pending.
    */
   components?: Array<{
     name: string;

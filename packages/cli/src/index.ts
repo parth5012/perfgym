@@ -791,7 +791,7 @@ program
   .description("One-shot baseline compare for CI/PR comments")
   .option(...OUTPUT_OPTIONS[0])
   .option(...OUTPUT_OPTIONS[1])
-  .action((options: OutputOptions) => {
+  .action(async (options: OutputOptions) => {
     let formatter: OutputFormatter;
     try {
       formatter = resolveFormatter(options);
@@ -800,9 +800,13 @@ program
       return;
     }
     applyColorPolicy(formatter, options);
-    const res = runCiCommand();
-    write(render(formatter, res.markdown, options));
-    process.exitCode = res.exitCode;
+    try {
+      const res = await runCiCommand();
+      write(render(formatter, res.markdown, options));
+      process.exitCode = res.exitCode;
+    } catch (error: unknown) {
+      fail(formatter, options, error);
+    }
   });
 
 export { program };
