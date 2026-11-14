@@ -7,18 +7,22 @@ const execAsync = promisify(exec);
 
 export function matchGlob(filename: string, pattern: string): boolean {
   const placeholder = "\u0000";
-  // Expand brace groups {a,b} -> (a|b)
-  let expanded = pattern;
-  const braceMatch = expanded.match(/\{[^}]+\}/);
+  // Expand brace groups {a,b} -> (a|b) using a placeholder so the later
+  // escaping pass does not mangle the alternation.
+  const braceMatch = pattern.match(/\{[^}]+\}/);
+  let working = pattern;
+  let braceAlt: string | null = null;
   if (braceMatch) {
     const options = braceMatch[0].slice(1, -1).split(",");
-    expanded = expanded.replace(braceMatch[0], `(${options.map((o) => o.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|")})`);
+    braceAlt = `(${options.map((o) => o.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|")})`;
+    working = working.replace(braceMatch[0], "\u0001");
   }
-  const escaped = expanded.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const escaped = working.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   const withDouble = escaped
     .replace(/\*\*\//g, `${placeholder}SLASH`)
     .replace(/\/\*\*/g, `SLASH${placeholder}`)
-    .replace(/\*\*/g, placeholder);
+    .replace(/\*\*/g, placeholder)
+    .replace(/\u0001/g, braceAlt ?? "");
   const regexSource =
     "^" +
     withDouble
@@ -84,5 +88,5 @@ export function runWatchCommand(options: WatchOptions = {}): { stop: () => void 
     });
     watchers.push(w);
   }
-  return { stop: () => watchers.forEach((w) => w.close()) };
+  return { stop: () => { if (debounceTimer) clearTimeout(debounceTimer); watchers.forEach((w) => w.close()); } };
 }

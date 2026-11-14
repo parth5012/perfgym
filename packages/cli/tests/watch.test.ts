@@ -9,4 +9,9 @@ describe("watch matchGlob", () => {
   it("matches star glob", () => {
     expect(matchGlob("a.ts", "src/**/*")).toBe(true);
   });
+  it("matches brace glob", () => {
+    expect(matchGlob("src/a.ts", "src/*.{ts,tsx}")).toBe(true);
+    expect(matchGlob("src/b.tsx", "src/*.{ts,tsx}")).toBe(true);
+    expect(matchGlob("src/c.js", "src/*.{ts,tsx}")).toBe(false);
+  });
 });
