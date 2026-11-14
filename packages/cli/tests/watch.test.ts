@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { matchesGlob } from "@perfgym/core";
+import { matchesGlob } from "../../core/src/index.js";
 
 describe("watch glob matching", () => {
   it("matches nested glob", () => {
