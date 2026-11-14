@@ -5,16 +5,25 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 
-function matchGlob(filename: string, pattern: string): boolean {
-  const regex = new RegExp(
+export function matchGlob(filename: string, pattern: string): boolean {
+  const placeholder = "\u0000";
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const withDouble = escaped
+    .replace(/\*\*\//g, `${placeholder}SLASH`)
+    .replace(/\/\*\*/g, `SLASH${placeholder}`)
+    .replace(/\*\*/g, placeholder);
+  const regexSource =
     "^" +
-      pattern
-        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-        .replace(/\*\*/g, ".*")
-        .replace(/\*/g, "[^/]*") +
-      "$",
-  );
-  return regex.test(filename);
+    withDouble
+      .replace(/\*/g, "[^/]*")
+      .replace(new RegExp(`${placeholder}SLASH`, "g"), "(?:.*/)?")
+      .replace(new RegExp(`SLASH${placeholder}`, "g"), "(?:/.*)?")
+      .replace(new RegExp(placeholder, "g"), ".*") +
+    "$";
+  const regex = new RegExp(regexSource);
+  if (regex.test(filename)) return true;
+  const root = pattern.split("/")[0];
+  return regex.test(`${root}/${filename}`);
 }
 
 export interface WatchOptions {

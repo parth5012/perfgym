@@ -34,7 +34,9 @@ export class LighthouseCollector implements MetricCollector {
 
   async collect(): Promise<MetricResult> {
     const { stdout, stderr } = await execAsync(this.command, { timeout: 60000 });
-    const scores = parseLighthouseScores(stdout || stderr);
+    const raw = stdout || stderr;
+    const scores = parseLighthouseScores(raw);
+    if (!raw.includes("\"categories\"")) throw new Error("lighthouse output unparseable");
     return {
       name: "lighthouse_performance",
       value: scores.performance,
