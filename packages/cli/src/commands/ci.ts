@@ -1,6 +1,5 @@
 import { loadConfig, loadSession } from "../engine.js";
 import { runBenchmark, runInvariantGate } from "../../../core/src/index.js";
-import { execSync } from "node:child_process";
 import { Effect } from "effect";
 
 export interface CiResult {

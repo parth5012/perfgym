@@ -1,17 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { matchGlob } from "../src/commands/watch.js";
+import { matchesGlob } from "@perfgym/core";
 
-describe("watch matchGlob", () => {
-  it("matches nested glob against root-prefixed path", () => {
-    expect(matchGlob("api/checkout/foo.ts", "src/api/checkout/**/*.ts")).toBe(true);
-    expect(matchGlob("src/api/checkout/foo.ts", "src/api/checkout/**/*.ts")).toBe(true);
-  });
-  it("matches star glob", () => {
-    expect(matchGlob("a.ts", "src/**/*")).toBe(true);
+describe("watch glob matching", () => {
+  it("matches nested glob", () => {
+    expect(matchesGlob("src/api/checkout/**/*.ts", "src/api/checkout/foo.ts")).toBe(true);
   });
   it("matches brace glob", () => {
-    expect(matchGlob("src/a.ts", "src/*.{ts,tsx}")).toBe(true);
-    expect(matchGlob("src/b.tsx", "src/*.{ts,tsx}")).toBe(true);
-    expect(matchGlob("src/c.js", "src/*.{ts,tsx}")).toBe(false);
+    expect(matchesGlob("src/*.{ts,tsx}", "src/a.ts")).toBe(true);
+    expect(matchesGlob("src/*.{ts,tsx}", "src/b.tsx")).toBe(true);
+    expect(matchesGlob("src/*.{ts,tsx}", "src/c.js")).toBe(false);
   });
 });

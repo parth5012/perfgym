@@ -36,8 +36,20 @@ export function matchesGlob(pattern: string, targetPath: string): boolean {
     return true;
   }
 
-  const regexStr = normPattern
+  // Expand brace groups {a,b} before escaping, using a placeholder so the
+  // alternation survives the escaping pass.
+  const braceMatch = normPattern.match(/\{[^}]+\}/);
+  let workingPattern = normPattern;
+  let braceAlt: string | null = null;
+  if (braceMatch) {
+    const opts = braceMatch[0].slice(1, -1).split(",");
+    braceAlt = `(${opts.map((o) => o.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|")})`;
+    workingPattern = workingPattern.replace(braceMatch[0], "\u0001");
+  }
+
+  const regexStr = workingPattern
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\u0001/g, braceAlt ?? "")
     .replace(/\?/g, "[^/]")
     .replace(/\/\*\*\//g, "___SLASH_GLOBSTAR_SLASH___")
     .replace(/\/\*\*$/g, "___SLASH_GLOBSTAR_END___")
