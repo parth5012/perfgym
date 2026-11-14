@@ -19,6 +19,6 @@ export function detectMobileProfile(root: string): MobilePlatformProfile {
       { name: "recomposition_count", command: "./gradlew benchmark", goal: "minimize", weight: 0.4, unit: "count" },
       { name: "dex_size_bytes", command: "./gradlew assembleRelease", goal: "minimize", weight: 0.6, unit: "bytes" },
     ],
-    rulePresets: ["no-unstable-compose-state"],
+    rulePresets: [],
   };
 }

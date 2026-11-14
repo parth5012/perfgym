@@ -41,7 +41,7 @@ export async function runCiCommand(): Promise<CiResult> {
         const dist: any = await Effect.runPromise(
           runBenchmark({
             command: metric.command,
-            samples: 1,
+            samples: 5,
             unit: metric.unit ?? "count",
             ...(metric.timeoutMs !== undefined ? { timeoutMs: metric.timeoutMs } : {}),
             ...(metric.requireChecksum === true ? { requireChecksum: true } : {}),
@@ -51,7 +51,9 @@ export async function runCiCommand(): Promise<CiResult> {
         const current = dist.p50;
         const delta = base && base > 0 ? (((metric.goal === "minimize" ? base - current : current - base) / base) * 100).toFixed(1) : "n/a";
         lines.push(`| ${metric.name} | ${base ?? "n/a"} | ${current} | ${delta}% |`);
-        if (base !== undefined) {
+        if (base === undefined) {
+          passed = false;
+        } else {
           const regressed = metric.goal === "minimize" ? current > base : current < base;
           if (regressed) passed = false;
         }
