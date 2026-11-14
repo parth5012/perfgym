@@ -14,6 +14,7 @@ export class ComposeRecompositionCollector implements MetricCollector {
   async collect(): Promise<MetricResult> {
     const { stdout, stderr } = await execAsync(this.command, { timeout: 30000 });
     const value = parseRecompositionCount(`${stdout}\n${stderr}`);
+    if (value <= 0) throw new Error("recomposition count not found");
     return { name: "recomposition_count", value, unit: "count", improved: false, deltaPercent: 0 };
   }
 }

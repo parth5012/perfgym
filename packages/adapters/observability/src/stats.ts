@@ -3,7 +3,7 @@ import { computeBenchmarkDistribution } from "@perfgym/core";
 
 export function computeDistribution(samples: number[], unit: string): BenchmarkDistribution {
   if (samples.length === 0) {
-    return computeBenchmarkDistribution([0], unit);
+    throw new Error("no samples collected");
   }
   return computeBenchmarkDistribution(samples, unit);
 }

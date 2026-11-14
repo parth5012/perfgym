@@ -776,7 +776,11 @@ program
     }
     applyColorPolicy(formatter, options);
     const res = runComponentCommand();
-    write(render(formatter, res.markdown, options));
+    if (formatter.format === "json") {
+      write(JSON.stringify({ markdown: res.markdown }, null, 2));
+    } else {
+      write(render(formatter, res.markdown, options));
+    }
   });
 
 program
@@ -802,7 +806,11 @@ program
     applyColorPolicy(formatter, options);
     try {
       const res = await runCiCommand();
-      write(render(formatter, res.markdown, options));
+      if (formatter.format === "json") {
+        write(JSON.stringify({ passed: res.passed, exitCode: res.exitCode, markdown: res.markdown }, null, 2));
+      } else {
+        write(render(formatter, res.markdown, options));
+      }
       process.exitCode = res.exitCode;
     } catch (error: unknown) {
       fail(formatter, options, error);
