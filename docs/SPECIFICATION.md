@@ -37,6 +37,12 @@ agent_budget:
 
 benchmark:
   warmup_iterations?: number  # discarded warm-up spawns before sampling; default 5, range 0-20
+
+components:
+  - name: string
+    selector: string
+    metric: "render_duration_ms" | "wasted_renders" | "phase_count"
+    threshold: number
 ```
 
 **Warm-up isolation & immutable timers.** Before the first measured sample the

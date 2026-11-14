@@ -763,7 +763,7 @@ memoryCommand
 
 program
   .command("component")
-  .description("Show configured component budgets and monitoring status")
+  .description("Show configured component budgets (model only; fitness integration pending)")
   .option(...OUTPUT_OPTIONS[0])
   .option(...OUTPUT_OPTIONS[1])
   .action((options: OutputOptions) => {
