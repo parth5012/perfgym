@@ -785,7 +785,7 @@ program
 
 program
   .command("watch")
-  .description("Watch target files and re-run evaluation on change (no commits)")
+  .description("Watch target files and re-run invariants on change (no commits)")
   .action(() => {
     runWatchCommand();
   });

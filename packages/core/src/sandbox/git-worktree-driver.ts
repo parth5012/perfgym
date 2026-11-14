@@ -36,20 +36,20 @@ export function matchesGlob(pattern: string, targetPath: string): boolean {
     return true;
   }
 
-  // Expand brace groups {a,b} before escaping, using a placeholder so the
-  // alternation survives the escaping pass.
-  const braceMatch = normPattern.match(/\{[^}]+\}/);
+  // Expand ALL brace groups {a,b} before escaping, using unique placeholders.
   let workingPattern = normPattern;
-  let braceAlt: string | null = null;
-  if (braceMatch) {
-    const opts = braceMatch[0].slice(1, -1).split(",");
-    braceAlt = `(${opts.map((o) => o.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|")})`;
-    workingPattern = workingPattern.replace(braceMatch[0], "\u0001");
-  }
-
-  const regexStr = workingPattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\u0001/g, braceAlt ?? "")
+  const braceAlts: string[] = [];
+  let idx = 0;
+  workingPattern = workingPattern.replace(/\{[^}]+\}/g, (m) => {
+    const opts = m.slice(1, -1).split(",");
+    braceAlts.push(`(${opts.map((o) => o.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("|")})`);
+    return `\u0001${idx++}\u0001`;
+  });
+  let regexStr = workingPattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  braceAlts.forEach((alt, i) => {
+    regexStr = regexStr.replace(new RegExp(`\\u0001${i}\\u0001`, "g"), alt);
+  });
+  regexStr = regexStr
     .replace(/\?/g, "[^/]")
     .replace(/\/\*\*\//g, "___SLASH_GLOBSTAR_SLASH___")
     .replace(/\/\*\*$/g, "___SLASH_GLOBSTAR_END___")
